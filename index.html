@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.4 - 2026-07-02 -->
+<!-- SF ClearView v2.6 - 2026-07-03 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -643,7 +643,19 @@ async function gsPost(data){
 // ══════════════════════════════════════════════════════════════
 function dismissNotif(){ var el=document.getElementById('post-upload-notif'); if(el) el.remove(); }
 function continueScanning(){ dismissNotif(); show('v-scan'); }
-function endShift(){ dismissNotif(); triggerAutoSync(); }
+function endShift(){
+  dismissNotif();
+  // Show simple thank you — no sync, no navigation noise
+  const thanks = document.createElement('div');
+  thanks.style.cssText = 'position:fixed;inset:0;background:rgba(6,11,16,.95);z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
+  thanks.innerHTML =
+    '<div style="font-size:48px;">✅</div>'
+    +'<div style="font-family:var(--head);font-size:28px;font-weight:700;letter-spacing:4px;color:var(--success);">SHIFT COMPLETE</div>'
+    +'<div style="font-family:var(--mono);font-size:13px;color:var(--text3);letter-spacing:2px;">Thank you. Have a good day!</div>';
+  document.body.appendChild(thanks);
+  // Auto-dismiss after 3 seconds and go back to scan
+  setTimeout(function(){ thanks.remove(); show('v-scan'); }, 3000);
+}
 
 function toast(msg,type='info'){
   const w=document.getElementById('toastWrap');
@@ -1271,7 +1283,7 @@ async function applyExcel(){
   notif2.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--success);border-radius:6px;padding:16px 20px;z-index:4000;display:flex;flex-direction:column;gap:10px;min-width:320px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);';
   notif2.innerHTML =
     '<div style="font-family:var(--mono);font-size:12px;color:var(--success);">&#x2705; '+matches.length+' image links saved!</div>'
-    +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">Total today: '+total2+' scans</div>'
+    +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">'+total2+' scans today</div>'
     +'<div style="display:flex;gap:8px;margin-top:4px;">'
     +'<button class="btn btn-t1" style="flex:1;" onclick="continueScanning()">&#x1F4E1; CONTINUE SCANNING</button>'
     +'<button class="btn btn-ok" style="flex:1;" onclick="endShift()">&#x2705; END SHIFT</button>'
@@ -1423,7 +1435,7 @@ async function applyFolder(){
   notif.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--success);border-radius:6px;padding:16px 20px;z-index:4000;display:flex;flex-direction:column;gap:10px;min-width:320px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);';
   notif.innerHTML =
     '<div style="font-family:var(--mono);font-size:12px;color:var(--success);">&#x2705; '+msg+'</div>'
-    +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">Total today: '+total+' scans</div>'
+    +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">'+total+' scans today</div>'
     +'<div style="display:flex;gap:8px;margin-top:4px;">'
     +'<button class="btn btn-t1" style="flex:1;" onclick="continueScanning()">&#x1F4E1; CONTINUE SCANNING</button>'
     +'<button class="btn btn-ok" style="flex:1;" onclick="endShift()">&#x2705; END SHIFT</button>'

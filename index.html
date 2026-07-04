@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.6 - 2026-07-03 -->
+<!-- SF ClearView v2.10 - 2026-07-04 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -8,7 +8,28 @@
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
-:root{--bg:#060b10;--bg2:#0b1520;--bg3:#101f30;--panel:#0d1b28;--panel2:#112234;--border:#1c3a55;--border2:#254d70;--t1:#00cfff;--t2:#ff8c42;--success:#00e5a0;--warn:#ffbb00;--danger:#ff3355;--text:#dceeff;--text2:#6da4c8;--text3:#2d5272;--mono:'JetBrains Mono',monospace;--head:'Barlow Condensed',sans-serif;--body:'Barlow',sans-serif;--r:3px;}
+:root{
+  /* Shadowfax Medium Theme — not too dark, not too light */
+  --bg:#1a1f2e;         /* main background — deep navy */
+  --bg2:#222840;        /* secondary background */
+  --bg3:#2a3150;        /* tertiary */
+  --panel:#242b3d;      /* card/panel background */
+  --panel2:#2d3652;     /* elevated panel */
+  --border:#3a4468;     /* subtle borders */
+  --border2:#4a5580;    /* stronger borders */
+  --t1:#00c853;         /* Shadowfax green — primary accent */
+  --t2:#ffd600;         /* Shadowfax yellow — secondary accent */
+  --success:#00e676;    /* success green */
+  --warn:#ffab00;       /* warning amber */
+  --danger:#ff5252;     /* error red */
+  --text:#e8edf8;       /* primary text — soft white */
+  --text2:#9aa8cc;      /* secondary text — muted blue */
+  --text3:#5a6a8a;      /* tertiary text — dim */
+  --mono:'JetBrains Mono',monospace;
+  --head:'Barlow Condensed',sans-serif;
+  --body:'Barlow',sans-serif;
+  --r:4px;
+}
 *{margin:0;padding:0;box-sizing:border-box;}html,body{height:100%;overflow:hidden;}
 body{background:var(--bg);color:var(--text);font-family:var(--body);font-size:14px;}
 #loginScreen{min-height:100vh;display:flex;align-items:center;justify-content:center;}
@@ -187,6 +208,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item"   id="ni-aawb"   onclick="show('v-aawb')"><span class="nav-icon">📦</span>AWB Master</div>
       <div class="nav-item"   id="ni-arec"   onclick="show('v-arec')"><span class="nav-icon">📋</span>All Records</div>
       <div class="nav-item"   id="ni-adhere" onclick="show('v-adhere')"><span class="nav-icon">📊</span>Adherence</div>
+      <div class="nav-item"   id="ni-tolreq" onclick="openTolApprove()"><span class="nav-icon">⚙️</span>Tol. Requests</div>
     </div>
     <div class="sb-foot">
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
@@ -227,7 +249,7 @@ video{width:100%;height:100%;object-fit:cover;}
               </div>
               <div class="fg"><label class="lbl">X-Ray Result</label>
                 <div class="radio-row">
-                  <label class="rchip r-ok"><input type="radio" name="xr" value="ORIGINAL" onchange="updateCameraReq()"><span>✅ Original</span></label>
+                  <label class="rchip r-ok"><input type="radio" name="xr" value="ORIGINAL" onchange="updateCameraReq()" checked><span>✅ Original</span></label>
                   <label class="rchip r-danger"><input type="radio" name="xr" value="FAKE" onchange="updateCameraReq()"><span>🚫 Fake</span></label>
                   <label class="rchip r-warn"><input type="radio" name="xr" value="EMPTY" onchange="updateCameraReq()"><span>📦 Empty</span></label>
                 </div>
@@ -306,14 +328,17 @@ video{width:100%;height:100%;object-fit:cover;}
           <div class="card">
             <div class="card-head"><span class="card-head-icon">📁</span><span class="card-head-title">TYPE 2 — IMAGE FOLDER</span></div>
             <div class="card-body">
-              <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:12px;">
-                <div class="fg" style="margin:0;">
-                  <label class="lbl">Time Tolerance (seconds)</label>
-                  <div style="display:flex;align-items:center;gap:8px;">
-                    <input id="fd-tolerance" type="number" value="300" min="10" max="600" style="width:100px;">
-                    <span style="font-size:11px;color:var(--text3);font-family:var(--mono);">Level 1: AWB in filename · Level 2: Timestamp · Level 3: Sequential</span>
+              <!-- Time tolerance — visible readonly, change requires admin approval -->
+              <input id="fd-tolerance" type="hidden" value="300">
+              <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div>
+                  <div style="font-size:10px;color:var(--text3);font-family:var(--mono);letter-spacing:1px;margin-bottom:4px;">TIME TOLERANCE</div>
+                  <div style="font-family:var(--mono);font-size:14px;color:var(--text);">
+                    <span id="tol-display">300</span> seconds
+                    <span style="font-size:10px;color:var(--text3);margin-left:8px;">Level 1: AWB · Level 2: Timestamp · Level 3: Sequential</span>
                   </div>
                 </div>
+                <button class="btn btn-ghost btn-sm" onclick="openTolRequest()" style="font-size:10px;letter-spacing:1px;">📧 REQUEST CHANGE</button>
               </div>
               <div class="tbl-wrap" style="max-height:180px;margin-bottom:12px;overflow-y:auto;">
                 <table><thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Result</th><th>Status</th></tr></thead><tbody id="t2-body"></tbody></table>
@@ -495,6 +520,35 @@ video{width:100%;height:100%;object-fit:cover;}
   <div style="font-size:11px;color:rgba(255,255,255,.4);font-family:monospace;">Click outside to close · Opens full image in Drive</div>
 </div>
 
+<!-- TOLERANCE REQUEST MODAL -->
+<div id="modal-tolreq" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:8000;align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:28px;width:360px;max-width:92vw;">
+    <div style="font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:2px;color:var(--t1);margin-bottom:16px;">📧 REQUEST TOLERANCE CHANGE</div>
+    <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:16px;">Current: <span id="tol-current-display">300</span>s · Admin approval required</div>
+    <div class="fg" style="margin-bottom:14px;">
+      <label class="lbl">Requested Value (seconds)</label>
+      <input id="tol-req-value" type="number" min="30" max="900" value="300" placeholder="e.g. 450">
+    </div>
+    <div class="fg" style="margin-bottom:18px;">
+      <label class="lbl">Reason</label>
+      <textarea id="tol-req-reason" style="min-height:70px;" placeholder="Why do you need this change?"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-ghost" style="flex:1;" onclick="document.getElementById('modal-tolreq').style.display='none'">Cancel</button>
+      <button class="btn btn-t1" style="flex:1;" onclick="submitTolRequest()">Submit Request</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN: TOLERANCE APPROVE MODAL -->
+<div id="modal-tolapprove" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:8000;align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:28px;width:400px;max-width:92vw;">
+    <div style="font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:2px;color:var(--t2);margin-bottom:16px;">⚙️ PENDING TOLERANCE REQUESTS</div>
+    <div id="tol-requests-list" style="margin-bottom:16px;"></div>
+    <button class="btn btn-ghost" style="width:100%;" onclick="document.getElementById('modal-tolapprove').style.display='none'">Close</button>
+  </div>
+</div>
+
 <!-- MODALS -->
 <div class="modal-bg" id="modal-adduser">
   <div class="modal">
@@ -567,7 +621,7 @@ video{width:100%;height:100%;object-fit:cover;}
 const GS_URL  = 'https://script.google.com/macros/s/AKfycbx7l6P9ZeYg5MHToudOkzxhvKeew-6E2D485Dhe0bZTJRrRbr3XnhhpbV0bRyX-HL-x/exec';
 const SB_URL  = 'https://ckmfixhyuklzqkggzudb.supabase.co';
 const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
-const SCAN_LIMIT = 1000; // warn operator at this count
+const SCAN_LIMIT = 2000; // warn operator at this count
 
 // ══════════════════════════════════════════════════════════════
 //  STATE
@@ -904,19 +958,44 @@ async function loadRecords(){
     // Admin: Supabase (live unsynced) + GSheet (already synced) merged
     const sbData=await sbGet('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00Z&order=scanned_at.desc&limit=2000');
     const sbRecs=Array.isArray(sbData)?sbData:[];
-    // Also load today's synced records from GSheet via GAS
+
+    // Load today's synced records from GSheet via GAS
     let gsRecs=[];
     try{
       const gsData=await gsGet({action:'records',date:today});
-      gsRecs=Array.isArray(gsData)?gsData:[];
+      // Normalize GSheet field names to match Supabase schema
+      gsRecs=Array.isArray(gsData)?gsData.map(function(r){
+        return {
+          id:           r.id||'',
+          awb:          r.awb||r.AWB||'',
+          scanned_at:   r.scanned_at||r.Date||'',
+          location_code:r.location_code||r.Location||'',
+          operator_email:r.operator_email||r.Operator||'',
+          result:       r.result||r['X-Ray Result']||'',
+          tamper_status:r.tamper_status||r['Tamper Status']||'',
+          shoe_box:     r.shoe_box||r.Shoe||'',
+          remarks:      r.remarks||r.Remarks||'',
+          xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+          product_name: r.product_name||r['Product Name']||'',
+          product_category:r.product_category||r.Category||'',
+          image_linked: !!(r.xray_image_url||r['X-Ray Image']||''),
+          synced_to_sheet:true
+        };
+      }):[];
     }catch(e){ console.warn('GSheet load skipped:',e.message); }
-    // Merge — GSheet records have synced_to_sheet=true, dedupe by awb+scanned_at
+
+    // Merge — dedupe by id first, then awb+time
     const merged=[...sbRecs];
+    const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
     gsRecs.forEach(function(gr){
-      const exists=merged.find(function(r){ return r.awb===gr.awb&&String(r.scanned_at).substring(0,19)===String(gr.scanned_at).substring(0,19); });
-      if(!exists) merged.push(Object.assign({},gr,{synced_to_sheet:true}));
+      if(gr.id&&sbIds.has(gr.id)) return; // already in Supabase set
+      const exists=merged.find(function(r){
+        return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+      });
+      if(!exists) merged.push(gr);
     });
-    DB.records=merged;
+    // Sort by time desc
+    DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
   } else {
     // Operator: check sessionStorage for post-EOS records first
     const cacheKey='cv_synced_records_'+today+'_'+myLoc();
@@ -997,11 +1076,11 @@ async function submitScan(){
   // ── 1000 SCAN LIMIT WARNING ───────────────────────────────
   const todayCount=myToday().length;
   if(todayCount>=SCAN_LIMIT){
-    toast('⚠️ 1000 scan limit reached — please go to END OF SHIFT to upload images and sync','warn');
+    toast('⚠️ 2000 scan limit reached — please go to END OF SHIFT to upload images and sync','warn');
     return;
   }
   if(todayCount===SCAN_LIMIT-1){
-    toast('⚠️ This is scan #1000 — after saving, proceed to END OF SHIFT','warn');
+    toast('⚠️ This is scan #2000 — after saving, proceed to END OF SHIFT','warn');
   }
 
   // ── FAST SAVE: write directly to Supabase ────────────────
@@ -1085,7 +1164,11 @@ async function blobToB64(blob){
 
 function clearScan(){
   document.getElementById('awb-inp').value='';
-  document.querySelectorAll('input[name="xr"],input[name="tr"],input[name="shoe"]').forEach(r=>r.checked=false);
+  document.querySelectorAll('input[name="tr"],input[name="shoe"]').forEach(r=>r.checked=false);
+  // Reset result to ORIGINAL (default)
+  const origRadio=document.querySelector('input[name="xr"][value="ORIGINAL"]');
+  if(origRadio){ origRadio.checked=true; updateCameraReq(); }
+  document.querySelectorAll('input[name="xr"]:not([value="ORIGINAL"])').forEach(r=>r.checked=false);
   document.getElementById('remarks').value='';
   document.getElementById('cam-notice').style.display='none';
   document.getElementById('cam-badge').innerHTML='';
@@ -1490,14 +1573,34 @@ async function refreshDashboard(){
     let gsRecs=[];
     try{
       const gsData=await gsGet({action:'records',date});
-      gsRecs=Array.isArray(gsData)?gsData:[];
+      gsRecs=Array.isArray(gsData)?gsData.map(function(r){
+        return {
+          id:r.id||'',awb:r.awb||r.AWB||'',
+          scanned_at:r.scanned_at||r.Date||'',
+          location_code:r.location_code||r.Location||'',
+          operator_email:r.operator_email||r.Operator||'',
+          result:r.result||r['X-Ray Result']||'',
+          tamper_status:r.tamper_status||r['Tamper Status']||'',
+          shoe_box:r.shoe_box||r.Shoe||'N/A',
+          remarks:r.remarks||r.Remarks||'',
+          xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+          product_name:r.product_name||r['Product Name']||'',
+          product_category:r.product_category||r.Category||'',
+          image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+          synced_to_sheet:true
+        };
+      }):[];
     }catch(e){ console.warn('GSheet skipped:',e.message); }
+    const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
     const merged=[...sbRecs];
     gsRecs.forEach(function(gr){
-      const exists=merged.find(function(r){ return r.awb===gr.awb&&String(r.scanned_at).substring(0,19)===String(gr.scanned_at).substring(0,19); });
-      if(!exists) merged.push(Object.assign({},gr,{synced_to_sheet:true}));
+      if(gr.id&&sbIds.has(gr.id)) return;
+      const exists=merged.find(function(r){
+        return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+      });
+      if(!exists) merged.push(gr);
     });
-    DB.records=merged;
+    DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
   } else {
     const data=await gsGet({action:'records',date});
     DB.records=Array.isArray(data)?data:[];
@@ -1971,6 +2074,91 @@ function closeImgView(e) {
     if (imgEl) imgEl.src = '';
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+//  TOLERANCE REQUEST — operator requests, admin approves
+// ══════════════════════════════════════════════════════════════
+function openTolRequest(){
+  var cur = document.getElementById('fd-tolerance').value || '300';
+  document.getElementById('tol-current-display').textContent = cur;
+  document.getElementById('tol-req-value').value = cur;
+  document.getElementById('tol-req-reason').value = '';
+  document.getElementById('modal-tolreq').style.display = 'flex';
+}
+
+async function submitTolRequest(){
+  var val = document.getElementById('tol-req-value').value;
+  var reason = document.getElementById('tol-req-reason').value.trim();
+  if(!val){ toast('Enter a value','err'); return; }
+  if(!reason){ toast('Please provide a reason','err'); return; }
+  showLoad('Submitting request...');
+  try{
+    var res = await gsPost({
+      action:'toleranceRequest',
+      location: myLoc(),
+      operator_email: CU.email,
+      current_value: document.getElementById('fd-tolerance').value || '300',
+      requested_value: val,
+      reason: reason
+    });
+    hideLoad();
+    document.getElementById('modal-tolreq').style.display='none';
+    toast('Request submitted. Admin will review shortly.','ok');
+  }catch(e){
+    hideLoad();
+    toast('Failed to submit: '+e.message,'err');
+  }
+}
+
+// Admin: view and approve tolerance requests
+async function openTolApprove(){
+  showLoad('Loading requests...');
+  try{
+    var res = await gsGet({action:'toleranceRequests'});
+    hideLoad();
+    var list = document.getElementById('tol-requests-list');
+    if(!res||!res.length){
+      list.innerHTML = '<div style="color:var(--text3);font-family:var(--mono);font-size:12px;text-align:center;padding:16px;">No pending requests</div>';
+    } else {
+      list.innerHTML = res.map(function(r,i){
+        return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-bottom:8px;">'
+          +'<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-bottom:4px;">'+r.location+' · '+r.operator_email+'</div>'
+          +'<div style="font-size:12px;color:var(--text);margin-bottom:4px;">'+r.current_value+'s → <strong>'+r.requested_value+'s</strong></div>'
+          +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">'+r.reason+'</div>'
+          +'<div style="display:flex;gap:6px;">'
+          +'<button class="btn btn-ok btn-sm" style="flex:1;" onclick="approveTolRequest('+i+','+r.requested_value+',''+r.location+'',''+r.row+'')">✅ Approve</button>'
+          +'<button class="btn btn-err btn-sm" style="flex:1;" onclick="rejectTolRequest(''+r.row+'')">❌ Reject</button>'
+          +'</div>'
+          +'</div>';
+      }).join('');
+    }
+    document.getElementById('modal-tolapprove').style.display='flex';
+  }catch(e){
+    hideLoad();
+    toast('Failed: '+e.message,'err');
+  }
+}
+
+async function approveTolRequest(idx, newVal, loc, row){
+  showLoad('Approving...');
+  try{
+    await gsPost({action:'approveToleranceRequest', row:row, location:loc, new_value:newVal});
+    hideLoad();
+    toast('Approved! Tolerance for '+loc+' set to '+newVal+'s','ok');
+    document.getElementById('modal-tolapprove').style.display='none';
+  }catch(e){ hideLoad(); toast('Error: '+e.message,'err'); }
+}
+
+async function rejectTolRequest(row){
+  showLoad('Rejecting...');
+  try{
+    await gsPost({action:'rejectToleranceRequest', row:row});
+    hideLoad();
+    toast('Request rejected.','ok');
+    document.getElementById('modal-tolapprove').style.display='none';
+  }catch(e){ hideLoad(); toast('Error: '+e.message,'err'); }
+}
+
 
 </script>
 </body>

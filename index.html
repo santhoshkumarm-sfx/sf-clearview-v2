@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.10 - 2026-07-04 -->
+<!-- SF ClearView v2.11 - 2026-07-04 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -2120,14 +2120,16 @@ async function openTolApprove(){
     if(!res||!res.length){
       list.innerHTML = '<div style="color:var(--text3);font-family:var(--mono);font-size:12px;text-align:center;padding:16px;">No pending requests</div>';
     } else {
+      // Store requests for button handlers
+      window._tolRequests = res;
       list.innerHTML = res.map(function(r,i){
         return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-bottom:8px;">'
-          +'<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-bottom:4px;">'+r.location+' · '+r.operator_email+'</div>'
-          +'<div style="font-size:12px;color:var(--text);margin-bottom:4px;">'+r.current_value+'s → <strong>'+r.requested_value+'s</strong></div>'
+          +'<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-bottom:4px;">'+r.location+' &middot; '+r.operator_email+'</div>'
+          +'<div style="font-size:12px;color:var(--text);margin-bottom:4px;">'+r.current_value+'s &rarr; <strong>'+r.requested_value+'s</strong></div>'
           +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">'+r.reason+'</div>'
           +'<div style="display:flex;gap:6px;">'
-          +'<button class="btn btn-ok btn-sm" style="flex:1;" onclick="approveTolRequest('+i+','+r.requested_value+',''+r.location+'',''+r.row+'')">✅ Approve</button>'
-          +'<button class="btn btn-err btn-sm" style="flex:1;" onclick="rejectTolRequest(''+r.row+'')">❌ Reject</button>'
+          +'<button class="btn btn-ok btn-sm" style="flex:1;" onclick="handleApproveTol('+i+')">&#x2705; Approve</button>'
+          +'<button class="btn btn-err btn-sm" style="flex:1;" onclick="handleRejectTol('+i+')">&#x274C; Reject</button>'
           +'</div>'
           +'</div>';
       }).join('');
@@ -2139,24 +2141,35 @@ async function openTolApprove(){
   }
 }
 
-async function approveTolRequest(idx, newVal, loc, row){
+async function handleApproveTol(idx){
+  var r = window._tolRequests && window._tolRequests[idx];
+  if(!r) return;
   showLoad('Approving...');
   try{
-    await gsPost({action:'approveToleranceRequest', row:row, location:loc, new_value:newVal});
+    await gsPost({action:'approveToleranceRequest', row:r.row, location:r.location, new_value:r.requested_value});
     hideLoad();
-    toast('Approved! Tolerance for '+loc+' set to '+newVal+'s','ok');
+    toast('Approved! Tolerance for '+r.location+' set to '+r.requested_value+'s','ok');
     document.getElementById('modal-tolapprove').style.display='none';
   }catch(e){ hideLoad(); toast('Error: '+e.message,'err'); }
 }
 
-async function rejectTolRequest(row){
+async function handleRejectTol(idx){
+  var r = window._tolRequests && window._tolRequests[idx];
+  if(!r) return;
   showLoad('Rejecting...');
   try{
-    await gsPost({action:'rejectToleranceRequest', row:row});
+    await gsPost({action:'rejectToleranceRequest', row:r.row});
     hideLoad();
     toast('Request rejected.','ok');
     document.getElementById('modal-tolapprove').style.display='none';
   }catch(e){ hideLoad(); toast('Error: '+e.message,'err'); }
+}
+
+async function approveTolRequest(idx, newVal, loc, row){
+  await handleApproveTol(idx);
+}
+async function rejectTolRequest(row){
+  await handleRejectTol(0);
 }
 
 

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.11 - 2026-07-04 -->
+<!-- SF ClearView v2.12 - 2026-07-04 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -387,6 +387,10 @@ video{width:100%;height:100%;object-fit:cover;}
 
       <!-- ── ADMIN DASHBOARD ── -->
       <div class="view" id="v-adash">
+        <div class="fbar" style="margin-bottom:8px;">
+          <button class="btn btn-ghost btn-sm" onclick="manualSyncNow()" id="manual-sync-btn" style="letter-spacing:1px;">⚡ FORCE SYNC TO SHEET</button>
+          <span id="manual-sync-status" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
+        </div>
         <!-- Date picker -->
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;">
           <span style="font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--text3);">SELECT DATE</span>
@@ -963,6 +967,7 @@ async function loadRecords(){
     let gsRecs=[];
     try{
       const gsData=await gsGet({action:'records',date:today});
+      console.log('GSheet returned', Array.isArray(gsData)?gsData.length:0, 'records for', today);
       // Normalize GSheet field names to match Supabase schema
       gsRecs=Array.isArray(gsData)?gsData.map(function(r){
         return {
@@ -2172,6 +2177,36 @@ async function rejectTolRequest(row){
   await handleRejectTol(0);
 }
 
+
+// ══════════════════════════════════════════════════════════════
+//  MANUAL SYNC — admin triggers Supabase → GSheet immediately
+// ══════════════════════════════════════════════════════════════
+async function manualSyncNow(){
+  var btn = document.getElementById('manual-sync-btn');
+  var status = document.getElementById('manual-sync-status');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Syncing...'; }
+  if(status) status.textContent = '';
+  try{
+    var res = await gsPost({action:'manualSync'});
+    if(btn){ btn.disabled=false; btn.textContent='⚡ FORCE SYNC TO SHEET'; }
+    if(res && res.ok){
+      if(status) status.textContent = '✅ Sync complete — ' + new Date().toLocaleTimeString('en-IN');
+      // Reload records to show updated data
+      showLoad('Reloading data...');
+      await loadRecords();
+      hideLoad();
+      renderDash();
+      toast('Sync complete! Data updated.','ok');
+    } else {
+      if(status) status.textContent = '❌ ' + (res&&res.error||'Sync failed');
+      toast('Sync failed: '+(res&&res.error||'unknown'),'err');
+    }
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='⚡ FORCE SYNC TO SHEET'; }
+    if(status) status.textContent = '❌ ' + e.message;
+    toast('Sync error: '+e.message,'err');
+  }
+}
 
 </script>
 </body>

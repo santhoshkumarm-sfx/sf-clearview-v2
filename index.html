@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.12 - 2026-07-04 -->
+<!-- SF ClearView v2.13 - 2026-07-04 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -809,7 +809,11 @@ function show(id){
   if(id==='v-ausers') renderUsers();
   if(id==='v-aloc')   renderLocs();
   if(id==='v-aawb')   renderAwb();
-  if(id==='v-arec')   renderAllRec();
+  if(id==='v-arec'){
+    var d=document.getElementById('arec-date');
+    if(d&&!d.value) d.value=todayStr();
+    renderAllRec();
+  }
   if(id==='v-adhere') renderAdherence();
 }
 
@@ -1607,8 +1611,26 @@ async function refreshDashboard(){
     });
     DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
   } else {
+    // Past date — load from GSheet only, normalize fields
     const data=await gsGet({action:'records',date});
-    DB.records=Array.isArray(data)?data:[];
+    DB.records=Array.isArray(data)?data.map(function(r){
+      return {
+        id:r.id||'',
+        awb:r.awb||r.AWB||'',
+        scanned_at:r.scanned_at||r.Date||'',
+        location_code:r.location_code||r.Location||'',
+        operator_email:r.operator_email||r.Operator||'',
+        result:r.result||r['X-Ray Result']||'',
+        tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
+        shoe_box:r.shoe_box||r.Shoe||'N/A',
+        remarks:r.remarks||r.Remarks||'',
+        xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+        product_name:r.product_name||r['Product Name']||'',
+        product_category:r.product_category||r.Category||'',
+        image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+        synced_to_sheet:true
+      };
+    }):[];
   }
   if(lbl) lbl.style.display='none';
   const cnt=document.getElementById('dash-count');
@@ -1810,12 +1832,47 @@ function renderAwb(){
 // ══════════════════════════════════════════════════════════════
 //  ALL RECORDS (Admin)
 // ══════════════════════════════════════════════════════════════
-function renderAllRec(){
+async function renderAllRec(){
   const s=(document.getElementById('arec-search')?.value||'').toLowerCase();
   const loc=document.getElementById('arec-loc')?.value||'';
   const res=document.getElementById('arec-res')?.value||'';
-  const date=document.getElementById('arec-date')?.value||'';
-  let recs=DB.records;
+  const date=document.getElementById('arec-date')?.value||todayStr();
+
+  // Always fetch fresh from both Supabase + GSheet for selected date
+  const sbData=await sbGet('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00Z&scanned_at=lte.'+date+'T23:59:59Z&order=scanned_at.desc&limit=2000');
+  const sbRecs=Array.isArray(sbData)?sbData:[];
+  let gsRecs=[];
+  try{
+    const gsData=await gsGet({action:'records',date:date});
+    gsRecs=Array.isArray(gsData)?gsData.map(function(r){
+      return {
+        id:r.id||'',awb:r.awb||r.AWB||'',
+        scanned_at:r.scanned_at||r.Date||'',
+        location_code:r.location_code||r.Location||'',
+        operator_email:r.operator_email||r.Operator||'',
+        result:r.result||r['X-Ray Result']||'',
+        tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
+        shoe_box:r.shoe_box||r.Shoe||'N/A',
+        remarks:r.remarks||r.Remarks||'',
+        xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+        product_name:r.product_name||r['Product Name']||'',
+        product_category:r.product_category||r.Category||'',
+        image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+        synced_to_sheet:true
+      };
+    }):[];
+  }catch(e){ console.warn('GSheet skipped in renderAllRec:',e.message); }
+  const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
+  const allRecs=[...sbRecs];
+  gsRecs.forEach(function(gr){
+    if(gr.id&&sbIds.has(gr.id)) return;
+    const dup=allRecs.find(function(r){
+      return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+    });
+    if(!dup) allRecs.push(gr);
+  });
+
+  let recs=allRecs.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
   if(s)    recs=recs.filter(r=>(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   if(loc)  recs=recs.filter(r=>r.location_code===loc);
   if(res)  recs=recs.filter(r=>r.result===res);

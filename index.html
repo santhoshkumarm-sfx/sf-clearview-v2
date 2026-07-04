@@ -1919,7 +1919,7 @@ async function exportCSV(mode){
       .filter(r=>!s||(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   } else { recs=myToday(); }
   const h=['AWB','Date','Location','Product','Category','Result','Tamper','Shoebox','Remarks','Operator','X-Ray Image','Label Image','Front Image','Back Image'];
-  const rows=recs.map(r=>[r.awb,new Date(r.scanned_at).toLocaleString('en-IN'),r.location_code,r.product_name||'',r.product_category||'',r.result,r.tamper_status||'',r.shoe_box||'',(r.remarks||'').replace(/,/g,' '),r.operator_email||'',r.xray_image_url||'',r.label_image_url||'',r.front_image_url||'',r.back_image_url||''];
+  const rows=recs.map(r=>[r.awb,new Date(r.scanned_at).toLocaleString('en-IN'),r.location_code,r.product_name||'',r.product_category||'',r.result,r.tamper_status||'',r.shoe_box||'',(r.remarks||'').replace(/,/g,' '),r.operator_email||'',r.xray_image_url||'',r.label_image_url||'',r.front_image_url||'',r.back_image_url||'']);
   const csv=[h,...rows].map(r=>r.map(v=>'"'+v+'"').join(',')).join('\n');
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));

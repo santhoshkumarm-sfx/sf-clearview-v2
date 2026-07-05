@@ -673,6 +673,14 @@ async function sbPatch(table, filter, payload){
   return resp.ok;
 }
 
+async function sbDelete(table, filter){
+  const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
+    method:'DELETE',
+    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'})
+  });
+  return resp.ok;
+}
+
 // ══════════════════════════════════════════════════════════════
 //  GAS HELPERS (image upload to Drive, EOS sync, admin ops)
 // ══════════════════════════════════════════════════════════════
@@ -1153,7 +1161,7 @@ async function uploadImagesBackground(awb, recId, imgs){
       const res=await gsPost({
         action:'uploadImageDrive',
         fileName:fn, base64:b64, mimeType:'image/jpeg',
-        location:myLoc(), awb, type:types[i]
+        location:myLoc(), awb, type:types[i], scanId:recId
       });
       if(res?.url) urls[i]=res.url;
     }
@@ -1495,33 +1503,51 @@ async function applyFolder(){
   if(!matches.length){toast('No matches','err');return;}
   showLoad('Uploading 0/'+matches.length+'...');
   const linked=[];
+  const failed=[];
   const BATCH=5;
+
+  async function uploadOne(m){
+    let blob;
+    if(m.file){ const d=await readFile(m.file); blob=await(await fetch(d)).blob(); }
+    else blob=await(await fetch(m.data)).blob();
+    const b64=await blobToB64(blob);
+    const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray.jpg';
+    return await gsPost({action:'uploadImageDrive',fileName:fn,base64:b64,mimeType:'image/jpeg',location:myLoc(),awb:m.rec.awb,scanId:m.rec.id});
+  }
+
   for(let i=0;i<matches.length;i+=BATCH){
     const batch=matches.slice(i,i+BATCH);
     document.getElementById('loadingMsg').textContent='Uploading '+(Math.min(i+BATCH,matches.length))+'/'+matches.length+'...';
     await Promise.all(batch.map(async m=>{
-      try{
-        let blob;
-        if(m.file){ const d=await readFile(m.file); blob=await(await fetch(d)).blob(); }
-        else blob=await(await fetch(m.data)).blob();
-        const b64=await blobToB64(blob);
-        const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray.jpg';
-        const res=await gsPost({action:'uploadImageDrive',fileName:fn,base64:b64,mimeType:'image/jpeg',location:myLoc(),awb:m.rec.awb,scanId:m.rec.id});
-        if(res?.url){
-          const r=DB.records.find(x=>x.id===m.rec.id);
-          if(r){r.xray_image_url=res.url;r.image_linked=true;linked.push(r);}
-        }
-      }catch(err){ console.warn('Upload error:',err.message); }
+      let res, errMsg='';
+      try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
+      // One automatic retry if the first attempt failed or GAS returned an error
+      if(!res?.url){
+        try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
+      }
+      if(res?.url){
+        const r=DB.records.find(x=>x.id===m.rec.id);
+        if(r){r.xray_image_url=res.url;r.image_linked=true;linked.push(r);}
+      }else{
+        const reason = errMsg || (res && res.error) || 'no url returned';
+        console.warn('Upload failed for AWB', m.rec.awb, ':', reason);
+        failed.push({awb:m.rec.awb, reason});
+      }
     }));
   }
   hideLoad();
   document.getElementById('fd-result').style.display='none';
   renderShift(); updateStats(); updateBanner();
 
+  if(failed.length){
+    console.table(failed);
+    toast('⚠️ '+failed.length+' image(s) failed to upload — see console (F12) for AWBs/reasons. Try End of Shift again to retry.','err');
+  }
+
   // Show post-upload options: Continue Scanning or End Shift
   const total = myToday().length;
   const pending = myToday().filter(r=>!r.image_linked).length;
-  const msg = linked.length+' images uploaded! '+(pending>0?pending+' records still unlinked.':'All images linked.');
+  const msg = linked.length+' images uploaded'+(failed.length?', '+failed.length+' failed':'!')+' '+(pending>0?pending+' records still unlinked.':'All images linked.');
 
   // Create inline notification with options
   const notif = document.createElement('div');
@@ -1715,12 +1741,16 @@ async function saveUser(){
   const locs =getSelLocs('nu-loc-grid');
   if(!email||!pass||!name){toast('Fill all fields','err');return;}
   showLoad('Creating user...');
-  // Save to GSheet via GAS (source of truth for users), then sync to Supabase
-  const res=await gsPost({action:'saveUser',email,password:pass,name,role,allowed_locations:locs});
-  hideLoad();
-  if(res?.error){toast(res.error,'err');return;}
-  await loadUsers(); renderUsers(); closeModal('modal-adduser');
-  toast('User '+email+' created','ok');
+  try{
+    const pw_hash=await hashPw(pass);
+    await sbPost('users', {email,name,role,pw_hash,allowed_locations:locs,active:true});
+    hideLoad();
+    await loadUsers(); renderUsers(); closeModal('modal-adduser');
+    toast('User '+email+' created','ok');
+  }catch(e){
+    hideLoad();
+    toast('Create failed: '+e.message,'err');
+  }
 }
 async function updateUser(){
   const email=document.getElementById('eu-email-orig').value;
@@ -1728,22 +1758,27 @@ async function updateUser(){
   const pass =document.getElementById('eu-pass').value;
   const role =document.getElementById('eu-role').value;
   const locs =getSelLocs('eu-loc-grid');
-  const data={action:'updateUser',email,name,role,allowed_locations:locs};
-  if(pass) data.password=pass;
+  const payload={name,role,allowed_locations:locs};
   showLoad('Updating...');
-  await gsPost(data);
-  hideLoad();
-  await loadUsers(); renderUsers(); closeModal('modal-edituser');
-  toast('User updated','ok');
+  try{
+    if(pass) payload.pw_hash=await hashPw(pass);
+    await sbPatch('users','email=eq.'+encodeURIComponent(email),payload);
+    hideLoad();
+    await loadUsers(); renderUsers(); closeModal('modal-edituser');
+    toast('User updated','ok');
+  }catch(e){
+    hideLoad();
+    toast('Update failed: '+e.message,'err');
+  }
 }
 async function toggleUser(email,active){
-  await gsPost({action:'toggleUser',email,active:String(active)});
+  await sbPatch('users','email=eq.'+encodeURIComponent(email),{active: active==='true'});
   await loadUsers(); renderUsers();
   toast('User '+(active==='true'?'enabled':'disabled'),'ok');
 }
 async function deleteUser(email){
   if(!confirm('Delete '+email+'?'))return;
-  await gsPost({action:'deleteUser',email});
+  await sbDelete('users','email=eq.'+encodeURIComponent(email));
   await loadUsers(); renderUsers();
   toast('User deleted','ok');
 }
@@ -1763,6 +1798,7 @@ function renderLocs(){
       +'<td>'+loc.name+'</td>'
       +'<td><span class="pill '+(loc.machine_type===1||loc.machine_type==='1'?'pill-t1':'pill-t2')+'">'+(loc.machine_type===1||loc.machine_type==='1'?'Type 1 Excel':'Type 2 Folder')+'</span></td>'
       +'<td style="display:flex;gap:4px;">'
+      +'<button class="btn btn-ghost btn-xs" onclick="toggleLocType(\''+loc.code+'\','+(loc.machine_type===1||loc.machine_type==='1'?2:1)+')">Switch to T'+(loc.machine_type===1||loc.machine_type==='1'?2:1)+'</button>'
       +'<button class="btn btn-danger btn-xs" onclick="deleteLoc(\''+loc.id+'\',\''+loc.code+'\')">Del</button>'
       +'</td></tr>').join('');
 }
@@ -1772,16 +1808,27 @@ async function saveLoc(){
   const name=document.getElementById('nl-name').value.trim();
   if(!code||!name){toast('Code and name required','err');return;}
   showLoad('Creating...');
-  await gsPost({action:'saveLocation',code,name,machine_type:nlMT});
-  hideLoad();
-  await loadLocs(); renderLocs(); closeModal('modal-addloc');
-  toast('Location '+code+' created','ok');
+  try{
+    await sbPost('locations', {code,name,machine_type:nlMT,active:true});
+    hideLoad();
+    await loadLocs(); renderLocs(); closeModal('modal-addloc');
+    toast('Location '+code+' created','ok');
+  }catch(e){
+    hideLoad();
+    toast('Create failed: '+e.message,'err');
+  }
 }
 async function deleteLoc(id,code){
   if(!confirm('Delete '+code+'?'))return;
-  await gsPost({action:'deleteLocation',code,id});
+  await sbDelete('locations','code=eq.'+encodeURIComponent(code));
   await loadLocs(); renderLocs();
   toast(code+' deleted','ok');
+}
+async function toggleLocType(code,newType){
+  await sbPatch('locations','code=eq.'+encodeURIComponent(code),{machine_type:newType});
+  sessionStorage.removeItem('cv_locs_v2'); // clear cache so the new type is picked up immediately
+  await loadLocs(); renderLocs();
+  toast(code+' switched to Type '+newType,'ok');
 }
 
 // ══════════════════════════════════════════════════════════════

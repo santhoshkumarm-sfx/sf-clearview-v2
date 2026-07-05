@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.16 - 2026-07-04 - FIX: GS_URL updated to latest Apps Script deployment (...AqDgxb) -->
+<!-- SF ClearView v2.17 - 2026-07-04 - FIX: GS_URL updated to latest Apps Script deployment (...eaeLo7sM) -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -624,7 +624,7 @@ video{width:100%;height:100%;object-fit:cover;}
 // FIXED 2026-07-04: was pointing at an old deployment (...RyX-HL-x) that
 // predated the manualSync/eosSync/toleranceRequest handlers, causing
 // "Unknown action: manualSync" errors. Now points at the current deployment.
-const GS_URL  = 'https://script.google.com/macros/s/AKfycbyDPFZPLFHEYZdi-xieipcpoyPj1AG9m2YqHlVOE8y6brbtE2YG0bcCLrHNk_AqDgxb/exec';
+const GS_URL  = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5J7O38dK27-dytbAsU56wgLvKxJKskkxNiKNeaeLo7sM/exec';
 const SB_URL  = 'https://ckmfixhyuklzqkggzudb.supabase.co';
 const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
 const SCAN_LIMIT = 2000; // warn operator at this count

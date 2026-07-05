@@ -1150,25 +1150,58 @@ async function submitScan(){
 async function uploadImagesBackground(awb, recId, imgs){
   // Upload silently — prevent logout until done
   window._uploading = (window._uploading||0)+1;
+  const failedTypes=[];
   try{
     const types=['label','front','back'];
     const urls=['','',''];
     for(let i=0;i<3;i++){
       if(!imgs[i]) continue;
-      const blob=await(await fetch(imgs[i])).blob();
-      const b64=await blobToB64(blob);
       const fn=todayStr().replace(/-/g,'')+'_'+awb+'_'+types[i]+'.jpg';
-      const res=await gsPost({
-        action:'uploadImageDrive',
-        fileName:fn, base64:b64, mimeType:'image/jpeg',
-        location:myLoc(), awb, type:types[i], scanId:recId
-      });
-      if(res?.url) urls[i]=res.url;
+      let res=null;
+
+      // Try up to 3 times with a short pause between attempts before giving up
+      for(let attempt=0;attempt<3;attempt++){
+        try{
+          const blob=await(await fetch(imgs[i])).blob();
+          const b64=await blobToB64(blob);
+          res=await gsPost({
+            action:'uploadImageDrive',
+            fileName:fn, base64:b64, mimeType:'image/jpeg',
+            location:myLoc(), awb, type:types[i], scanId:recId
+          });
+        }catch(err){ res=null; }
+        if(res?.url) break;
+        if(attempt<2) await new Promise(r=>setTimeout(r,2000));
+      }
+
+      if(res?.url){
+        urls[i]=res.url;
+      }else{
+        // Every retry failed — don't lose the photo. Save it locally so
+        // there's always a physical copy, even if Drive is unreachable.
+        failedTypes.push(types[i]);
+        try{
+          const a=document.createElement('a');
+          a.href=imgs[i];
+          a.download=fn;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }catch(dlErr){ console.warn('Local save fallback failed:',dlErr.message); }
+      }
     }
-    // Update record with image URLs
+    // Update record with whatever image URLs did succeed
     const r=DB.records.find(x=>x.id===recId);
-    if(r){ r.label_image_url=urls[0]; r.front_image_url=urls[1]; r.back_image_url=urls[2]; r.xray_image_url=urls[0]||urls[1]||urls[2]; r.image_linked=true; }
-    toast('Images uploaded for '+awb,'ok');
+    if(r){
+      r.label_image_url=urls[0]; r.front_image_url=urls[1]; r.back_image_url=urls[2];
+      r.xray_image_url=urls[0]||urls[1]||urls[2];
+      r.image_linked = urls.some(u=>u); // only mark linked if at least one actually made it to Drive
+    }
+    if(failedTypes.length){
+      toast('⚠️ '+awb+': '+failedTypes.length+' image(s) saved to your Downloads folder — Drive upload failed. Show admin.','err');
+    }else{
+      toast('Images uploaded for '+awb,'ok');
+    }
   }catch(e){ console.warn('Image upload error:',e.message); }
   window._uploading = Math.max(0,(window._uploading||1)-1);
 }

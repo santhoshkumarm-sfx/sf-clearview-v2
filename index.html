@@ -1,924 +1,2373 @@
-// ============================================================
-//  SF ClearView v2 — Google Apps Script Backend
-//  Role: Image upload to Drive + EOS sync Supabase → GSheet
-//  Supabase handles: scan saves, login, locations, users
-//  GAS handles: Drive image upload, EOS sync, admin sheet ops
-// ============================================================
+<!DOCTYPE html>
+<!-- SF ClearView v2.17 - 2026-07-04 - FIX: GS_URL updated to latest Apps Script deployment (...eaeLo7sM) -->
+<!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SF ClearView v2</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  /* Shadowfax Medium Theme — not too dark, not too light */
+  --bg:#1a1f2e;         /* main background — deep navy */
+  --bg2:#222840;        /* secondary background */
+  --bg3:#2a3150;        /* tertiary */
+  --panel:#242b3d;      /* card/panel background */
+  --panel2:#2d3652;     /* elevated panel */
+  --border:#3a4468;     /* subtle borders */
+  --border2:#4a5580;    /* stronger borders */
+  --t1:#00c853;         /* Shadowfax green — primary accent */
+  --t2:#ffd600;         /* Shadowfax yellow — secondary accent */
+  --success:#00e676;    /* success green */
+  --warn:#ffab00;       /* warning amber */
+  --danger:#ff5252;     /* error red */
+  --text:#e8edf8;       /* primary text — soft white */
+  --text2:#9aa8cc;      /* secondary text — muted blue */
+  --text3:#5a6a8a;      /* tertiary text — dim */
+  --mono:'JetBrains Mono',monospace;
+  --head:'Barlow Condensed',sans-serif;
+  --body:'Barlow',sans-serif;
+  --r:4px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:var(--body);font-size:14px;}
+#loginScreen{min-height:100vh;display:flex;align-items:center;justify-content:center;}
+.login-box{width:400px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:36px;text-align:center;}
+.login-logo{font-family:var(--head);font-size:32px;font-weight:800;letter-spacing:4px;color:var(--t1);margin-bottom:4px;}
+.login-sub{font-family:var(--mono);font-size:10px;letter-spacing:3px;color:var(--text3);margin-bottom:28px;}
+#app{display:flex;height:100vh;overflow:hidden;}
+.sidebar{width:220px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+.topbar{height:52px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;gap:14px;flex-shrink:0;}
+.content{flex:1;overflow-y:auto;padding:20px;}
+.sb-logo{padding:16px 18px 12px;border-bottom:1px solid var(--border);}
+.sb-logo-name{font-family:var(--head);font-size:20px;font-weight:800;letter-spacing:2px;color:var(--t1);}
+.sb-user{padding:12px 18px;border-bottom:1px solid var(--border);background:var(--bg2);}
+.sb-user-name{font-weight:600;font-size:13px;}
+.sb-user-loc{font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:2px;}
+.nav-sec{padding:8px 0;}
+.nav-sec-lbl{font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--text3);padding:6px 18px;text-transform:uppercase;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 18px;font-size:12px;font-weight:500;color:var(--text2);cursor:pointer;letter-spacing:.5px;transition:all .15s;}
+.nav-item:hover{background:var(--bg2);color:var(--text);}
+.nav-item.on{background:rgba(0,207,255,.08);color:var(--t1);border-right:2px solid var(--t1);}
+.nav-icon{font-size:14px;width:18px;text-align:center;}
+.sb-foot{padding:14px 18px;border-top:1px solid var(--border);margin-top:auto;}
+.tb-title{font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:3px;color:var(--text2);}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.view{display:none;}.view.on{display:block;}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:2px;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:1px;}
+.pill-t1{background:rgba(0,207,255,.12);color:var(--t1);border:1px solid rgba(0,207,255,.3);}
+.pill-t2{background:rgba(255,140,66,.12);color:var(--t2);border:1px solid rgba(255,140,66,.3);}
+.pill-ok{background:rgba(0,229,160,.12);color:var(--success);border:1px solid rgba(0,229,160,.3);}
+.pill-err{background:rgba(255,51,85,.12);color:var(--danger);border:1px solid rgba(255,51,85,.3);}
+.pill-warn{background:rgba(255,187,0,.12);color:var(--warn);border:1px solid rgba(255,187,0,.3);}
+.pill-dim{background:var(--bg2);color:var(--text3);border:1px solid var(--border);}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);margin-bottom:16px;overflow:hidden;}
+.card-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg2);}
+.card-head-title{font-family:var(--head);font-size:13px;font-weight:700;letter-spacing:2px;color:var(--text2);text-transform:uppercase;}
+.card-head-right{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.card-body{padding:16px;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.fg{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
+.lbl{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;}
+input,select,textarea{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);font-family:var(--body);font-size:13px;padding:8px 12px;width:100%;outline:none;transition:border .15s;}
+input:focus,select:focus,textarea:focus{border-color:var(--t1);}
+textarea{min-height:60px;resize:vertical;}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 16px;border-radius:var(--r);font-family:var(--head);font-size:12px;font-weight:700;letter-spacing:1.5px;cursor:pointer;border:1px solid;transition:all .15s;text-transform:uppercase;}
+.btn-t1{background:rgba(0,207,255,.12);color:var(--t1);border-color:rgba(0,207,255,.4);}.btn-t1:hover{background:rgba(0,207,255,.22);}
+.btn-t2{background:rgba(255,140,66,.12);color:var(--t2);border-color:rgba(255,140,66,.4);}
+.btn-ok{background:rgba(0,229,160,.12);color:var(--success);border-color:rgba(0,229,160,.4);}.btn-ok:hover{background:rgba(0,229,160,.22);}
+.btn-danger{background:rgba(255,51,85,.12);color:var(--danger);border-color:rgba(255,51,85,.4);}
+.btn-ghost{background:transparent;color:var(--text2);border-color:var(--border);}.btn-ghost:hover{background:var(--bg2);}
+.btn-warn{background:rgba(255,187,0,.12);color:var(--warn);border-color:rgba(255,187,0,.4);}
+.btn-sm{padding:5px 10px;font-size:10px;}.btn-xs{padding:3px 8px;font-size:9px;}.btn-block{width:100%;}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;}
+.stat-num{font-family:var(--mono);font-size:28px;font-weight:600;line-height:1;color:var(--t1);}
+.stat.danger .stat-num{color:var(--danger);}.stat.warn .stat-num{color:var(--warn);}.stat.ok .stat-num{color:var(--success);}
+.stat-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:2px;font-family:var(--mono);margin-top:5px;}
+.tbl-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;}
+th{background:var(--bg2);font-family:var(--mono);font-size:9px;letter-spacing:2px;color:var(--text3);text-transform:uppercase;padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;}
+td{padding:8px 12px;border-bottom:1px solid rgba(28,58,85,.4);font-size:13px;vertical-align:middle;}
+tr:hover td{background:rgba(0,207,255,.03);}
+.tc-awb{font-family:var(--mono);font-weight:600;color:var(--t1);font-size:12px;}
+.fbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;}
+.search-wrap{position:relative;display:flex;align-items:center;}
+.search-icon{position:absolute;left:10px;font-size:13px;pointer-events:none;}
+.search-wrap input{padding-left:32px;}
+.dropzone{border:2px dashed var(--border2);border-radius:var(--r);padding:28px;text-align:center;cursor:pointer;transition:all .2s;}
+.dropzone:hover,.dropzone.drag{border-color:var(--t1);background:rgba(0,207,255,.04);}
+.dz-icon{font-size:28px;margin-bottom:8px;}.dz-text{font-family:var(--head);font-size:13px;font-weight:700;letter-spacing:2px;color:var(--text2);}.dz-sub{font-size:11px;color:var(--text3);font-family:var(--mono);margin-top:4px;}
+.prog-wrap{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:12px;}
+.prog-bar{height:100%;background:var(--t1);border-radius:2px;transition:width .2s;}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;display:none;align-items:center;justify-content:center;}
+.modal-bg.open{display:flex;}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:var(--r);width:520px;max-width:96vw;max-height:90vh;overflow-y:auto;}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg2);}
+.modal-title{font-family:var(--head);font-size:14px;font-weight:700;letter-spacing:2px;color:var(--text2);}
+.modal-close{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:2px 6px;}
+.modal-body{padding:18px;}.modal-foot{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border);background:var(--bg2);}
+.toast-wrap{position:fixed;top:16px;right:16px;z-index:5000;display:flex;flex-direction:column;gap:8px;}
+.toast{padding:10px 16px;border-radius:var(--r);font-size:12px;font-family:var(--mono);min-width:220px;max-width:380px;border-left:3px solid;animation:toastIn .25s ease;}
+@keyframes toastIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+.toast.ok{background:var(--panel2);border-color:var(--success);color:var(--success);}
+.toast.err{background:var(--panel2);border-color:var(--danger);color:var(--danger);}
+.toast.info{background:var(--panel2);border-color:var(--t1);color:var(--t1);}
+.awb-wrap{position:relative;margin-bottom:12px;}
+.awb-cap{position:absolute;top:8px;left:12px;font-family:var(--mono);font-size:8px;letter-spacing:2px;color:var(--text3);}
+.awb-inp{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);color:var(--t1);font-family:var(--mono);font-size:22px;font-weight:600;padding:28px 12px 8px;letter-spacing:3px;outline:none;transition:border .15s;}
+.awb-inp:focus{border-color:var(--t1);}
+.rchip{display:flex;align-items:center;gap:7px;padding:8px 14px;border:1px solid var(--border);border-radius:var(--r);cursor:pointer;font-size:13px;font-weight:500;transition:all .15s;}
+.rchip input[type=radio]{display:none;}
+.rchip.r-ok:has(input:checked){background:rgba(0,229,160,.12);border-color:var(--success);color:var(--success);}
+.rchip.r-danger:has(input:checked){background:rgba(255,51,85,.12);border-color:var(--danger);color:var(--danger);}
+.rchip.r-warn:has(input:checked){background:rgba(255,187,0,.12);border-color:var(--warn);color:var(--warn);}
+.radio-row{display:flex;gap:8px;flex-wrap:wrap;}
+.cam-box{background:var(--bg);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;margin-bottom:12px;}
+video{width:100%;height:100%;object-fit:cover;}
+.cam-inactive{text-align:center;color:var(--text3);}.ci-icon{font-size:32px;margin-bottom:8px;}
+.thumb-row{display:flex;gap:8px;margin-bottom:12px;}
+.thumb-slot{flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px;text-align:center;cursor:pointer;min-height:70px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:10px;font-family:var(--mono);color:var(--text3);}
+.loc-pill-opt{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);cursor:pointer;margin-bottom:6px;transition:.15s;}
+.loc-pill-opt:hover{border-color:var(--t1);}
+.ac-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px;margin-top:6px;}
+.ac-loc-chip{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:10px 8px;text-align:center;cursor:pointer;transition:all .15s;font-size:11px;}
+.ac-loc-chip.granted{background:rgba(0,229,160,.08);border-color:rgba(0,229,160,.4);color:var(--success);}
+.ac-code{font-family:var(--mono);font-weight:600;font-size:12px;margin-bottom:2px;}
+.loc-tag{display:inline-block;padding:2px 7px;border-radius:2px;font-family:var(--mono);font-size:10px;background:var(--bg2);border:1px solid var(--border);color:var(--text2);}
+.mtype-toggle{display:flex;gap:6px;}
+.mtype-btn{flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:var(--r);font-family:var(--mono);font-size:10px;cursor:pointer;text-align:center;transition:all .15s;color:var(--text3);}
+.mtype-btn.sel-t1{background:rgba(0,207,255,.12);border-color:var(--t1);color:var(--t1);}
+.mtype-btn.sel-t2{background:rgba(255,140,66,.12);border-color:var(--t2);color:var(--t2);}
+#loadingOverlay{position:fixed;inset:0;background:rgba(6,11,16,.85);z-index:5000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.awb-product-chip{background:rgba(0,207,255,.07);border:1px solid rgba(0,207,255,.2);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:11px;margin-bottom:10px;display:none;}
+</style>
+</head>
+<body>
 
-var SPREADSHEET_ID = '1wnbY2WyTufpiVOZ_crcw2MldhIAUtiVc1c9Es7MLeG0';
-var SUPABASE_URL   = 'https://ckmfixhyuklzqkggzudb.supabase.co';
-var SUPABASE_KEY   = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
-var DRIVE_FOLDER   = 'SF ClearView v2 Images';
+<!-- LOGIN -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">SF ClearView</div>
+    <div class="login-sub">X-RAY INSPECTION SYSTEM</div>
+    <div id="login-main">
+      <div class="fg"><label class="lbl">Email</label>
+        <input id="l-email" type="email" placeholder="your@shadowfax.in" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('l-pass').focus()">
+      </div>
+      <div class="fg"><label class="lbl">Password</label>
+        <input id="l-pass" type="password" placeholder="Enter password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <button class="btn btn-t1 btn-block" id="login-btn" onclick="doLogin()" style="padding:12px;">LOGIN →</button>
+      <div id="login-err" style="display:none;margin-top:10px;background:rgba(255,51,85,.08);border:1px solid rgba(255,51,85,.3);border-radius:var(--r);padding:9px 12px;font-family:var(--mono);font-size:11px;color:var(--danger);"></div>
+    </div>
+    <div id="login-loc-wrap" style="display:none;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <button class="btn btn-ghost btn-xs" onclick="backToLoginForm()">← Back</button>
+        <span id="login-welcome" style="font-family:var(--mono);font-size:11px;color:var(--text2);"></span>
+      </div>
+      <label class="lbl" style="display:block;margin-bottom:8px;">SELECT LOCATION</label>
+      <div id="login-loc-list"></div>
 
-var SH_USERS    = 'Users';
-var SH_LOCS     = 'Locations';
-var SH_RECORDS  = 'Records';
-var SH_AWB      = 'AWB_Master';
-var SH_SCANS    = 'Scans';
+    </div>
+  </div>
+</div>
 
-var SB_HEADERS = {
-  'apikey': SUPABASE_KEY,
-  'Authorization': 'Bearer ' + SUPABASE_KEY,
-  'Content-Type': 'application/json'
+<!-- APP -->
+<div id="app" style="display:none;">
+  <div class="sidebar">
+    <div class="sb-logo">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <div class="sb-logo-name">SF ClearView</div>
+      </div>
+      <div style="font-size:8px;letter-spacing:2px;color:var(--text3);font-family:var(--mono);">X-Ray Inspection System</div>
+    </div>
+    <div class="sb-user">
+      <div class="sb-user-name" id="sb-name">–</div>
+      <div class="sb-user-loc" id="sb-loc">–</div>
+      <div id="sb-machine" style="margin-top:5px;"></div>
+    </div>
+    <!-- Operator nav -->
+    <div class="nav-sec" id="nav-op" style="display:none;">
+      <div class="nav-sec-lbl">Operations</div>
+      <div class="nav-item on" id="ni-scan"  onclick="show('v-scan')"><span class="nav-icon">📡</span>Scan AWB</div>
+      <div class="nav-item"   id="ni-shift" onclick="show('v-shift')"><span class="nav-icon">📤</span>End of Shift</div>
+      <div class="nav-item"   id="ni-rec"   onclick="show('v-rec')"><span class="nav-icon">📋</span>My Records</div>
+    </div>
+    <!-- Admin nav -->
+    <div class="nav-sec" id="nav-adm" style="display:none;">
+      <div class="nav-sec-lbl">Admin</div>
+      <div class="nav-item on" id="ni-adash"  onclick="show('v-adash')"><span class="nav-icon">🖥</span>Dashboard</div>
+      <div class="nav-item"   id="ni-ausers" onclick="show('v-ausers')"><span class="nav-icon">👤</span>Users</div>
+      <div class="nav-item"   id="ni-aloc"   onclick="show('v-aloc')"><span class="nav-icon">📍</span>Locations</div>
+      <div class="nav-item"   id="ni-aawb"   onclick="show('v-aawb')"><span class="nav-icon">📦</span>AWB Master</div>
+      <div class="nav-item"   id="ni-arec"   onclick="show('v-arec')"><span class="nav-icon">📋</span>All Records</div>
+      <div class="nav-item"   id="ni-adhere" onclick="show('v-adhere')"><span class="nav-icon">📊</span>Adherence</div>
+      <div class="nav-item"   id="ni-tolreq" onclick="openTolApprove()"><span class="nav-icon">⚙️</span>Tol. Requests</div>
+    </div>
+    <div class="sb-foot">
+      <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="tb-title" id="tb-title">SCAN AWB</div>
+      <div class="tb-right">
+        <span id="scan-limit-warn" style="display:none;background:rgba(255,187,0,.15);color:var(--warn);border:1px solid rgba(255,187,0,.4);border-radius:3px;font-size:10px;font-family:var(--mono);padding:3px 8px;cursor:pointer;" onclick="show('v-shift')"></span>
+        <span id="tb-machine"></span>
+        <span id="tb-loc" class="pill pill-dim">–</span>
+        <span id="tb-date" class="pill pill-dim">–</span>
+      </div>
+    </div>
+    <div class="content">
+
+      <!-- ── SCAN AWB ── -->
+      <div class="view" id="v-scan">
+        <div class="g4" style="margin-bottom:14px;">
+          <div class="stat"><div class="stat-num" id="ss-today">0</div><div class="stat-lbl">Today Scans</div></div>
+          <div class="stat danger"><div class="stat-num" id="ss-failed">0</div><div class="stat-lbl">Fake / Empty</div></div>
+          <div class="stat warn"><div class="stat-num" id="ss-pending">0</div><div class="stat-lbl">Pending Images</div></div>
+          <div class="stat ok"><div class="stat-num" id="ss-linked">0</div><div class="stat-lbl">Images Linked</div></div>
+        </div>
+        <div class="g2">
+          <div class="card">
+            <div class="card-head"><span class="card-head-icon">📡</span><span class="card-head-title">AWB ENTRY</span></div>
+            <div class="card-body">
+              <div class="awb-wrap"><span class="awb-cap">SCAN / TYPE AWB</span>
+                <input class="awb-inp" id="awb-inp" type="text" placeholder="AWB NUMBER" autocomplete="off" oninput="onAwbChange()">
+              </div>
+              <div class="awb-product-chip" id="awb-chip">
+                <span style="color:var(--text3);">Declared:</span>
+                <span id="awb-prod" style="color:var(--t1);font-weight:600;margin-left:6px;"></span>
+                <span id="awb-cat" style="color:var(--text2);margin-left:8px;"></span>
+              </div>
+              <div class="fg"><label class="lbl">X-Ray Result</label>
+                <div class="radio-row">
+                  <label class="rchip r-ok"><input type="radio" name="xr" value="ORIGINAL" onchange="updateCameraReq()" checked><span>✅ Original</span></label>
+                  <label class="rchip r-danger"><input type="radio" name="xr" value="FAKE" onchange="updateCameraReq()"><span>🚫 Fake</span></label>
+                  <label class="rchip r-warn"><input type="radio" name="xr" value="EMPTY" onchange="updateCameraReq()"><span>📦 Empty</span></label>
+                </div>
+              </div>
+              <div class="fg"><label class="lbl">Tamper Status</label>
+                <div class="radio-row">
+                  <label class="rchip r-warn"><input type="radio" name="tr" value="TAMPERED" onchange="updateCameraReq()"><span>⚠ Tampered</span></label>
+                  <label class="rchip r-ok"><input type="radio" name="tr" value="NON-TAMPERED" onchange="updateCameraReq()"><span>✓ Non-Tampered</span></label>
+                </div>
+              </div>
+              <div class="fg"><label class="lbl">Remarks</label><textarea id="remarks" placeholder="Optional notes..."></textarea></div>
+              <div id="cam-notice" style="display:none;background:rgba(255,51,85,.07);border:1px solid rgba(255,51,85,.25);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:10px;color:var(--danger);letter-spacing:1px;margin-bottom:10px;">IMAGES REQUIRED — CAPTURE LABEL · FRONT · BACK</div>
+              <button class="btn btn-ok btn-block" id="save-btn" onclick="submitScan()">SAVE RECORD</button>
+              <button class="btn btn-ghost btn-sm" style="margin-top:6px;width:100%;" onclick="clearScan()">CLEAR</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span class="card-head-icon">📷</span><span class="card-head-title">CAMERA CAPTURE</span><span id="cam-badge" class="card-head-right"></span></div>
+            <div class="card-body">
+              <div class="cam-box">
+                <div class="cam-inactive" id="cam-inactive"><div class="ci-icon">📷</div><div style="font-size:12px;">Camera inactive</div></div>
+                <video id="cam-video" autoplay playsinline style="display:none;width:100%;height:100%;object-fit:cover;"></video>
+                <canvas id="cam-canvas" style="display:none;"></canvas>
+              </div>
+              <div style="display:flex;gap:6px;margin-bottom:10px;">
+                <button class="btn btn-t1 btn-sm" style="flex:1;" onclick="startCam()">START CAM</button>
+                <button class="btn btn-ghost btn-sm" style="flex:1;" onclick="stopCam()">STOP</button>
+              </div>
+              <div class="thumb-row">
+                <div class="thumb-slot" id="th0" onclick="capPhoto(0)"><span style="font-size:18px;">🏷</span><span>LABEL</span></div>
+                <div class="thumb-slot" id="th1" onclick="capPhoto(1)"><span style="font-size:18px;">⬆</span><span>FRONT</span></div>
+                <div class="thumb-slot" id="th2" onclick="capPhoto(2)"><span style="font-size:18px;">⬇</span><span>BACK</span></div>
+              </div>
+              <div style="display:flex;gap:6px;">
+                <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Label<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,0)"></label>
+                <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Front<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,1)"></label>
+                <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Back<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,2)"></label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── END OF SHIFT ── -->
+      <div class="view" id="v-shift">
+        <div class="g4" style="margin-bottom:14px;">
+          <div class="stat"><div class="stat-num" id="eos-total">0</div><div class="stat-lbl">Total Scans</div></div>
+          <div class="stat warn"><div class="stat-num" id="eos-pending">0</div><div class="stat-lbl">Pending</div></div>
+          <div class="stat ok"><div class="stat-num" id="eos-linked">0</div><div class="stat-lbl">Linked</div></div>
+          <div class="stat danger"><div class="stat-num" id="eos-failed">0</div><div class="stat-lbl">Fake/Empty</div></div>
+        </div>
+        <div id="eos-t1">
+          <div class="card">
+            <div class="card-head"><span class="card-head-icon">📊</span><span class="card-head-title">TYPE 1 — EXCEL UPLOAD</span></div>
+            <div class="card-body">
+              <div class="g2" style="margin-bottom:12px;">
+                <div class="fg"><label class="lbl">AWB Column</label><input id="xl-awb" value="AWB"></div>
+                <div class="fg"><label class="lbl">Image Path Column</label><input id="xl-img" value="ImagePath"></div>
+              </div>
+              <div class="dropzone" id="xl-drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="xlDrop(event)" onclick="document.getElementById('xl-file').click()">
+                <input type="file" id="xl-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="xlUpload(this)">
+                <div class="dz-icon">📊</div><div class="dz-text">CLICK OR DRAG EXCEL FILE</div><div class="dz-sub">.xlsx · .xls · .csv</div>
+              </div>
+              <div class="prog-wrap" id="xl-prog" style="display:none;"><div class="prog-bar" id="xl-prog-bar" style="width:0%;"></div></div>
+              <div id="xl-result" style="display:none;margin-top:12px;">
+                <div id="xl-match-list"></div>
+                <div style="display:flex;gap:8px;margin-top:10px;">
+                  <button class="btn btn-t1" onclick="applyExcel()">APPLY MATCHES</button>
+                  <button class="btn btn-ghost btn-sm" onclick="document.getElementById('xl-result').style.display='none'">CANCEL</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="eos-t2" style="display:none;">
+          <div class="card">
+            <div class="card-head"><span class="card-head-icon">📁</span><span class="card-head-title">TYPE 2 — IMAGE FOLDER</span></div>
+            <div class="card-body">
+              <!-- Time tolerance — visible readonly, change requires admin approval -->
+              <input id="fd-tolerance" type="hidden" value="300">
+              <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <div>
+                  <div style="font-size:10px;color:var(--text3);font-family:var(--mono);letter-spacing:1px;margin-bottom:4px;">TIME TOLERANCE</div>
+                  <div style="font-family:var(--mono);font-size:14px;color:var(--text);">
+                    <span id="tol-display">300</span> seconds
+                    <span style="font-size:10px;color:var(--text3);margin-left:8px;">Level 1: AWB · Level 2: Timestamp · Level 3: Sequential</span>
+                  </div>
+                </div>
+                <button class="btn btn-ghost btn-sm" onclick="openTolRequest()" style="font-size:10px;letter-spacing:1px;">📧 REQUEST CHANGE</button>
+              </div>
+              <div class="tbl-wrap" style="max-height:180px;margin-bottom:12px;overflow-y:auto;">
+                <table><thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Result</th><th>Status</th></tr></thead><tbody id="t2-body"></tbody></table>
+              </div>
+              <div class="dropzone" id="fd-drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="fdDrop(event)">
+                <input type="file" id="fd-file" multiple accept="image/*" style="display:none;" onchange="fdUpload(this)">
+                <div class="dz-icon">📁</div><div class="dz-text">SELECT IMAGE FILES</div><div class="dz-sub">All images from shift folder</div>
+                <button class="btn btn-t2 btn-sm" style="margin-top:10px;" onclick="event.stopPropagation();document.getElementById('fd-file').click()">BROWSE</button>
+              </div>
+              <div class="prog-wrap" id="fd-prog" style="display:none;"><div class="prog-bar" id="fd-prog-bar" style="width:0%;background:var(--t2);"></div></div>
+              <div id="fd-result" style="display:none;margin-top:12px;">
+                <div id="fd-match-list"></div>
+                <div style="display:flex;gap:8px;margin-top:10px;">
+                  <button class="btn btn-t2" onclick="applyFolder()">APPLY MATCHES</button>
+                  <button class="btn btn-ghost btn-sm" onclick="document.getElementById('fd-result').style.display='none'">CANCEL</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">✅</span><span class="card-head-title">LINKED TODAY</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Product</th><th>X-Ray</th><th>Result</th><th>Tamper</th></tr></thead>
+            <tbody id="eos-linked-body"></tbody>
+          </table></div>
+        </div>
+
+      </div>
+
+      <!-- ── MY RECORDS ── -->
+      <div class="view" id="v-rec">
+        <div class="fbar">
+          <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="rec-search" placeholder="Search AWB..." oninput="renderRec()"></div>
+          <select id="rec-res" onchange="renderRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <button class="btn btn-ghost btn-sm" onclick="exportCSV('op')">CSV</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">MY RECORDS — TODAY</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Product</th><th>Result</th><th>Tamper</th><th>Shoebox</th><th>Remarks</th></tr></thead>
+            <tbody id="rec-body"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <!-- ── ADMIN DASHBOARD ── -->
+      <div class="view" id="v-adash">
+        <div class="fbar" style="margin-bottom:8px;">
+          <button class="btn btn-ghost btn-sm" onclick="manualSyncNow()" id="manual-sync-btn" style="letter-spacing:1px;">⚡ FORCE SYNC TO SHEET</button>
+          <span id="manual-sync-status" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
+        </div>
+        <!-- Date picker -->
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;">
+          <span style="font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--text3);">SELECT DATE</span>
+          <input type="date" id="dash-date" onchange="refreshDashboard()" style="width:160px;font-size:14px;">
+          <button class="btn btn-ghost btn-sm" onclick="setDashDate('today')">📅 Today</button>
+          <button class="btn btn-ghost btn-sm" onclick="setDashDate('yesterday')">Yesterday</button>
+          <span id="dash-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
+          <span id="dash-count" style="font-family:var(--mono);font-size:11px;color:var(--t1);margin-left:auto;"></span>
+        </div>
+        <div class="g4" style="margin-bottom:14px;">
+          <div class="stat"><div class="stat-num" id="ad-total">0</div><div class="stat-lbl">Total Scans</div></div>
+          <div class="stat danger"><div class="stat-num" id="ad-failed">0</div><div class="stat-lbl">Fake / Empty</div></div>
+          <div class="stat ok"><div class="stat-num" id="ad-locs">0</div><div class="stat-lbl">Locations</div></div>
+          <div class="stat warn"><div class="stat-num" id="ad-users">0</div><div class="stat-lbl">Operators</div></div>
+        </div>
+        <div class="card"><div class="card-head"><span class="card-head-icon">📍</span><span class="card-head-title">LOCATION OVERVIEW</span></div><div class="card-body"><div class="g3" id="ad-loc-grid"></div></div></div>
+      </div>
+
+      <!-- ── USERS ── -->
+      <div class="view" id="v-ausers">
+        <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;">
+          <button class="btn btn-t1 btn-sm" onclick="openAddUser()">+ ADD USER</button>
+          <button class="btn btn-ghost btn-sm" onclick="syncUsersToSheetNow()">↻ SYNC TO SHEET</button>
+          <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="user-search" placeholder="Search..." oninput="renderUsers()"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">👤</span><span class="card-head-title">USER MANAGEMENT</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>Email</th><th>Name</th><th>Locations</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="users-body"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <!-- ── LOCATIONS ── -->
+      <div class="view" id="v-aloc">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+          <div style="flex:1;font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:2px;color:var(--text2);">LOCATION MANAGEMENT</div>
+          <button class="btn btn-t1 btn-sm" onclick="openAddLoc()">+ ADD LOCATION</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">📍</span><span class="card-head-title">LOCATIONS</span><span id="loc-count" class="card-head-right"></span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>Code</th><th>Name</th><th>Machine Type</th><th>Actions</th></tr></thead>
+            <tbody id="loc-body"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <!-- ── AWB MASTER ── -->
+      <div class="view" id="v-aawb">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+          <div style="flex:1;">
+            <div style="font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:2px;color:var(--text2);">AWB MASTER</div>
+            <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-top:2px;">Upload Excel/CSV with AWB, Product Name, Category</div>
+          </div>
+          <button class="btn btn-t1 btn-sm" onclick="document.getElementById('awb-file').click()">UPLOAD FILE</button>
+          <input type="file" id="awb-file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="awbUpload(this)">
+        </div>
+        <div class="card" style="margin-bottom:14px;">
+          <div class="card-head"><span class="card-head-icon">📦</span><span class="card-head-title">UPLOAD</span><span id="awb-status" class="card-head-right"></span></div>
+          <div class="card-body">
+            <div class="dropzone" id="awb-drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="awbDrop(event)" onclick="document.getElementById('awb-file').click()">
+              <div class="dz-icon">📦</div><div class="dz-text">CLICK OR DRAG AWB FILE</div><div class="dz-sub">Columns: AWB · Product Name · Category</div>
+            </div>
+            <div style="margin-top:12px;" class="g3">
+              <div class="fg"><label class="lbl">AWB Column</label><input id="awb-col-a" value="AWB"></div>
+              <div class="fg"><label class="lbl">Product Column</label><input id="awb-col-n" value="Product Name"></div>
+              <div class="fg"><label class="lbl">Category Column</label><input id="awb-col-c" value="Category"></div>
+            </div>
+            <div class="prog-wrap" id="awb-prog" style="display:none;"><div class="prog-bar" id="awb-prog-bar" style="width:0%;"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">AWB MASTER</span><span id="awb-count" class="card-head-right"></span></div>
+          <div style="padding:8px 16px;border-bottom:1px solid var(--border);"><div class="search-wrap"><span class="search-icon">🔍</span><input id="awb-search" placeholder="Search AWB or product..." oninput="renderAwb()"></div></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>AWB</th><th>Product Name</th><th>Category</th></tr></thead>
+            <tbody id="awb-body"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <!-- ── ALL RECORDS ── -->
+      <div class="view" id="v-arec">
+        <div class="fbar">
+          <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="arec-search" placeholder="Search AWB..." oninput="renderAllRec()"></div>
+          <select id="arec-loc" onchange="renderAllRec()"><option value="">All Locations</option></select>
+          <select id="arec-res" onchange="renderAllRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <input type="date" id="arec-date" onchange="renderAllRec()">
+          <button class="btn btn-ghost btn-sm" onclick="exportCSV('adm')">CSV</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">ALL RECORDS</span><span id="arec-count" class="card-head-right"></span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>AWB</th><th>Date/Time</th><th>Location</th><th>Product</th><th>Result</th><th>Tamper</th><th>Operator</th><th>X-Ray</th></tr></thead>
+            <tbody id="arec-body"></tbody>
+          </table></div>
+        </div>
+      </div>
+
+      <!-- ── ADHERENCE ── -->
+      <div class="view" id="v-adhere">
+        <div class="fbar">
+          <button class="btn btn-ghost btn-sm" onclick="renderAdherence()" style="letter-spacing:1px;">↻ REFRESH</button>
+          <span id="adhere-updated" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-head-icon">📊</span>
+            <span class="card-head-title">SCAN ADHERENCE — LAST 10 DAYS</span>
+            <span id="adhere-total" class="card-head-right"></span>
+          </div>
+          <div class="tbl-wrap" id="adhere-table-wrap">
+            <div style="text-align:center;padding:32px;color:var(--text3);font-family:var(--mono);">Click Refresh to load adherence data.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- IMAGE VIEWER MODAL -->
+<div id="modal-imgview" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;" onclick="closeImgView(event)">
+  <div style="position:relative;width:90vw;max-width:900px;height:85vh;background:#0f1117;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;">
+    <button onclick="document.getElementById('modal-imgview').style.display='none';document.getElementById('xray-iframe').src=''" style="position:absolute;top:10px;right:12px;z-index:10;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:14px;">✕ Close</button>
+    <a id="xray-open-link" href="#" target="_blank" style="position:absolute;top:10px;left:12px;z-index:10;background:rgba(0,100,255,.5);border:1px solid rgba(0,150,255,.4);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;text-decoration:none;">⬡ Open in Drive</a>
+    <img id="xray-img-direct" src="" style="max-width:100%;max-height:100%;object-fit:contain;display:none;" />
+    <iframe id="xray-iframe" src="" style="width:100%;height:100%;border:none;display:block;"></iframe>
+  </div>
+  <div style="font-size:11px;color:rgba(255,255,255,.4);font-family:monospace;">Click outside to close · Opens full image in Drive</div>
+</div>
+
+<!-- TOLERANCE REQUEST MODAL -->
+<div id="modal-tolreq" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:8000;align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:28px;width:360px;max-width:92vw;">
+    <div style="font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:2px;color:var(--t1);margin-bottom:16px;">📧 REQUEST TOLERANCE CHANGE</div>
+    <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:16px;">Current: <span id="tol-current-display">300</span>s · Admin approval required</div>
+    <div class="fg" style="margin-bottom:14px;">
+      <label class="lbl">Requested Value (seconds)</label>
+      <input id="tol-req-value" type="number" min="30" max="900" value="300" placeholder="e.g. 450">
+    </div>
+    <div class="fg" style="margin-bottom:18px;">
+      <label class="lbl">Reason</label>
+      <textarea id="tol-req-reason" style="min-height:70px;" placeholder="Why do you need this change?"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-ghost" style="flex:1;" onclick="document.getElementById('modal-tolreq').style.display='none'">Cancel</button>
+      <button class="btn btn-t1" style="flex:1;" onclick="submitTolRequest()">Submit Request</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN: TOLERANCE APPROVE MODAL -->
+<div id="modal-tolapprove" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:8000;align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:28px;width:400px;max-width:92vw;">
+    <div style="font-family:var(--head);font-size:16px;font-weight:700;letter-spacing:2px;color:var(--t2);margin-bottom:16px;">⚙️ PENDING TOLERANCE REQUESTS</div>
+    <div id="tol-requests-list" style="margin-bottom:16px;"></div>
+    <button class="btn btn-ghost" style="width:100%;" onclick="document.getElementById('modal-tolapprove').style.display='none'">Close</button>
+  </div>
+</div>
+
+<!-- MODALS -->
+<div class="modal-bg" id="modal-adduser">
+  <div class="modal">
+    <div class="modal-head"><span class="modal-title">ADD USER</span><button class="modal-close" onclick="closeModal('modal-adduser')">✕</button></div>
+    <div class="modal-body">
+      <div class="fg"><label class="lbl">Email</label><input id="nu-email" type="email" placeholder="operator@shadowfax.in"></div>
+      <div class="fg"><label class="lbl">Password</label><input id="nu-pass" type="password" placeholder="Set a password"></div>
+      <div class="fg"><label class="lbl">Full Name</label><input id="nu-name" placeholder="HYD Operator"></div>
+      <div class="fg"><label class="lbl">Role</label><select id="nu-role"><option value="operator">Operator</option><option value="supervisor">Supervisor</option></select></div>
+      <div class="fg"><label class="lbl">Location Access</label><div class="ac-grid" id="nu-loc-grid"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-adduser')">CANCEL</button>
+      <button class="btn btn-t1 btn-sm" onclick="saveUser()">SAVE USER</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-edituser">
+  <div class="modal">
+    <div class="modal-head"><span class="modal-title">EDIT USER</span><button class="modal-close" onclick="closeModal('modal-edituser')">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="eu-email-orig">
+      <div class="fg"><label class="lbl">Email (read only)</label><input id="eu-email" readonly style="color:var(--text3);"></div>
+      <div class="fg"><label class="lbl">Full Name</label><input id="eu-name"></div>
+      <div class="fg"><label class="lbl">New Password (leave blank to keep)</label><input id="eu-pass" type="password" placeholder="New password"></div>
+      <div class="fg"><label class="lbl">Role</label><select id="eu-role"><option value="operator">Operator</option><option value="supervisor">Supervisor</option></select></div>
+      <div class="fg"><label class="lbl">Location Access</label><div class="ac-grid" id="eu-loc-grid"></div></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-edituser')">CANCEL</button>
+      <button class="btn btn-t1 btn-sm" onclick="updateUser()">SAVE CHANGES</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-addloc">
+  <div class="modal">
+    <div class="modal-head"><span class="modal-title">ADD LOCATION</span><button class="modal-close" onclick="closeModal('modal-addloc')">✕</button></div>
+    <div class="modal-body">
+      <div class="g2">
+        <div class="fg"><label class="lbl">Code (2–6 letters)</label><input id="nl-code" placeholder="HYD" maxlength="6" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z]/g,'')"></div>
+        <div class="fg"><label class="lbl">City / Hub Name</label><input id="nl-name" placeholder="Hyderabad"></div>
+      </div>
+      <div class="fg"><label class="lbl">Machine Type</label>
+        <div class="mtype-toggle">
+          <div class="mtype-btn sel-t1" id="nl-t1" onclick="nlMT=1;document.getElementById('nl-t1').className='mtype-btn sel-t1';document.getElementById('nl-t2').className='mtype-btn';">Type 1 — Excel</div>
+          <div class="mtype-btn" id="nl-t2" onclick="nlMT=2;document.getElementById('nl-t2').className='mtype-btn sel-t2';document.getElementById('nl-t1').className='mtype-btn';">Type 2 — Folder</div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-addloc')">CANCEL</button>
+      <button class="btn btn-t1 btn-sm" onclick="saveLoc()">SAVE LOCATION</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+<div id="loadingOverlay" style="position:fixed;inset:0;background:rgba(6,11,16,.85);z-index:5000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;">
+  <div style="width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--t1);border-radius:50%;animation:spin .8s linear infinite;"></div>
+  <div id="loadingMsg" style="font-family:var(--mono);font-size:12px;color:var(--text2);letter-spacing:2px;"></div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+//  CONFIG — v2 with Supabase primary DB
+// ══════════════════════════════════════════════════════════════
+// GAS URL — this MUST match the currently active Apps Script deployment.
+// FIXED 2026-07-04: was pointing at an old deployment (...RyX-HL-x) that
+// predated the manualSync/eosSync/toleranceRequest handlers, causing
+// "Unknown action: manualSync" errors. Now points at the current deployment.
+const GS_URL  = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5J7O38dK27-dytbAsU56wgLvKxJKskkxNiKNeaeLo7sM/exec';
+const SB_URL  = 'https://ckmfixhyuklzqkggzudb.supabase.co';
+const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
+const SCAN_LIMIT = 2000; // warn operator at this count
+
+// ══════════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════════
+let CU=null, isAdmin=false, isSupervisor=false;
+let DB = {records:[], users:[], locations:[], awbMaster:{}};
+let camStream=null, captured=[null,null,null], nlMT=1;
+let pendingXl=[], pendingFd=[];
+let pendingUser=null;
+
+// ══════════════════════════════════════════════════════════════
+//  SUPABASE HELPERS (scan save, login, locations, users, awb)
+// ══════════════════════════════════════════════════════════════
+const SB_HDRS = {
+  'Content-Type':'application/json',
+  'apikey': SB_KEY,
+  'Authorization': 'Bearer ' + SB_KEY
 };
 
-// ── HELPERS ──────────────────────────────────────────────────
-function out(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
+async function sbGet(path){
+  const resp = await fetch(SB_URL + path, { headers: SB_HDRS });
+  if(!resp.ok) throw new Error('Supabase GET failed: ' + resp.status);
+  return resp.json();
 }
 
-function getSheet(name) {
-  return SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(name);
-}
-
-function sheetRows(name) {
-  var sh = getSheet(name);
-  if (!sh || sh.getLastRow() < 2) return { headers: [], rows: [] };
-  var all = sh.getDataRange().getValues();
-  return { headers: all[0], rows: all.slice(1) };
-}
-
-function rowToObj(headers, row) {
-  var obj = {};
-  headers.forEach(function(h, i) {
-    obj[h] = row[i] instanceof Date ? row[i].toISOString() : row[i];
+async function sbPost(table, payload){
+  const resp = await fetch(SB_URL + '/rest/v1/' + table, {
+    method:'POST',
+    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=representation'}),
+    body: JSON.stringify(payload)
   });
-  return obj;
+  if(!resp.ok){ const t=await resp.text(); throw new Error(t); }
+  const data = await resp.json();
+  return Array.isArray(data) ? data[0] : data;
 }
 
-function sbGet(path) {
-  var res = UrlFetchApp.fetch(SUPABASE_URL + path, {
-    method: 'GET', headers: SB_HEADERS, muteHttpExceptions: true
+async function sbPatch(table, filter, payload){
+  const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
+    method:'PATCH',
+    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'}),
+    body: JSON.stringify(payload)
   });
-  return JSON.parse(res.getContentText());
+  return resp.ok;
 }
 
-function sbPatch(path, payload) {
-  return UrlFetchApp.fetch(SUPABASE_URL + path, {
-    method: 'PATCH',
-    headers: Object.assign({}, SB_HEADERS, { 'Prefer': 'return=minimal' }),
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
+async function sbDelete(table, filter){
+  const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
+    method:'DELETE',
+    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'})
   });
-}
-
-function sbDelete(path) {
-  return UrlFetchApp.fetch(SUPABASE_URL + path, {
-    method: 'DELETE', headers: SB_HEADERS, muteHttpExceptions: true
-  });
-}
-
-// ── BATCHED ID OPERATIONS ─────────────────────────────────────
-// FIX: patching/deleting by "id=in.(uuid1,uuid2,...)" with hundreds
-// of UUIDs in one URL hits Apps Script's UrlFetch length limit and
-// throws "Exception: Limit Exceeded: URLFetch URL Length." — which
-// was silently failing every 5AM/2PM/Force-Sync run. These split
-// large ID lists into safe-sized chunks (50 IDs per request, well
-// under the limit) instead of one giant request.
-var ID_BATCH_SIZE = 50;
-
-function chunkArray(arr, size) {
-  var out = [];
-  for (var i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-function sbPatchByIdsBatched(ids, payload) {
-  var batches = chunkArray(ids, ID_BATCH_SIZE);
-  for (var i = 0; i < batches.length; i++) {
-    var res = sbPatch('/rest/v1/scans?id=in.(' + batches[i].join(',') + ')', payload);
-    if (res.getResponseCode() !== 204) {
-      Logger.log('sbPatchByIdsBatched warning (batch ' + i + '): ' + res.getContentText());
-    }
-  }
-}
-
-function sbDeleteByIdsBatched(ids, extraFilter) {
-  var batches = chunkArray(ids, ID_BATCH_SIZE);
-  for (var i = 0; i < batches.length; i++) {
-    var path = '/rest/v1/scans?id=in.(' + batches[i].join(',') + ')' + (extraFilter || '');
-    var res = sbDelete(path);
-    if (res.getResponseCode() !== 204) {
-      Logger.log('sbDeleteByIdsBatched warning (batch ' + i + '): ' + res.getContentText());
-    }
-  }
-}
-
-// ── ROUTER ───────────────────────────────────────────────────
-function doGet(e) {
-  var p = (e && e.parameter) || {};
-  try {
-    switch(p.action) {
-      case 'locations': return out(getLocations());
-      case 'users':     return out(getUsers());
-      case 'awb':       return out(getAwb());
-      case 'records':   return out(getRecords(p));
-      case 'adherence':         return out(getAdherence(p));
-      case 'toleranceRequests': return out(getToleranceRequests());
-      default:          return out({ status: 'SF ClearView v2 Active', time: new Date().toISOString() });
-    }
-  } catch(err) { return out({ error: err.message }); }
-}
-
-function doPost(e) {
-  try {
-    var d = JSON.parse(e.postData.contents);
-    switch(d.action) {
-      case 'uploadImageDrive': return out(uploadImageDrive(d));
-      case 'eosSync':                  return out(eosSync(d));
-      case 'manualSync':               return out(manualSync());
-      case 'toleranceRequest':         return out(saveToleranceRequest(d));
-      case 'approveToleranceRequest':  return out(approveToleranceRequest(d));
-      case 'rejectToleranceRequest':   return out(rejectToleranceRequest(d));
-      case 'saveUser':         return out(saveUser(d));
-      case 'syncUsersToSheet': return out(syncUsersToSheet());
-      case 'updateUser':       return out(updateUser(d));
-      case 'deleteUser':       return out(deleteUser(d));
-      case 'toggleUser':       return out(toggleUser(d));
-      case 'saveLocation':     return out(saveLocation(d));
-      case 'deleteLocation':   return out(deleteLocation(d));
-      case 'saveAwb':          return out(saveAwb(d));
-      default:                 return out({ error: 'Unknown action: ' + d.action });
-    }
-  } catch(err) { return out({ error: err.message }); }
-}
-
-function doOptions(e) { return out({ ok: true }); }
-
-// ── LOCATIONS ─────────────────────────────────────────────────
-function getLocations() {
-  var d = sheetRows(SH_LOCS);
-  return d.rows.map(function(r) {
-    var obj = rowToObj(d.headers, r);
-    obj.full_name = obj.code + ' – ' + obj.name;
-    return obj;
-  });
-}
-
-function saveLocation(data) {
-  var sh = getSheet(SH_LOCS);
-  sh.appendRow([Utilities.getUuid(), data.code, data.name, data.machine_type || 1, 'true', new Date().toISOString()]);
-  return { ok: true };
-}
-
-function deleteLocation(data) {
-  var d = sheetRows(SH_LOCS);
-  var sh = getSheet(SH_LOCS);
-  for (var i = 0; i < d.rows.length; i++) {
-    var obj = rowToObj(d.headers, d.rows[i]);
-    if (obj.code === data.code || obj.id === data.id) { sh.deleteRow(i + 2); return { ok: true }; }
-  }
-  return { error: 'Location not found' };
-}
-
-// ── USERS ─────────────────────────────────────────────────────
-function getUsers() {
-  var d = sheetRows(SH_USERS);
-  return d.rows.map(function(r) { return rowToObj(d.headers, r); });
-}
-
-function hashPassword(pw) {
-  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, pw, Utilities.Charset.UTF_8);
-  return digest.map(function(b) { return ('0' + (b < 0 ? b + 256 : b).toString(16)).slice(-2); }).join('');
+  return resp.ok;
 }
 
 // ══════════════════════════════════════════════════════════════
-//  MIRROR SUPABASE USERS → GSheet (reference only, admin-triggered)
-//  Since user management now writes directly to Supabase (the table
-//  login actually reads), the GSheet Users tab no longer updates on
-//  its own. This lets you refresh it on demand to see the current
-//  list — it's a one-way mirror for reference, not the source of
-//  truth. Running this never affects login.
+//  GAS HELPERS (image upload to Drive, EOS sync, admin ops)
 // ══════════════════════════════════════════════════════════════
-function syncUsersToSheet() {
-  var users = sbGet('/rest/v1/users?order=email.asc');
-  if (!Array.isArray(users)) return { error: 'Could not fetch users from Supabase' };
-
-  var sh = getSheet(SH_USERS);
-  var lastRow = sh.getLastRow();
-  if (lastRow > 1) sh.getRange(2, 1, lastRow - 1, sh.getLastColumn()).clearContent();
-
-  var rows = users.map(function(u) {
-    return [
-      u.id || '', u.email || '', u.name || '', u.role || '',
-      u.pw_hash || '', JSON.stringify(u.allowed_locations || []),
-      u.active ? 'TRUE' : 'FALSE', u.created_at || ''
-    ];
-  });
-  if (rows.length) {
-    sh.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
-  }
-  return { ok: true, count: rows.length };
+async function gsGet(params){
+  const q = Object.entries(params).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&');
+  const resp = await fetch(GS_URL+'?'+q, {redirect:'follow'});
+  const text = await resp.text();
+  try{ return JSON.parse(text); }
+  catch(e){ throw new Error('Response: '+text.substring(0,150)); }
 }
 
-function saveUser(data) {
-  var sh = getSheet(SH_USERS);
-  var hash = hashPassword(data.password || 'Sfx@1234');
-  sh.appendRow([Utilities.getUuid(), data.email, data.name, data.role || 'operator', hash,
-    JSON.stringify(data.allowed_locations || []), 'true', new Date().toISOString()]);
-  return { ok: true };
-}
-
-function updateUser(data) {
-  var d = sheetRows(SH_USERS);
-  var sh = getSheet(SH_USERS);
-  for (var i = 0; i < d.rows.length; i++) {
-    var obj = rowToObj(d.headers, d.rows[i]);
-    if (obj.email === data.email || obj.id === data.id) {
-      var row = i + 2;
-      var ni = d.headers.indexOf('name'), ri = d.headers.indexOf('role'),
-          li = d.headers.indexOf('allowed_locations'), pi = d.headers.indexOf('pw_hash');
-      if (data.name) sh.getRange(row, ni + 1).setValue(data.name);
-      if (data.role) sh.getRange(row, ri + 1).setValue(data.role);
-      if (data.allowed_locations) sh.getRange(row, li + 1).setValue(JSON.stringify(data.allowed_locations));
-      if (data.password) sh.getRange(row, pi + 1).setValue(hashPassword(data.password));
-      return { ok: true };
-    }
-  }
-  return { error: 'User not found' };
-}
-
-function deleteUser(data) {
-  var d = sheetRows(SH_USERS);
-  var sh = getSheet(SH_USERS);
-  for (var i = 0; i < d.rows.length; i++) {
-    var obj = rowToObj(d.headers, d.rows[i]);
-    if (obj.email === data.email || obj.id === data.id) { sh.deleteRow(i + 2); return { ok: true }; }
-  }
-  return { error: 'User not found' };
-}
-
-function toggleUser(data) {
-  var d = sheetRows(SH_USERS);
-  var sh = getSheet(SH_USERS);
-  var ai = d.headers.indexOf('active');
-  for (var i = 0; i < d.rows.length; i++) {
-    var obj = rowToObj(d.headers, d.rows[i]);
-    if (obj.email === data.email || obj.id === data.id) {
-      sh.getRange(i + 2, ai + 1).setValue(String(data.active));
-      return { ok: true };
-    }
-  }
-  return { error: 'User not found' };
-}
-
-// ── AWB MASTER ────────────────────────────────────────────────
-function getAwb() {
-  var d = sheetRows(SH_AWB);
-  return d.rows.map(function(r) { return rowToObj(d.headers, r); });
-}
-
-function saveAwb(data) {
-  var sh = getSheet(SH_AWB);
-  var today = new Date().toISOString().split('T')[0];
-  var existing = sheetRows(SH_AWB);
-  for (var i = existing.rows.length - 1; i >= 0; i--) {
-    if (String(existing.rows[i][existing.headers.indexOf('upload_date')] || '').substring(0, 10) === today) {
-      sh.deleteRow(i + 2);
-    }
-  }
-  (data.rows || []).forEach(function(row) {
-    sh.appendRow([Utilities.getUuid(), row.awb, row.product_name, row.product_category, today, data.uploaded_by || '']);
-  });
-  return { ok: true, count: (data.rows || []).length };
-}
-
-// ── RECORDS (admin read from GSheet) ─────────────────────────
-function getRecords(p) {
-  var d = sheetRows(SH_RECORDS);
-  var recs = d.rows.map(function(r) { return rowToObj(d.headers, r); });
-  if (p.location && p.location !== 'ALL') recs = recs.filter(function(r) { return r.location_code === p.location; });
-  if (p.date) {
-    recs = recs.filter(function(r) {
-      var raw = r.scanned_at;
-      var dt = '';
-      if (raw instanceof Date) {
-        // GSheet Date object — format in IST
-        dt = Utilities.formatDate(raw, 'Asia/Kolkata', 'yyyy-MM-dd');
-      } else {
-        dt = String(raw || '').substring(0, 10);
-      }
-      return dt === p.date;
+async function gsPost(data){
+  try{
+    const resp = await fetch(GS_URL,{
+      method:'POST',
+      headers:{'Content-Type':'text/plain'},
+      body:JSON.stringify(data),
+      redirect:'follow'
     });
-  }
-  // Also normalize scanned_at to ISO string if it's a Date object
-  recs = recs.map(function(r) {
-    if (r.scanned_at instanceof Date) {
-      r.scanned_at = Utilities.formatDate(r.scanned_at, 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ss'+05:30'");
-    }
-    return r;
-  });
-  // Normalize field names to match Supabase schema
-  recs = recs.map(function(r) {
-    return {
-      id:               r.id || '',
-      awb:              r.awb || '',
-      scanned_at:       r.scanned_at || '',
-      location_code:    r.location_code || '',
-      machine_type:     r.machine_type || 1,
-      operator_email:   r.operator_email || '',
-      result:           r.result || '',
-      tamper_status:    r.tamper_status || '',
-      shoe_box:         r.shoe_box || 'N/A',
-      remarks:          r.remarks || '',
-      seq_num:          r.seq_num || '',
-      xray_image_url:   r.xray_image_url || '',
-      image_linked:     r.image_linked === 'true' || r.image_linked === true,
-      label_image_url:  r.label_image_url || '',
-      front_image_url:  r.front_image_url || '',
-      back_image_url:   r.back_image_url || '',
-      product_name:     r.product_name || '',
-      product_category: r.product_category || '',
-      synced_to_sheet:  true
+    const text = await resp.text();
+    try{ return JSON.parse(text); }
+    catch(e){ return {ok:true}; }
+  }catch(e){ console.warn('gsPost:',e.message); return {ok:false,error:e.message}; }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HELPERS
+// ══════════════════════════════════════════════════════════════
+function dismissNotif(){ var el=document.getElementById('post-upload-notif'); if(el) el.remove(); }
+function continueScanning(){ dismissNotif(); show('v-scan'); }
+function endShift(){
+  dismissNotif();
+  // Show simple thank you — no sync, no navigation noise
+  const thanks = document.createElement('div');
+  thanks.style.cssText = 'position:fixed;inset:0;background:rgba(6,11,16,.95);z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
+  thanks.innerHTML =
+    '<div style="font-size:48px;">✅</div>'
+    +'<div style="font-family:var(--head);font-size:28px;font-weight:700;letter-spacing:4px;color:var(--success);">SHIFT COMPLETE</div>'
+    +'<div style="font-family:var(--mono);font-size:13px;color:var(--text3);letter-spacing:2px;">Thank you. Have a good day!</div>';
+  document.body.appendChild(thanks);
+  // Auto-dismiss after 3 seconds and go back to scan
+  setTimeout(function(){ thanks.remove(); show('v-scan'); }, 3000);
+}
+
+function toast(msg,type='info'){
+  const w=document.getElementById('toastWrap');
+  const el=document.createElement('div');
+  el.className='toast '+type; el.textContent=msg;
+  w.appendChild(el); setTimeout(()=>el.remove(),3500);
+}
+function showLoad(msg='Processing...'){
+  document.getElementById('loadingOverlay').style.display='flex';
+  document.getElementById('loadingMsg').textContent=msg;
+}
+function hideLoad(){ document.getElementById('loadingOverlay').style.display='none'; }
+function openModal(id){ document.getElementById(id).classList.add('open'); }
+function closeModal(id){ document.getElementById(id).classList.remove('open'); }
+function fmtDate(d){ const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+function todayStr(){ return fmtDate(new Date()); }
+async function hashPw(s){
+  const b=new TextEncoder().encode(s);
+  const buf=await crypto.subtle.digest('SHA-256',b);
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function myLoc(){ return CU?.location_code||''; }
+function myMT(){  return CU?.machine_type||1; }
+function myToday(){
+  const t=todayStr();
+  return DB.records.filter(r=>r.location_code===myLoc()&&String(r.scanned_at).substring(0,10)===t);
+}
+function resultPill(r){
+  if(r==='ORIGINAL') return '<span class="pill pill-ok">✅ Original</span>';
+  if(r==='FAKE')     return '<span class="pill pill-err">🚫 Fake</span>';
+  return '<span class="pill pill-warn">📦 Empty</span>';
+}
+
+function readFile(file){
+  return new Promise(resolve=>{
+    const fr=new FileReader();
+    fr.onload=e=>{
+      const result=e.target.result;
+      if(file.type==='image/bmp'||file.name.match(/\.bmp$/i)){
+        const img=new Image();
+        img.onload=()=>{
+          const c=document.createElement('canvas');
+          c.width=img.naturalWidth; c.height=img.naturalHeight;
+          const ctx=c.getContext('2d');
+          ctx.fillStyle='#fff'; ctx.fillRect(0,0,c.width,c.height);
+          ctx.drawImage(img,0,0);
+          resolve(c.toDataURL('image/jpeg',.85));
+        };
+        img.onerror=()=>resolve(result);
+        img.src=result;
+      } else resolve(result);
     };
+    fr.readAsDataURL(file);
   });
-  recs.sort(function(a, b) { return String(b.scanned_at).localeCompare(String(a.scanned_at)); });
-  return recs;
 }
 
-// ── EOS SYNC: Supabase → GSheet ──────────────────────────────
-function eosSync(data) {
-  var location = data.location_code;
-  var operatorEmail = data.operator_email;
-  if (!location) return { error: 'location_code required' };
-
-  try {
-    var url = '/rest/v1/scans?synced_to_sheet=eq.false&location_code=eq.' + encodeURIComponent(location)
-            + '&order=scanned_at.asc&limit=1000';
-    var rows = sbGet(url);
-
-    if (!rows || rows.length === 0) {
-      Logger.log('No unsynced rows for ' + location);
-      return { ok: true, synced: 0 };
-    }
-
-    Logger.log('Syncing ' + rows.length + ' rows for ' + location);
-
-    var sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SH_RECORDS);
-    var newRows = rows.map(function(r) {
-      return [
-        r.id, r.awb, r.scanned_at, r.location_code, r.machine_type,
-        r.operator_email, r.result, r.tamper_status, r.shoe_box, r.remarks,
-        r.seq_num || '', r.xray_image_url || '', r.image_linked ? 'true' : 'false',
-        r.label_image_url || '', r.front_image_url || '', r.back_image_url || '',
-        r.product_name || '', r.product_category || ''
-      ];
-    });
-    sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
-
-    var scansSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SH_SCANS);
-    if (scansSheet) {
-      var scanRows = rows.map(function(r) {
-        var d = new Date(r.scanned_at);
-        return [
-          r.awb,
-          Utilities.formatDate(d, 'Asia/Kolkata', 'yyyy-MM-dd'),
-          Utilities.formatDate(d, 'Asia/Kolkata', 'HH:mm:ss'),
-          r.location_code, r.product_name || '', r.product_category || '',
-          r.result, r.tamper_status, r.shoe_box, r.remarks || '',
-          r.operator_email, r.xray_image_url || '',
-          r.label_image_url || '', r.front_image_url || '', r.back_image_url || ''
-        ];
-      });
-      scansSheet.getRange(scansSheet.getLastRow() + 1, 1, scanRows.length, scanRows[0].length).setValues(scanRows);
-    }
-
-    var ids = rows.map(function(r) { return r.id; });
-    sbPatchByIdsBatched(ids, { synced_to_sheet: true });
-    sbDeleteByIdsBatched(ids, '&synced_to_sheet=eq.true');
-
-    Logger.log('EOS sync complete: ' + rows.length + ' rows for ' + location);
-    return { ok: true, synced: rows.length };
-
-  } catch(e) {
-    Logger.log('eosSync error: ' + e.toString());
-    return { error: e.message };
-  }
+// Session persistence
+function saveSession(){
+  sessionStorage.setItem('cu', JSON.stringify(CU));
+  sessionStorage.setItem('isAdmin', isAdmin);
+  sessionStorage.setItem('isSup', isSupervisor);
 }
-
-// ── DRIVE IMAGE UPLOAD ────────────────────────────────────────
-function uploadImageDrive(data) {
-  var step = 'start';
-  try {
-    var lock = LockService.getScriptLock();
-    var mainFolder, locFolder, dateFolder;
-    step = 'acquiring lock';
-    lock.waitLock(10000); // up to 10s — folder lookup/creation only, not the file upload itself
-    try {
-      step = 'finding/creating root folder';
-      var mainFolders = DriveApp.getFoldersByName(DRIVE_FOLDER);
-      mainFolder  = mainFolders.hasNext() ? mainFolders.next() : DriveApp.createFolder(DRIVE_FOLDER);
-
-      var loc = (data.location || 'UNKNOWN').toUpperCase();
-      step = 'finding/creating location folder (' + loc + ')';
-      var locFolders = mainFolder.getFoldersByName(loc);
-      locFolder  = locFolders.hasNext() ? locFolders.next() : mainFolder.createFolder(loc);
-
-      var dateStr = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd');
-      step = 'finding/creating date folder (' + dateStr + ')';
-      var dateFolders = locFolder.getFoldersByName(dateStr);
-      dateFolder  = dateFolders.hasNext() ? dateFolders.next() : locFolder.createFolder(dateStr);
-    } finally {
-      lock.releaseLock();
-    }
-
-    var awb      = (data.awb || '').trim().toUpperCase();
-    var type     = data.type || 'xray';
-    var today    = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyyMMdd');
-    var fileName = today + '_' + (awb || 'UNKNOWN') + '_' + type + '.jpg';
-
-    step = 'decoding image bytes';
-    var bytes = Utilities.base64Decode(data.base64);
-    var blob  = Utilities.newBlob(bytes, data.mimeType || 'image/jpeg', fileName);
-    step = 'creating file in Drive';
-    var file  = dateFolder.createFile(blob);
-    file.setName(fileName);
-
-    step = 'setting file sharing';
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    var url = 'https://drive.google.com/uc?export=view&id=' + file.getId();
-
-    if (awb && data.scanId) {
-      step = 'patching Supabase with image URL';
-      var patchRes = sbPatch(
-        '/rest/v1/scans?id=eq.' + encodeURIComponent(data.scanId),
-        { xray_image_url: url, image_linked: true }
-      );
-      if (patchRes.getResponseCode() !== 204) {
-        Logger.log('image url patch warning: ' + patchRes.getContentText());
-      }
-    }
-
-    return { ok: true, url: url, fileId: file.getId(), fileName: fileName };
-
-  } catch(err) {
-    var detail = err.message + (err.stack ? (' | stack: ' + err.stack) : '');
-    Logger.log('uploadImageDrive error at step [' + step + ']: ' + detail);
-    logUploadError(data.location, data.awb, step, detail);
-    return { error: err.message, step: step };
-  }
-}
-
-// Writes every upload failure to an UploadErrors tab, so failures can be
-// checked directly in the spreadsheet without needing the Apps Script
-// Executions console — includes exactly which step failed and the full
-// error detail, not just the one-line summary the browser sees.
-function logUploadError(location, awb, step, detail) {
-  try {
-    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    var sh = ss.getSheetByName('UploadErrors');
-    if (!sh) {
-      sh = ss.insertSheet('UploadErrors');
-      sh.appendRow(['timestamp_ist', 'location', 'awb', 'failed_step', 'error_detail']);
-      sh.getRange(1, 1, 1, 5).setFontWeight('bold').setBackground('#ff5252').setFontColor('white');
-      sh.setFrozenRows(1);
-    }
-    var ts = Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ss'+05:30'");
-    sh.appendRow([ts, location || '', awb || '', step || '', detail || '']);
-  } catch(e) {
-    Logger.log('logUploadError itself failed: ' + e.message);
-  }
+function clearSession(){
+  sessionStorage.removeItem('cu');
+  sessionStorage.removeItem('isAdmin');
+  sessionStorage.removeItem('isSup');
 }
 
 // ══════════════════════════════════════════════════════════════
-//  DRIVE AUTHORIZATION HELPER — run this once manually
-//  Select "testDriveAuth" in the function dropdown above and click
-//  Run. This forces the Drive permission popup to appear so you can
-//  grant it — without this, DriveApp calls from the deployed web app
-//  fail with "Access denied: DriveApp" even if the folder itself is
-//  shared correctly, because folder sharing and script authorization
-//  are two different things.
+//  NAVIGATION
 // ══════════════════════════════════════════════════════════════
-// ══════════════════════════════════════════════════════════════
-//  ONE-TIME CLEANUP: merge duplicate location folders
-//  Run this manually from the editor (select mergeDuplicateLocationFolders
-//  in the function dropdown, click Run). Safe: for each location code,
-//  it keeps the OLDEST folder as canonical, moves every file from any
-//  duplicate folders' date-subfolders into the matching date-subfolder
-//  in the canonical one, and only deletes a duplicate folder if it is
-//  completely empty afterward. Never deletes a folder that still has
-//  files in it — if anything can't be moved for some reason, it's left
-//  alone and logged, not removed.
-// ══════════════════════════════════════════════════════════════
-function mergeDuplicateLocationFolders() {
-  var mainFolders = DriveApp.getFoldersByName(DRIVE_FOLDER);
-  if (!mainFolders.hasNext()) { Logger.log('Root folder not found.'); return; }
-  var mainFolder = mainFolders.next();
+function show(id){
+  // Role guards
+  const opOnly=['v-scan','v-shift','v-rec'];
+  const admOnly=['v-adash','v-ausers','v-aloc','v-aawb','v-arec','v-adhere'];
+  if((isAdmin||isSupervisor) && opOnly.includes(id)){ show('v-adash'); return; }
+  if(!isAdmin && !isSupervisor && admOnly.includes(id)){ show('v-scan'); return; }
 
-  // Group all direct subfolders by name
-  var byName = {};
-  var subIter = mainFolder.getFolders();
-  while (subIter.hasNext()) {
-    var f = subIter.next();
-    var name = f.getName();
-    if (!byName[name]) byName[name] = [];
-    byName[name].push(f);
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+  document.getElementById(id)?.classList.add('on');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('on'));
+  const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec',
+            'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
+            'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere'};
+  const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS',
+            'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
+            'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE'};
+  if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
+  document.getElementById('tb-title').textContent=tm[id]||id;
+  if(id==='v-shift')  renderShift();
+  if(id==='v-rec')    renderRec();
+  if(id==='v-adash')  renderDash();
+  if(id==='v-ausers') renderUsers();
+  if(id==='v-aloc')   renderLocs();
+  if(id==='v-aawb')   renderAwb();
+  if(id==='v-arec'){
+    var d=document.getElementById('arec-date');
+    if(d&&!d.value) d.value=todayStr();
+    renderAllRec();
   }
-
-  Object.keys(byName).forEach(function(name) {
-    var folders = byName[name];
-    if (folders.length < 2) return; // no duplicates for this location
-
-    // Oldest = canonical (by creation date)
-    folders.sort(function(a, b) { return a.getDateCreated() - b.getDateCreated(); });
-    var canonical = folders[0];
-    var dupes = folders.slice(1);
-    Logger.log(name + ': ' + folders.length + ' folders found, keeping oldest (' + canonical.getId() + ')');
-
-    dupes.forEach(function(dupe) {
-      // Move every date-subfolder's files into the matching date-subfolder in canonical
-      var dateIter = dupe.getFolders();
-      while (dateIter.hasNext()) {
-        var dateFolder = dateIter.next();
-        var dateName = dateFolder.getName();
-        var canonicalDateFolders = canonical.getFoldersByName(dateName);
-        var canonicalDateFolder = canonicalDateFolders.hasNext()
-          ? canonicalDateFolders.next()
-          : canonical.createFolder(dateName);
-
-        var fileIter = dateFolder.getFiles();
-        var movedCount = 0;
-        while (fileIter.hasNext()) {
-          var file = fileIter.next();
-          file.moveTo(canonicalDateFolder);
-          movedCount++;
-        }
-        Logger.log('  moved ' + movedCount + ' file(s) from ' + name + '/' + dateName + ' (dupe) into canonical');
-
-        // Only remove the now-empty date subfolder, never a non-empty one
-        var checkFiles = dateFolder.getFiles();
-        var checkSub = dateFolder.getFolders();
-        if (!checkFiles.hasNext() && !checkSub.hasNext()) {
-          dateFolder.setTrashed(true);
-        }
-      }
-
-      // Only remove the duplicate top-level folder if it's now fully empty
-      var remainingFiles = dupe.getFiles();
-      var remainingSub = dupe.getFolders();
-      if (!remainingFiles.hasNext() && !remainingSub.hasNext()) {
-        dupe.setTrashed(true);
-        Logger.log('  removed now-empty duplicate folder: ' + dupe.getId());
-      } else {
-        Logger.log('  ⚠️ duplicate folder ' + dupe.getId() + ' still has content — left in place, check manually');
-      }
-    });
-  });
-
-  Logger.log('=== Merge complete ===');
+  if(id==='v-adhere') renderAdherence();
 }
 
-function testDriveAuth() {
-  var folders = DriveApp.getFoldersByName(DRIVE_FOLDER);
-  if (folders.hasNext()) {
-    Logger.log('✅ Drive access OK — found folder: ' + DRIVE_FOLDER);
+// ══════════════════════════════════════════════════════════════
+//  LOGIN / LOGOUT
+// ══════════════════════════════════════════════════════════════
+async function doLogin(){
+  const email=document.getElementById('l-email').value.trim().toLowerCase();
+  const pass =document.getElementById('l-pass').value;
+  const errEl=document.getElementById('login-err');
+  const btn  =document.getElementById('login-btn');
+  errEl.style.display='none';
+  if(!email||!pass){ errEl.textContent='Enter your email and password.'; errEl.style.display='block'; return; }
+  btn.textContent='Checking...'; btn.disabled=true;
+  try{
+    const pw_hash=await hashPw(pass);
+    // Login via Supabase — fetch by email, verify hash client-side
+    const users=await sbGet('/rest/v1/users?email=eq.'+encodeURIComponent(email)+'&limit=1');
+    const found=users&&users.length?users[0]:null;
+    const user=(!found)?{error:'Invalid email or password'}:
+               (!found.active)?{error:'Account disabled'}:
+               (found.pw_hash!==pw_hash)?{error:'Invalid email or password'}:
+               found;
+    btn.textContent='LOGIN →'; btn.disabled=false;
+    if(user.error||!user.email){
+      errEl.textContent=user.error||'Invalid email or password.';
+      errEl.style.display='block'; return;
+    }
+    if(user.role==='admin'){
+      CU={...user,location_code:'ALL',machine_type:null,location_full:'ALL LOCATIONS'};
+      isAdmin=true; isSupervisor=false; enterApp(); return;
+    }
+    if(user.role==='supervisor'){
+      CU={...user,location_code:'ALL',machine_type:null,location_full:'ALL LOCATIONS'};
+      isAdmin=false; isSupervisor=true; enterApp(); return;
+    }
+    const locs=user.allowed_locations||[];
+    if(!locs.length){ errEl.textContent='No locations assigned. Contact admin.'; errEl.style.display='block'; return; }
+    await loadLocs();
+    pendingUser=user;
+    if(locs.length===1){ doLoginWithLoc(user,locs[0]); return; }
+    document.getElementById('login-main').style.display='none';
+    document.getElementById('login-loc-wrap').style.display='block';
+    document.getElementById('login-welcome').textContent='Welcome, '+user.name;
+    document.getElementById('login-loc-list').innerHTML=locs.map(code=>{
+      const loc=DB.locations.find(l=>l.code===code);
+      const mt=loc?.machine_type||1;
+      return '<div class="loc-pill-opt" onclick="doLoginWithLoc(pendingUser,\''+code+'\')">'
+        +'<span style="font-family:var(--mono);font-weight:700;color:var(--t1);width:44px;">'+code+'</span>'
+        +'<span style="flex:1;">'+(loc?.name||code)+'</span>'
+        +'<span class="pill '+(mt===1?'pill-t1':'pill-t2')+'">'+(mt===1?'T1':'T2')+'</span>'
+        +'</div>';
+    }).join('');
+  }catch(err){
+    btn.textContent='LOGIN →'; btn.disabled=false;
+    errEl.textContent='Connection error: '+err.message;
+    errEl.style.display='block';
+  }
+}
+
+function backToLoginForm(){
+  document.getElementById('login-main').style.display='block';
+  document.getElementById('login-loc-wrap').style.display='none';
+  pendingUser=null;
+}
+
+function doLoginWithLoc(user,code){
+  const loc=DB.locations.find(l=>l.code===code);
+  CU={...user,location_code:code,machine_type:loc?.machine_type||1,location_full:loc?.full_name||code};
+  isAdmin=false; isSupervisor=false;
+  document.getElementById('login-main').style.display='block';
+  document.getElementById('login-loc-wrap').style.display='none';
+  document.getElementById('l-email').value='';
+  document.getElementById('l-pass').value='';
+  pendingUser=null;
+  enterApp();
+}
+
+async function enterApp(){
+  // Hide scan view immediately for admin (prevent flash)
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+  document.getElementById('loginScreen').style.display='none';
+  document.getElementById('app').style.display='flex';
+  document.getElementById('sb-name').textContent=CU.name||CU.email;
+  document.getElementById('sb-loc').textContent=CU.location_full||CU.location_code;
+  document.getElementById('tb-loc').textContent=CU.location_code;
+  document.getElementById('tb-date').textContent=new Date().toLocaleDateString('en-IN');
+  document.getElementById('nav-op').style.display=(!isAdmin&&!isSupervisor)?'block':'none';
+  document.getElementById('nav-adm').style.display=(isAdmin||isSupervisor)?'block':'none';
+  if(!isAdmin&&!isSupervisor){
+    const mt=myMT();
+    document.getElementById('sb-machine').innerHTML=mt===1?'<span class="pill pill-t1">TYPE 1 EXCEL</span>':'<span class="pill pill-t2">TYPE 2 FOLDER</span>';
+    document.getElementById('tb-machine').innerHTML=mt===1?'<span class="pill pill-t1">T1</span>':'<span class="pill pill-t2">T2</span>';
+  }
+  saveSession();
+  showLoad('Loading...');
+  await Promise.all([loadLocs(), loadRecords(), loadAwbToday(), isAdmin?loadUsers():Promise.resolve()]);
+  hideLoad();
+  if(isAdmin||isSupervisor){
+    const adInp=document.getElementById('dash-date');
+    if(adInp) adInp.value=todayStr();
+    show('v-adash');
+    populateLocFilter();
+    renderDash();
   } else {
-    Logger.log('✅ Drive access OK — folder not found yet, will be created on first upload.');
+    show('v-scan');
+    updateStats();
+    updateBanner();
   }
 }
 
-// ── SETUP (run once) ──────────────────────────────────────────
-function setupAllSheets() {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-
-  function makeSheet(name, headers, color) {
-    var sh = ss.getSheetByName(name) || ss.insertSheet(name);
-    if (sh.getLastRow() === 0) {
-      sh.appendRow(headers);
-      sh.getRange(1, 1, 1, headers.length)
-        .setFontWeight('bold').setBackground(color || '#1a73e8').setFontColor('white');
-      sh.setFrozenRows(1);
-    }
-    return sh;
-  }
-
-  makeSheet(SH_USERS,   ['id','email','name','role','pw_hash','allowed_locations','active','created_at']);
-  makeSheet(SH_LOCS,    ['id','code','name','machine_type','active','created_at']);
-  makeSheet(SH_RECORDS, ['id','awb','scanned_at','location_code','machine_type','operator_email',
-    'result','tamper_status','shoe_box','remarks','seq_num',
-    'xray_image_url','image_linked','label_image_url','front_image_url',
-    'back_image_url','product_name','product_category'], '#1a73e8');
-  makeSheet(SH_AWB,     ['id','awb','product_name','product_category','upload_date','uploaded_by']);
-  makeSheet(SH_SCANS,   ['AWB','Date','Time','Location','Product Name','Category',
-    'X-Ray Result','Tamper Status','Shoe Box','Remarks','Operator',
-    'X-Ray Image','Label Image','Front Image','Back Image'], '#0f9d58');
-
-  SpreadsheetApp.getUi().alert('✅ Sheets ready! Now deploy as Web App → Anyone → Deploy');
+function doLogout(){
+  if(camStream)stopCam();
+  CU=null; isAdmin=false; isSupervisor=false;
+  clearSession();
+  document.getElementById('app').style.display='none';
+  document.getElementById('loginScreen').style.display='flex';
+  document.getElementById('l-email').value='';
+  document.getElementById('l-pass').value='';
+  document.getElementById('login-err').style.display='none';
+  document.getElementById('login-main').style.display='block';
+  document.getElementById('login-loc-wrap').style.display='none';
 }
 
 // ══════════════════════════════════════════════════════════════
-//  ADHERENCE — count scans per location per day from GSheet
+//  DATA LOADERS — all from Supabase directly (fast)
 // ══════════════════════════════════════════════════════════════
-function getAdherence(p) {
-  var days = (p.days || '').split(',').filter(Boolean);
-  if (!days.length) return { counts: {} };
-
-  var d = sheetRows(SH_RECORDS);
-  var counts = {};
-
-  d.rows.forEach(function(row) {
-    var obj = rowToObj(d.headers, row);
-    var loc  = String(obj.location_code || '').trim();
-    var date = String(obj.scanned_at || obj.id || '').substring(0, 10);
-    if (!loc || !date) return;
-    if (days.indexOf(date) === -1) return;
-    var key = loc + '_' + date;
-    counts[key] = (counts[key] || 0) + 1;
-  });
-
-  return { counts: counts };
-}
-
-// ══════════════════════════════════════════════════════════════
-//  5 AM / 2 PM SYNC — Supabase → GSheet (auto, twice a day)
-//  FIXED: this used to only write the Records tab, never Scans —
-//  so the Scans tab looked empty even when sync worked fine.
-//  Now writes both, and logs every run to a SyncLog tab so you can
-//  actually see whether/when it ran without digging through the
-//  Apps Script Executions console.
-// ══════════════════════════════════════════════════════════════
-function dailyEodSync(label) {
-  label = label || 'manual';
-  Logger.log('=== Sync started [' + label + ']: ' + new Date().toISOString() + ' ===');
-  var syncedCount = 0;
-  var errorMsg = '';
-  try {
-    var res = UrlFetchApp.fetch(SUPABASE_URL + '/rest/v1/scans?synced_to_sheet=eq.false&order=scanned_at.asc&limit=5000', {
-      method: 'GET', headers: SB_HEADERS, muteHttpExceptions: true
-    });
-
-    if (res.getResponseCode() !== 200) {
-      errorMsg = 'Fetch error: ' + res.getContentText();
-      Logger.log(errorMsg);
-      logSyncRun(label, 0, errorMsg);
-      return { ok: false, error: errorMsg };
+async function loadLocs(){
+  const cached=sessionStorage.getItem('cv_locs_v2');
+  if(cached){ try{ DB.locations=JSON.parse(cached); if(DB.locations.length>0) return; }catch(e){} }
+  // Try Supabase first (fast)
+  try{
+    const data=await sbGet('/rest/v1/locations?active=eq.true&order=code.asc');
+    if(Array.isArray(data)&&data.length>0){
+      DB.locations=data.map(function(l){return Object.assign({},l,{full_name:l.code+' – '+l.name});});
+      try{ sessionStorage.setItem('cv_locs_v2',JSON.stringify(DB.locations)); }catch(e){}
+      return;
     }
+  }catch(e){ console.warn('loadLocs SB:',e.message); }
+  // Fallback to GAS (GSheet is source of truth)
+  try{
+    const data=await gsGet({action:'locations'});
+    DB.locations=Array.isArray(data)?data.map(function(l){return Object.assign({},l,{full_name:l.code+' – '+l.name});}):[];
+    try{ sessionStorage.setItem('cv_locs_v2',JSON.stringify(DB.locations)); }catch(e){}
+  }catch(e){ console.warn('loadLocs GAS:',e.message); }
+}
+async function loadRecords(){
+  const today=todayStr();
+  if(isAdmin||isSupervisor){
+    // Admin: Supabase (live unsynced) + GSheet (already synced) merged
+    const sbData=await sbGet('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00Z&order=scanned_at.desc&limit=2000');
+    const sbRecs=Array.isArray(sbData)?sbData:[];
 
-    var rows = JSON.parse(res.getContentText());
-    if (!rows || rows.length === 0) {
-      Logger.log('No unsynced rows. Proceeding to cleanup.');
-    } else {
-      syncedCount = rows.length;
-      Logger.log('Rows to sync: ' + rows.length);
+    // Load today's synced records from GSheet via GAS
+    let gsRecs=[];
+    try{
+      const gsData=await gsGet({action:'records',date:today});
+      console.log('GSheet returned', Array.isArray(gsData)?gsData.length:0, 'records for', today);
+      // Normalize GSheet field names to match Supabase schema
+      gsRecs=Array.isArray(gsData)?gsData.map(function(r){
+        return {
+          id:           r.id||'',
+          awb:          r.awb||r.AWB||'',
+          scanned_at:   r.scanned_at||r.Date||'',
+          location_code:r.location_code||r.Location||'',
+          operator_email:r.operator_email||r.Operator||'',
+          result:       r.result||r['X-Ray Result']||'',
+          tamper_status:r.tamper_status||r['Tamper Status']||'',
+          shoe_box:     r.shoe_box||r.Shoe||'',
+          remarks:      r.remarks||r.Remarks||'',
+          xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+          product_name: r.product_name||r['Product Name']||'',
+          product_category:r.product_category||r.Category||'',
+          image_linked: !!(r.xray_image_url||r['X-Ray Image']||''),
+          synced_to_sheet:true
+        };
+      }):[];
+    }catch(e){ console.warn('GSheet load skipped:',e.message); }
 
-      // Records tab
-      var sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SH_RECORDS);
-      var newRows = rows.map(function(r) {
-        return [
-          r.id, r.awb, r.scanned_at, r.location_code, r.machine_type,
-          r.operator_email, r.result, r.tamper_status, r.shoe_box, r.remarks,
-          r.seq_num || '', r.xray_image_url || '', r.image_linked ? 'true' : 'false',
-          r.label_image_url || '', r.front_image_url || '', r.back_image_url || '',
-          r.product_name || '', r.product_category || ''
-        ];
+    // Merge — dedupe by id first, then awb+time
+    const merged=[...sbRecs];
+    const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
+    gsRecs.forEach(function(gr){
+      if(gr.id&&sbIds.has(gr.id)) return; // already in Supabase set
+      const exists=merged.find(function(r){
+        return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
       });
-      sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+      if(!exists) merged.push(gr);
+    });
+    // Sort by time desc
+    DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
+  } else {
+    // Operator: check sessionStorage for post-EOS records first
+    const cacheKey='cv_synced_records_'+today+'_'+myLoc();
+    const cached=sessionStorage.getItem(cacheKey);
+    let syncedRecs=[];
+    if(cached){ try{ syncedRecs=JSON.parse(cached); }catch(e){} }
+    // Then get live unsynced from Supabase
+    const data=await sbGet('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00Z&order=scanned_at.desc&limit=1000');
+    const liveRecs=Array.isArray(data)?data.map(function(r){return Object.assign({},r,{image_linked:r.image_linked||false});}):[];
+    // Merge live + cached synced (live takes priority, no duplicates)
+    const merged=[...liveRecs];
+    syncedRecs.forEach(function(sr){
+      const exists=merged.find(function(r){ return r.id===sr.id; });
+      if(!exists) merged.push(sr);
+    });
+    DB.records=merged.sort(function(a,b){ return new Date(b.scanned_at)-new Date(a.scanned_at); });
+  }
+}
+async function loadUsers(){
+  const data=await sbGet('/rest/v1/users?order=email.asc');
+  DB.users=Array.isArray(data)?data:[];
+}
+async function loadAwbToday(){
+  const key='cv_awb_v2_'+todayStr();
+  const cached=sessionStorage.getItem(key);
+  if(cached){ try{ DB.awbMaster=JSON.parse(cached); return; }catch(e){} }
+  const today=todayStr();
+  const data=await sbGet('/rest/v1/awb_master?upload_date=eq.'+today+'&order=awb.asc');
+  DB.awbMaster={};
+  if(Array.isArray(data)) data.forEach(r=>{
+    DB.awbMaster[(r.awb||'').toUpperCase()]={productName:r.product_name,category:r.product_category};
+  });
+  try{ sessionStorage.setItem(key,JSON.stringify(DB.awbMaster)); }catch(e){}
+}
 
-      // Scans tab — THIS WAS MISSING. eosSync (operator End-of-Shift) always
-      // wrote here; the 5AM/2PM/Force-Sync path never did, until now.
-      var scansSheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SH_SCANS);
-      if (scansSheet) {
-        var scanRows = rows.map(function(r) {
-          var d = new Date(r.scanned_at);
-          return [
-            r.awb,
-            Utilities.formatDate(d, 'Asia/Kolkata', 'yyyy-MM-dd'),
-            Utilities.formatDate(d, 'Asia/Kolkata', 'HH:mm:ss'),
-            r.location_code, r.product_name || '', r.product_category || '',
-            r.result, r.tamper_status, r.shoe_box, r.remarks || '',
-            r.operator_email, r.xray_image_url || '',
-            r.label_image_url || '', r.front_image_url || '', r.back_image_url || ''
-          ];
-        });
-        scansSheet.getRange(scansSheet.getLastRow() + 1, 1, scanRows.length, scanRows[0].length).setValues(scanRows);
+// ══════════════════════════════════════════════════════════════
+//  SCAN — FAST SAVE (save immediately, upload images in background)
+// ══════════════════════════════════════════════════════════════
+function onAwbChange(){
+  const awb=document.getElementById('awb-inp').value.trim().toUpperCase();
+  if(myMT()===2){
+    document.getElementById('t2-seq') && (document.getElementById('t2-seq').style.display='block');
+  }
+  const chip=document.getElementById('awb-chip');
+  if(awb&&DB.awbMaster[awb]){
+    const p=DB.awbMaster[awb];
+    document.getElementById('awb-prod').textContent=p.productName;
+    document.getElementById('awb-cat').textContent='['+p.category+']';
+    chip.style.display='block';
+  } else chip.style.display='none';
+}
+
+function updateCameraReq(){
+  const result=document.querySelector('input[name="xr"]:checked')?.value||'';
+  const tamper=document.querySelector('input[name="tr"]:checked')?.value||'';
+  const need=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
+  document.getElementById('cam-notice').style.display=need?'block':'none';
+  document.getElementById('cam-badge').innerHTML=need?'<span class="pill pill-err">IMAGES REQUIRED</span>':'';
+}
+
+async function submitScan(){
+  const awb   =document.getElementById('awb-inp').value.trim().toUpperCase();
+  const result=document.querySelector('input[name="xr"]:checked')?.value;
+  const tamper=document.querySelector('input[name="tr"]:checked')?.value||'';
+  if(!awb)   { toast('Enter AWB number','err'); return; }
+  if(!result){ toast('Select X-Ray result','err'); return; }
+  const needImg=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
+  if(needImg&&captured.filter(Boolean).length<3){
+    toast('Capture all 3 images ('+captured.filter(Boolean).length+'/3)','err'); return;
+  }
+  const remarks=document.getElementById('remarks').value.trim();
+  const product=DB.awbMaster[awb]||null;
+  // seq_num: find highest existing seq and add 1 (handles reloads correctly)
+  const _todayRecs=myToday();
+  const _maxSeq=_todayRecs.reduce((m,r)=>Math.max(m,r.seq_num||0),0);
+  const seq=myMT()===2?_maxSeq+1:null;
+
+  // ── 1000 SCAN LIMIT WARNING ───────────────────────────────
+  const todayCount=myToday().length;
+  if(todayCount>=SCAN_LIMIT){
+    toast('⚠️ 2000 scan limit reached — please go to END OF SHIFT to upload images and sync','warn');
+    return;
+  }
+  if(todayCount===SCAN_LIMIT-1){
+    toast('⚠️ This is scan #2000 — after saving, proceed to END OF SHIFT','warn');
+  }
+
+  // ── FAST SAVE: write directly to Supabase ────────────────
+  const btn=document.getElementById('save-btn');
+  btn.disabled=true; btn.textContent='SAVING...';
+
+  const scanPayload={
+    awb,
+    location_code:myLoc(), machine_type:myMT(),
+    operator_email:CU.email, result, tamper_status:tamper,
+    shoe_box:awb.startsWith('R')?(document.querySelector('input[name="shoe"]:checked')?.value||''):'N/A',
+    remarks, seq_num:seq,
+    product_name:product?.productName||'', product_category:product?.category||'',
+    synced_to_sheet:false
+  };
+
+  let saved;
+  try{
+    saved=await sbPost('scans', scanPayload);
+  }catch(e){
+    btn.disabled=false; btn.textContent='SAVE RECORD';
+    toast('Save failed: '+e.message,'err'); return;
+  }
+  btn.disabled=false; btn.textContent='SAVE RECORD';
+  if(!saved||!saved.id){ toast('Save failed — no response from Supabase','err'); return; }
+
+  // Add to local DB immediately for instant UI update
+  const localRec={
+    id:saved.id,
+    awb, scanned_at:saved.scanned_at||new Date().toISOString(),
+    location_code:myLoc(), machine_type:myMT(),
+    operator_email:CU.email, result, tamper_status:tamper,
+    shoe_box:scanPayload.shoe_box, remarks, seq_num:seq,
+    product_name:product?.productName||'', product_category:product?.category||'',
+    image_linked:false, xray_image_url:'', label_image_url:'', front_image_url:'', back_image_url:''
+  };
+  DB.records.unshift(localRec);
+  toast('AWB '+awb+' saved'+(product?' · '+product.productName:''),'ok');
+  updateStats(); updateBanner(); clearScan();
+
+  // ── BACKGROUND IMAGE UPLOAD (non-blocking) ───────────────
+  if(needImg&&captured.filter(Boolean).length>0){
+    const recId=saved.id||localRec.id;
+    uploadImagesBackground(awb, recId, captured.slice());
+  }
+}
+
+async function uploadImagesBackground(awb, recId, imgs){
+  // Upload silently — prevent logout until done
+  window._uploading = (window._uploading||0)+1;
+  const failedTypes=[];
+  try{
+    const types=['label','front','back'];
+    const urls=['','',''];
+    for(let i=0;i<3;i++){
+      if(!imgs[i]) continue;
+      const fn=todayStr().replace(/-/g,'')+'_'+awb+'_'+types[i]+'.jpg';
+      let res=null;
+
+      // Try up to 3 times with a short pause between attempts before giving up
+      for(let attempt=0;attempt<3;attempt++){
+        try{
+          const blob=await(await fetch(imgs[i])).blob();
+          const b64=await blobToB64(blob);
+          res=await gsPost({
+            action:'uploadImageDrive',
+            fileName:fn, base64:b64, mimeType:'image/jpeg',
+            location:myLoc(), awb, type:types[i], scanId:recId
+          });
+        }catch(err){ res=null; }
+        if(res?.url) break;
+        if(attempt<2) await new Promise(r=>setTimeout(r,2000));
       }
 
-      var ids = rows.map(function(r) { return r.id; });
-      sbPatchByIdsBatched(ids, { synced_to_sheet: true });
-      Logger.log('Marked ' + ids.length + ' rows as synced.');
+      if(res?.url){
+        urls[i]=res.url;
+      }else{
+        // Every retry failed — don't lose the photo. Save it locally so
+        // there's always a physical copy, even if Drive is unreachable.
+        failedTypes.push(types[i]);
+        try{
+          const a=document.createElement('a');
+          a.href=imgs[i];
+          a.download=fn;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }catch(dlErr){ console.warn('Local save fallback failed:',dlErr.message); }
+      }
     }
-
-    // ── CLEANUP PAUSED (2026-07-06, on request) ──────────────────
-    // Auto-deleting synced rows from Supabase after 72h is disabled for
-    // now while sheet duplication is being sorted out — don't want to
-    // risk losing anything while the data's being double-checked.
-    // To re-enable later: uncomment the two lines below.
-    //
-    // var cutoff = new Date();
-    // cutoff.setHours(cutoff.getHours() - 72);
-    // var cutoffStr = cutoff.toISOString();
-    // var delRes = sbDelete('/rest/v1/scans?synced_to_sheet=eq.true&scanned_at=lt.' + cutoffStr);
-    // Logger.log('Cleanup response: ' + delRes.getResponseCode());
-    Logger.log('Cleanup skipped — paused on request, no rows deleted from Supabase.');
-
-    buildAdherenceSheet();
-
-    Logger.log('=== Sync complete [' + label + ']: ' + syncedCount + ' rows ===');
-    logSyncRun(label, syncedCount, '');
-    return { ok: true, synced: syncedCount };
-
-  } catch(e) {
-    errorMsg = e.toString();
-    Logger.log('dailyEodSync error [' + label + ']: ' + errorMsg);
-    logSyncRun(label, syncedCount, errorMsg);
-    return { ok: false, error: errorMsg };
-  }
+    // Update record with whatever image URLs did succeed
+    const r=DB.records.find(x=>x.id===recId);
+    if(r){
+      r.label_image_url=urls[0]; r.front_image_url=urls[1]; r.back_image_url=urls[2];
+      r.xray_image_url=urls[0]||urls[1]||urls[2];
+      r.image_linked = urls.some(u=>u); // only mark linked if at least one actually made it to Drive
+    }
+    if(failedTypes.length){
+      toast('⚠️ '+awb+': '+failedTypes.length+' image(s) saved to your Downloads folder — Drive upload failed. Show admin.','err');
+    }else{
+      toast('Images uploaded for '+awb,'ok');
+    }
+  }catch(e){ console.warn('Image upload error:',e.message); }
+  window._uploading = Math.max(0,(window._uploading||1)-1);
 }
 
-// Writes one row per sync attempt to a SyncLog tab — check this sheet
-// any time you want to know whether the 5AM/2PM sync actually ran,
-// without opening the Apps Script Executions console.
-function logSyncRun(label, count, error) {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  var sh = ss.getSheetByName('SyncLog');
-  if (!sh) {
-    sh = ss.insertSheet('SyncLog');
-    sh.appendRow(['timestamp_ist', 'trigger', 'rows_synced', 'status', 'error']);
-    sh.getRange(1, 1, 1, 5).setFontWeight('bold').setBackground('#1a73e8').setFontColor('white');
-    sh.setFrozenRows(1);
-  }
-  var ts = Utilities.formatDate(new Date(), 'Asia/Kolkata', "yyyy-MM-dd'T'HH:mm:ss'+05:30'");
-  sh.appendRow([ts, label, count, error ? 'ERROR' : 'OK', error]);
-}
-
-// Two separate trigger handlers so SyncLog shows which one actually
-// fired — both just call the same shared sync logic with a label.
-function trigger5amSync() { dailyEodSync('5am'); }
-function trigger2pmSync() { dailyEodSync('2pm'); }
-
-// ══════════════════════════════════════════════════════════════
-//  BUILD ADHERENCE SHEET — runs after daily sync
-// ══════════════════════════════════════════════════════════════
-function buildAdherenceSheet() {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  var sh = ss.getSheetByName('Adherence') || ss.insertSheet('Adherence');
-
-  var days = [];
-  for (var i = 9; i >= 0; i--) {
-    var d = new Date(); d.setDate(d.getDate() - i);
-    days.push(Utilities.formatDate(d, 'Asia/Kolkata', 'yyyy-MM-dd'));
-  }
-
-  var rec = sheetRows(SH_RECORDS);
-  var locs = sheetRows(SH_LOCS).rows.map(function(r) { return r[1]; }).filter(Boolean).sort();
-
-  var countMap = {};
-  rec.rows.forEach(function(row) {
-    var obj = rowToObj(rec.headers, row);
-    var loc  = String(obj.location_code || '').trim();
-    var date = String(obj.scanned_at || '').substring(0, 10);
-    if (!loc || !date) return;
-    if (days.indexOf(date) === -1) return;
-    var key = loc + '_' + date;
-    countMap[key] = (countMap[key] || 0) + 1;
+async function blobToB64(blob){
+  return new Promise(r=>{
+    const fr=new FileReader();
+    fr.onload=e=>r(e.target.result.split(',')[1]);
+    fr.readAsDataURL(blob);
   });
+}
 
-  sh.clearContents();
-  var header = ['Location'].concat(days).concat(['Total']);
-  sh.appendRow(header);
-  sh.getRange(1, 1, 1, header.length).setFontWeight('bold').setBackground('#1a73e8').setFontColor('white');
+function clearScan(){
+  document.getElementById('awb-inp').value='';
+  document.querySelectorAll('input[name="tr"],input[name="shoe"]').forEach(r=>r.checked=false);
+  // Reset result to ORIGINAL (default)
+  const origRadio=document.querySelector('input[name="xr"][value="ORIGINAL"]');
+  if(origRadio){ origRadio.checked=true; updateCameraReq(); }
+  document.querySelectorAll('input[name="xr"]:not([value="ORIGINAL"])').forEach(r=>r.checked=false);
+  document.getElementById('remarks').value='';
+  document.getElementById('cam-notice').style.display='none';
+  document.getElementById('cam-badge').innerHTML='';
+  document.getElementById('awb-chip').style.display='none';
+  captured=[null,null,null];
+  [0,1,2].forEach(i=>{
+    const s=document.getElementById('th'+i);
+    if(s) s.innerHTML='<span style="font-size:18px;">'+(i===0?'🏷':i===1?'⬆':'⬇')+'</span><span>'+(i===0?'LABEL':i===1?'FRONT':'BACK')+'</span>';
+  });
+}
 
-  var dayTotals = {}; days.forEach(function(d) { dayTotals[d] = 0; });
-  var grandTotal = 0;
+function updateStats(){
+  const r=myToday();
+  document.getElementById('ss-today').textContent  =r.length;
+  document.getElementById('ss-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
+  document.getElementById('ss-pending').textContent=r.filter(x=>!x.image_linked).length;
+  document.getElementById('ss-linked').textContent =r.filter(x=>x.image_linked).length;
+  // Scan limit warning badge
+  if(r.length>=SCAN_LIMIT*0.9){
+    const pct=Math.round((r.length/SCAN_LIMIT)*100);
+    const el=document.getElementById('scan-limit-warn');
+    if(el){ el.style.display='flex'; el.textContent='⚠️ '+r.length+'/'+SCAN_LIMIT+' scans — proceed to EOS'; }
+  } else {
+    const el=document.getElementById('scan-limit-warn');
+    if(el) el.style.display='none';
+  }
+}
+function updateBanner(){
+  const r=myToday(), p=r.filter(x=>!x.image_linked).length;
+  const b=document.getElementById('recon-banner');
+  if(b){ if(p>0&&r.length>0){ b.style.display='flex'; document.getElementById('recon-sub') && (document.getElementById('recon-sub').textContent=p+' AWBs waiting'); } else b.style.display='none'; }
+}
 
-  locs.forEach(function(loc) {
-    var row = [loc];
-    var rowTotal = 0;
-    days.forEach(function(d) {
-      var cnt = countMap[loc + '_' + d] || 0;
-      row.push(cnt); rowTotal += cnt; dayTotals[d] += cnt;
+// ══════════════════════════════════════════════════════════════
+//  CAMERA
+// ══════════════════════════════════════════════════════════════
+async function startCam(){
+  try{ camStream=await navigator.mediaDevices.getUserMedia({video:true});
+    const v=document.getElementById('cam-video'); v.srcObject=camStream; v.style.display='block';
+    document.getElementById('cam-inactive').style.display='none';
+  }catch(e){ toast('Camera access denied','err'); }
+}
+function stopCam(){ if(camStream){camStream.getTracks().forEach(t=>t.stop());camStream=null;}
+  document.getElementById('cam-video').style.display='none';
+  document.getElementById('cam-inactive').style.display='flex'; }
+function capPhoto(slot){
+  const v=document.getElementById('cam-video');
+  if(!camStream||v.style.display==='none'){toast('Start camera first','err');return;}
+  const c=document.getElementById('cam-canvas');
+  c.width=v.videoWidth; c.height=v.videoHeight;
+  c.getContext('2d').drawImage(v,0,0);
+  const d=c.toDataURL('image/jpeg',.85);
+  captured[slot]=d; setThumb(slot,d);
+  toast(['Label','Front','Back'][slot]+' captured!','ok');
+}
+function loadImg(input,slot){
+  const f=input.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=e=>{ captured[slot]=e.target.result; setThumb(slot,e.target.result); };
+  r.readAsDataURL(f);
+}
+function setThumb(slot,data){
+  const s=document.getElementById('th'+slot);
+  if(s) s.innerHTML='<img src="'+data+'" style="width:100%;height:60px;object-fit:cover;border-radius:2px;"><span style="font-size:10px;">'+(slot===0?'LABEL':slot===1?'FRONT':'BACK')+'</span>';
+}
+
+// ══════════════════════════════════════════════════════════════
+//  END OF SHIFT
+// ══════════════════════════════════════════════════════════════
+// ── AUTO SYNC on End Shift click ─────────────────────────────
+async function triggerAutoSync(){
+  showLoad('Syncing to Google Sheet...');
+  try{
+    const res=await gsPost({action:'eosSync',location_code:myLoc(),operator_email:CU.email});
+    hideLoad();
+    if(res&&res.error){ toast('Sync failed: '+res.error,'err'); return; }
+    const synced = res&&res.synced ? res.synced : myToday().length;
+    toast('✅ Shift complete! '+synced+' records saved to sheet.','ok');
+    DB.records=DB.records.map(function(r){ return Object.assign({},r,{synced_to_sheet:true}); });
+    try{ sessionStorage.setItem('cv_synced_records_'+todayStr()+'_'+myLoc(), JSON.stringify(DB.records)); }catch(e){}
+    updateStats(); updateBanner(); renderShift();
+  }catch(e){
+    hideLoad();
+    // GAS error is non-fatal — 5AM auto-sync will catch it
+    toast('⚠️ Auto-sync failed. Data is safe in Supabase and will sync at 5AM.','err');
+  }
+}
+
+// ── EOS SUBMIT — sync Supabase → GSheet via GAS ─────────────
+async function eosSubmit(){
+  const pending=myToday().filter(r=>!r.image_linked).length;
+  if(pending>0){
+    const go=confirm(pending+' records still have no image linked. Submit anyway?');
+    if(!go) return;
+  }
+  showLoad('Syncing to Google Sheet...');
+  try{
+    const res=await gsPost({action:'eosSync',location_code:myLoc(),operator_email:CU.email});
+    hideLoad();
+    if(res.error){ toast('Sync failed: '+res.error,'err'); return; }
+    toast('✅ Shift submitted! '+res.synced+' records synced to sheet.','ok');
+    // Keep records in memory for the rest of the day — just mark them as synced
+    DB.records=DB.records.map(function(r){ return Object.assign({},r,{synced_to_sheet:true}); });
+    // Cache in sessionStorage so page refresh also shows them
+    try{ sessionStorage.setItem('cv_synced_records_'+todayStr()+'_'+myLoc(), JSON.stringify(DB.records)); }catch(e){}
+    updateStats(); updateBanner(); renderShift();
+  }catch(e){
+    hideLoad();
+    toast('Sync error: '+e.message,'err');
+  }
+}
+
+function renderShift(){
+  const mt=myMT();
+  document.getElementById('eos-t1').style.display=mt===1?'block':'none';
+  document.getElementById('eos-t2').style.display=mt===2?'block':'none';
+  const r=myToday();
+  document.getElementById('eos-total').textContent  =r.length;
+  document.getElementById('eos-pending').textContent=r.filter(x=>!x.image_linked).length;
+  document.getElementById('eos-linked').textContent =r.filter(x=>x.image_linked).length;
+  document.getElementById('eos-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
+  if(mt===2) renderT2();
+  renderEosLinked();
+}
+function renderT2(){
+  const r=myToday().filter(x=>!x.image_linked).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  document.getElementById('t2-body').innerHTML=r.length===0
+    ?'<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:12px;">All linked</td></tr>'
+    :r.map(rec=>'<tr><td style="font-family:var(--mono);color:var(--t2);">#'+rec.seq_num+'</td>'
+      +'<td class="tc-awb">'+rec.awb+'</td>'
+      +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
+      +'<td>'+resultPill(rec.result)+'</td>'
+      +'<td><span class="pill pill-warn">⏳</span></td></tr>').join('');
+}
+function renderEosLinked(){
+  const r=myToday().filter(x=>x.image_linked||x.xray_image_url);
+  document.getElementById('eos-linked-body').innerHTML=r.length===0
+    ?'<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:12px;">No linked records yet</td></tr>'
+    :r.map((rec,i)=>'<tr>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td class="tc-awb">'+rec.awb+'</td>'
+      +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
+      +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
+      +'<td>'+(rec.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewXray(this)" data-url="'+encodeURIComponent(rec.xray_image_url)+'">View</span>':'<span class="pill pill-warn">⏳</span>')+'</td>'
+      +'<td>'+resultPill(rec.result)+'</td>'
+      +'<td style="font-size:12px;">'+(rec.tamper_status||'–')+'</td></tr>').join('');
+}
+
+// T1 Excel matching
+function xlDrop(e){e.preventDefault();document.getElementById('xl-drop').classList.remove('drag');const f=e.dataTransfer.files[0];if(f)processXl(f);}
+function xlUpload(input){const f=input.files[0];if(f)processXl(f);input.value='';}
+async function processXl(file){
+  document.getElementById('xl-prog').style.display='block';
+  const awbCol=document.getElementById('xl-awb').value.trim()||'AWB';
+  const imgCol=document.getElementById('xl-img').value.trim()||'ImagePath';
+  const ab=await file.arrayBuffer();
+  const wb=XLSX.read(ab,{type:'array'});
+  const data=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{raw:false});
+  const today=myToday().filter(r=>!r.image_linked);
+  const matches=[];
+  data.forEach(row=>{
+    const a=(row[awbCol]||'').toString().trim().toUpperCase();
+    const img=(row[imgCol]||'').toString().trim();
+    const rec=today.find(r=>r.awb===a);
+    matches.push({awb:a,img,rec,ok:!!rec});
+  });
+  pendingXl=matches;
+  const ok=matches.filter(m=>m.ok).length;
+  document.getElementById('xl-match-list').innerHTML=
+    '<div style="display:flex;gap:8px;margin-bottom:8px;font-family:var(--mono);font-size:11px;">'
+    +'<span class="pill pill-ok">Matched: '+ok+'</span>'
+    +'<span class="pill pill-dim">Total: '+data.length+'</span></div>'
+    +matches.slice(0,10).map(m=>'<div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(28,58,85,.3);font-size:12px;">'
+    +'<span style="font-family:var(--mono);color:'+(m.ok?'var(--t1)':'var(--danger)')+';">'+m.awb+'</span>'
+    +'<span style="color:'+(m.ok?'var(--success)':'var(--text3)')+';">'+(m.ok?'Matched':'Not found')+'</span></div>').join('');
+  document.getElementById('xl-result').style.display='block';
+  document.getElementById('xl-prog').style.display='none';
+}
+async function applyExcel(){
+  const matches=pendingXl.filter(m=>m.ok&&m.rec&&m.img);
+  if(!matches.length){toast('No matches','err');return;}
+  showLoad('Saving '+matches.length+' links...');
+  for(const m of matches){
+    await sbPatch('scans','awb=eq.'+encodeURIComponent(m.rec.awb)+'&location_code=eq.'+encodeURIComponent(myLoc()),{xray_image_url:m.img,image_linked:true});
+    const r=DB.records.find(x=>x.id===m.rec.id);
+    if(r){r.xray_image_url=m.img;r.image_linked=true;}
+  }
+  hideLoad();
+  document.getElementById('xl-result').style.display='none';
+  renderShift(); updateStats(); updateBanner();
+
+  const total2 = myToday().length;
+  const notif2 = document.createElement('div');
+  notif2.id = 'post-upload-notif';
+  notif2.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--success);border-radius:6px;padding:16px 20px;z-index:4000;display:flex;flex-direction:column;gap:10px;min-width:320px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);';
+  notif2.innerHTML =
+    '<div style="font-family:var(--mono);font-size:12px;color:var(--success);">&#x2705; '+matches.length+' image links saved!</div>'
+    +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">'+total2+' scans today</div>'
+    +'<div style="display:flex;gap:8px;margin-top:4px;">'
+    +'<button class="btn btn-t1" style="flex:1;" onclick="continueScanning()">&#x1F4E1; CONTINUE SCANNING</button>'
+    +'<button class="btn btn-ok" style="flex:1;" onclick="endShift()">&#x2705; END SHIFT</button>'
+    +'</div>';
+  const existing = document.getElementById('post-upload-notif');
+  if(existing) existing.remove();
+  document.body.appendChild(notif2);
+  setTimeout(()=>{ const el=document.getElementById('post-upload-notif'); if(el) el.remove(); }, 30000);
+}
+
+// T2 Folder matching
+function parseImageFilename(filename){
+  const name=filename.replace(/\.[^.]+$/,'').trim();
+  let awb=null, timestamp=null;
+  const parts=name.split(/[_\-]/);
+
+  // FORMAT 1: SF ClearView v2 saved file: YYYYMMDD_{AWB}_xray.jpg
+  // middle segment is AWB e.g. 20260627_SF3468876360AJI_xray
+  if(parts.length>=3&&/^\d{8}$/.test(parts[0])&&parts[parts.length-1].toLowerCase()==='xray'){
+    const mid=parts.slice(1,parts.length-1).join('_');
+    if(mid.length>=6) awb=mid.toUpperCase();
+  }
+
+  // FORMAT 2: Type A machines — AWB is FIRST segment before underscore
+  // e.g. SF2968439623F_2605040005437500.jpg  OR  R1674082812F_2606121344587600.jpg
+  if(!awb&&parts.length>=2){
+    const first=parts[0];
+    if(/^[A-Z]{1,4}\d{7,15}[A-Z]{0,4}$/i.test(first)&&first.length>=8&&!/^\d{8}$/.test(first)){
+      awb=first.toUpperCase();
+    }
+  }
+
+  if(!awb){
+    for(const part of parts){
+      // Standard AWB: optional letters, then digits, optional letters (BLR/GWT/NCRT)
+      if(/^[A-Z]{0,4}\d{7,15}[A-Z]{0,3}$/i.test(part)&&part.length>=8&&!/^\d{8}$/.test(part)&&!/^\d{6}$/.test(part)){
+        awb=part.toUpperCase(); break;
+      }
+      // KOT format: digits followed by letters e.g. 0200000A, 0100000A
+      if(/^\d{5,15}[A-Z]{1,4}$/i.test(part)&&part.length>=6&&!/^\d{8}$/.test(part)){
+        awb=part.toUpperCase(); break;
+      }
+    }
+  }
+
+  // TIMESTAMP from filename
+  let m=name.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+  if(m){const[,yyyy,mo,dd,hh,mi,ss]=m;if(+mo<=12&&+dd<=31&&+hh<=23){timestamp=new Date(+yyyy,+mo-1,+dd,+hh,+mi,+ss);}}
+  // Type A encoded timestamp: _YYMMDDHHMMss e.g. _2605040005437500
+  if(!timestamp&&parts.length>=2){
+    const enc=parts[parts.length-1];
+    if(/^\d{14,16}$/.test(enc)){
+      const yy=+enc.substring(0,2),mo=+enc.substring(2,4),dd=+enc.substring(4,6),
+            hh=+enc.substring(6,8),mi=+enc.substring(8,10),ss=+enc.substring(10,12);
+      if(mo>=1&&mo<=12&&dd>=1&&dd<=31&&hh<=23){
+        timestamp=new Date(2000+yy,mo-1,dd,hh,mi,ss);
+      }
+    }
+  }
+  if(!timestamp){m=name.match(/(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);if(m){const[,yy,mo,dd,hh,mi,ss]=m;if(+mo<=12&&+dd<=31&&+hh<=23){timestamp=new Date(2000+(+yy),+mo-1,+dd,+hh,+mi,+ss);}}}
+  return {awb,timestamp};
+}
+
+function fdDrop(e){e.preventDefault();document.getElementById('fd-drop').classList.remove('drag');const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));if(files.length)processFd(files);}
+function fdUpload(input){const files=Array.from(input.files).filter(f=>f.type.startsWith('image/'));if(files.length)processFd(files);input.value='';}
+
+async function processFd(files){
+  document.getElementById('fd-prog').style.display='block';
+  files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+  const unlinked=myToday().filter(r=>!r.image_linked&&r.image_linked!=='true');
+  const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
+  const used=new Set(), matches=[];
+  for(let i=0;i<files.length;i++){
+    document.getElementById('fd-prog-bar').style.width=Math.round(((i+1)/files.length)*80)+'%';
+    const file=files[i], d=await readFile(file), parsed=parseImageFilename(file.name);
+    let rec=null, method='', diffSec=null;
+    // Normalize AWB for comparison — strip spaces, uppercase both sides
+  if(parsed.awb){
+    const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===parsed.awb.trim().toUpperCase());
+    if(f){rec=f;method='AWB in name';diffSec=0;}
+  }
+    if(!rec&&parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best&&diff<=tolerance){best=diff;rec=r;method='Time match';diffSec=Math.round(diff);} } }
+    if(!rec&&parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best){best=diff;rec=r;method='Best('+Math.round(best/60)+'m)';diffSec=Math.round(best);} } }
+    if(!rec){ const fallback=unlinked.find(r=>!used.has(r.id)); if(fallback){rec=fallback;method='Sequential';} }
+    if(rec) used.add(rec.id);
+    matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed});
+  }
+  pendingFd=matches;
+  const ok=matches.filter(m=>m.ok).length;
+  const byAwb=matches.filter(m=>m.method==='AWB in name').length;
+  const byTime=matches.filter(m=>m.method==='Time match').length;
+  const byBest=matches.filter(m=>m.method?.startsWith('Best')).length;
+  document.getElementById('fd-match-list').innerHTML=
+    '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
+    +'<span class="pill pill-ok">✅ '+ok+'/'+unlinked.length+'</span>'
+    +(byAwb?'<span class="pill pill-t1">AWB: '+byAwb+'</span>':'')
+    +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
+    +(byBest?'<span class="pill pill-warn">Best: '+byBest+'</span>':'')
+    +'</div>'
+    +matches.map(m=>{
+      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.method?.startsWith('Best')?'var(--warn)':'var(--text3)';
+      return '<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(28,58,85,.3);font-size:11px;">'
+        +'<img src="'+m.data+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;">'
+        +'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+m.name+'</span>'
+        +'<span style="font-family:var(--mono);font-weight:700;color:'+(m.ok?'var(--success)':'var(--danger)')+';">'+(m.ok?m.rec.awb:'no match')+'</span>'
+        +(m.ok?'<span style="font-family:var(--mono);font-size:9px;color:'+tc+';">'+m.method+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>':'')
+        +'</div>';
+    }).join('');
+  document.getElementById('fd-result').style.display='block';
+  document.getElementById('fd-prog').style.display='none';
+}
+
+async function applyFolder(){
+  const matches=pendingFd.filter(m=>m.ok&&m.rec);
+  if(!matches.length){toast('No matches','err');return;}
+  showLoad('Uploading 0/'+matches.length+'...');
+  const linked=[];
+  const failed=[];
+  const BATCH=5;
+
+  async function uploadOne(m){
+    let blob;
+    if(m.file){ const d=await readFile(m.file); blob=await(await fetch(d)).blob(); }
+    else blob=await(await fetch(m.data)).blob();
+    const b64=await blobToB64(blob);
+    const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray.jpg';
+    return await gsPost({action:'uploadImageDrive',fileName:fn,base64:b64,mimeType:'image/jpeg',location:myLoc(),awb:m.rec.awb,scanId:m.rec.id});
+  }
+
+  for(let i=0;i<matches.length;i+=BATCH){
+    const batch=matches.slice(i,i+BATCH);
+    document.getElementById('loadingMsg').textContent='Uploading '+(Math.min(i+BATCH,matches.length))+'/'+matches.length+'...';
+    await Promise.all(batch.map(async m=>{
+      let res, errMsg='';
+      try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
+      // One automatic retry if the first attempt failed or GAS returned an error
+      if(!res?.url){
+        try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
+      }
+      if(res?.url){
+        const r=DB.records.find(x=>x.id===m.rec.id);
+        if(r){r.xray_image_url=res.url;r.image_linked=true;linked.push(r);}
+      }else{
+        const reason = errMsg || (res && res.error) || 'no url returned';
+        const stepInfo = (res && res.step) ? (' [failed at: '+res.step+']') : '';
+        console.warn('Upload failed for AWB', m.rec.awb, ':', reason+stepInfo);
+        failed.push({awb:m.rec.awb, reason: reason+stepInfo});
+      }
+    }));
+  }
+  hideLoad();
+  document.getElementById('fd-result').style.display='none';
+  renderShift(); updateStats(); updateBanner();
+
+  if(failed.length){
+    console.table(failed);
+    toast('⚠️ '+failed.length+' image(s) failed to upload — see console (F12) for AWBs/reasons. Try End of Shift again to retry.','err');
+  }
+
+  // Show post-upload options: Continue Scanning or End Shift
+  const total = myToday().length;
+  const pending = myToday().filter(r=>!r.image_linked).length;
+  const msg = linked.length+' images uploaded'+(failed.length?', '+failed.length+' failed':'!')+' '+(pending>0?pending+' records still unlinked.':'All images linked.');
+
+  // Create inline notification with options
+  const notif = document.createElement('div');
+  notif.id = 'post-upload-notif';
+  notif.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--success);border-radius:6px;padding:16px 20px;z-index:4000;display:flex;flex-direction:column;gap:10px;min-width:320px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);';
+  notif.innerHTML =
+    '<div style="font-family:var(--mono);font-size:12px;color:var(--success);">&#x2705; '+msg+'</div>'
+    +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">'+total+' scans today</div>'
+    +'<div style="display:flex;gap:8px;margin-top:4px;">'
+    +'<button class="btn btn-t1" style="flex:1;" onclick="continueScanning()">&#x1F4E1; CONTINUE SCANNING</button>'
+    +'<button class="btn btn-ok" style="flex:1;" onclick="endShift()">&#x2705; END SHIFT</button>'
+    +'</div>';
+  document.body.appendChild(notif);
+  // Auto-dismiss after 30 seconds
+  setTimeout(()=>{ const el=document.getElementById('post-upload-notif'); if(el) el.remove(); }, 30000);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  RECORDS VIEWS
+// ══════════════════════════════════════════════════════════════
+function renderRec(){
+  const s=(document.getElementById('rec-search')?.value||'').toLowerCase();
+  const res=document.getElementById('rec-res')?.value||'';
+  let recs=myToday();
+  if(s) recs=recs.filter(r=>r.awb.toLowerCase().includes(s));
+  if(res) recs=recs.filter(r=>r.result===res);
+  document.getElementById('rec-body').innerHTML=recs.length===0
+    ?'<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:20px;">No records today.</td></tr>'
+    :recs.map((r,i)=>'<tr>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td><td class="tc-awb">'+r.awb+'</td>'
+      +'<td style="font-family:var(--mono);font-size:11px;color:var(--text2);">'+new Date(r.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
+      +'<td style="font-size:12px;">'+(r.product_name||'–')+'</td>'
+      +'<td>'+resultPill(r.result)+'</td>'
+      +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
+      +'<td style="font-size:12px;">'+(r.shoe_box||'–')+'</td>'
+      +'<td style="font-size:11px;color:var(--text2);">'+(r.remarks||'–')+'</td>'
+      +'</tr>').join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ADMIN DASHBOARD
+// ══════════════════════════════════════════════════════════════
+function setDashDate(range){
+  const inp=document.getElementById('dash-date');
+  if(!inp) return;
+  const today=new Date();
+  if(range==='today') inp.value=fmtDate(today);
+  else if(range==='yesterday'){ const y=new Date(today);y.setDate(today.getDate()-1);inp.value=fmtDate(y); }
+  refreshDashboard();
+}
+
+async function refreshDashboard(){
+  const date=document.getElementById('dash-date')?.value||todayStr();
+  const lbl=document.getElementById('dash-loading');
+  if(lbl) lbl.style.display='inline';
+  // Today: merge Supabase (live) + GSheet (synced). Past: GSheet only
+  if(date===todayStr()){
+    const sbData=await sbGet('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00Z&order=scanned_at.desc&limit=2000');
+    const sbRecs=Array.isArray(sbData)?sbData:[];
+    let gsRecs=[];
+    try{
+      const gsData=await gsGet({action:'records',date});
+      gsRecs=Array.isArray(gsData)?gsData.map(function(r){
+        return {
+          id:r.id||'',awb:r.awb||r.AWB||'',
+          scanned_at:r.scanned_at||r.Date||'',
+          location_code:r.location_code||r.Location||'',
+          operator_email:r.operator_email||r.Operator||'',
+          result:r.result||r['X-Ray Result']||'',
+          tamper_status:r.tamper_status||r['Tamper Status']||'',
+          shoe_box:r.shoe_box||r.Shoe||'N/A',
+          remarks:r.remarks||r.Remarks||'',
+          xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+          product_name:r.product_name||r['Product Name']||'',
+          product_category:r.product_category||r.Category||'',
+          image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+          synced_to_sheet:true
+        };
+      }):[];
+    }catch(e){ console.warn('GSheet skipped:',e.message); }
+    const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
+    const merged=[...sbRecs];
+    gsRecs.forEach(function(gr){
+      if(gr.id&&sbIds.has(gr.id)) return;
+      const exists=merged.find(function(r){
+        return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+      });
+      if(!exists) merged.push(gr);
     });
-    row.push(rowTotal); grandTotal += rowTotal;
-    sh.appendRow(row);
+    DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
+  } else {
+    // Past date — load from GSheet only, normalize fields
+    const data=await gsGet({action:'records',date});
+    DB.records=Array.isArray(data)?data.map(function(r){
+      return {
+        id:r.id||'',
+        awb:r.awb||r.AWB||'',
+        scanned_at:r.scanned_at||r.Date||'',
+        location_code:r.location_code||r.Location||'',
+        operator_email:r.operator_email||r.Operator||'',
+        result:r.result||r['X-Ray Result']||'',
+        tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
+        shoe_box:r.shoe_box||r.Shoe||'N/A',
+        remarks:r.remarks||r.Remarks||'',
+        xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+        product_name:r.product_name||r['Product Name']||'',
+        product_category:r.product_category||r.Category||'',
+        image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+        synced_to_sheet:true
+      };
+    }):[];
+  }
+  if(lbl) lbl.style.display='none';
+  const cnt=document.getElementById('dash-count');
+  if(cnt) cnt.textContent=DB.records.length+' scans on '+new Date(date+'T12:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+  renderDash();
+  if(document.getElementById('v-arec')?.classList.contains('on')) renderAllRec();
+}
+
+function renderDash(){
+  const recs=DB.records;
+  document.getElementById('ad-total').textContent =recs.length;
+  document.getElementById('ad-failed').textContent=recs.filter(r=>r.result==='FAKE'||r.result==='EMPTY').length;
+  document.getElementById('ad-locs').textContent  =DB.locations.length;
+  document.getElementById('ad-users').textContent =DB.users.filter(u=>u.role!=='admin').length;
+  const grid=document.getElementById('ad-loc-grid');
+  if(!grid) return;
+  grid.innerHTML=DB.locations.length===0
+    ?'<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text3);">No locations yet.</div>'
+    :DB.locations.map(loc=>{
+      const lr=recs.filter(r=>r.location_code===loc.code);
+      return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;border-top:2px solid '+(loc.machine_type===1||loc.machine_type==='1'?'var(--t1)':'var(--t2)')+';">'
+        +'<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+(loc.machine_type===1||loc.machine_type==='1'?'var(--t1)':'var(--t2)')+';margin-bottom:4px;">'+loc.code+'</div>'
+        +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">'+loc.name+'</div>'
+        +'<div style="font-family:var(--mono);font-size:11px;">Scans: <strong>'+lr.length+'</strong></div>'
+        +'<div style="font-family:var(--mono);font-size:11px;">Issues: <strong style="color:var(--danger);">'+lr.filter(r=>r.result==='FAKE'||r.result==='EMPTY').length+'</strong></div>'
+        +'</div>';
+    }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  USERS MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+function renderUsers(){
+  const s=(document.getElementById('user-search')?.value||'').toLowerCase();
+  let users=DB.users;
+  if(s) users=users.filter(u=>u.email?.toLowerCase().includes(s)||u.name?.toLowerCase().includes(s));
+  document.getElementById('users-body').innerHTML=users.length===0
+    ?'<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:20px;">No users yet.</td></tr>'
+    :users.map((u,i)=>'<tr>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td style="font-family:var(--mono);font-size:12px;">'+u.email+'</td>'
+      +'<td>'+u.name+'</td>'
+      +'<td>'+(Array.isArray(u.allowed_locations)?u.allowed_locations:(u.allowed_locations?[u.allowed_locations]:[])).map(c=>'<span class="loc-tag" style="margin:2px;">'+c+'</span>').join('')+'</td>'
+      +'<td><span class="pill '+(u.role==='admin'?'pill-t1':'pill-dim')+'">'+u.role+'</span></td>'
+      +'<td><span class="pill '+(String(u.active)!=='false'?'pill-ok':'pill-err')+'">'+(String(u.active)!=='false'?'Active':'Disabled')+'</span></td>'
+      +'<td style="display:flex;gap:4px;">'
+      +'<button class="btn btn-ghost btn-xs" onclick="openEditUser(\''+u.email+'\')">Edit</button>'
+      +'<button class="btn btn-danger btn-xs" onclick="toggleUser(\''+u.email+'\','+(String(u.active)!=='false'?'false':'true')+')">'+( String(u.active)!=='false'?'Disable':'Enable')+'</button>'
+      +'<button class="btn btn-danger btn-xs" onclick="deleteUser(\''+u.email+'\')">Del</button>'
+      +'</td></tr>').join('');
+}
+
+function buildLocGrid(id,sel=[]){
+  const g=document.getElementById(id);
+  if(!g) return;
+  g.innerHTML=DB.locations.length===0
+    ?'<div style="color:var(--text3);font-family:var(--mono);font-size:11px;">No locations yet.</div>'
+    :DB.locations.map(l=>'<div class="ac-loc-chip '+(sel.includes(l.code)?'granted':'')+'" onclick="this.classList.toggle(\'granted\')">'
+      +'<div class="ac-code">'+l.code+'</div>'
+      +'<div class="ac-name" style="font-size:9px;color:var(--text3);">'+l.name+'</div></div>').join('');
+}
+function getSelLocs(id){ return Array.from(document.getElementById(id)?.querySelectorAll('.ac-loc-chip.granted')||[]).map(el=>el.querySelector('.ac-code')?.textContent); }
+function openAddUser(){ buildLocGrid('nu-loc-grid',[]); ['nu-email','nu-pass','nu-name'].forEach(id=>document.getElementById(id).value=''); document.getElementById('nu-role').value='operator'; openModal('modal-adduser'); }
+function openEditUser(email){
+  const u=DB.users.find(x=>x.email===email); if(!u) return;
+  document.getElementById('eu-email-orig').value=u.email;
+  document.getElementById('eu-email').value=u.email;
+  document.getElementById('eu-name').value=u.name||'';
+  document.getElementById('eu-pass').value='';
+  document.getElementById('eu-role').value=u.role||'operator';
+  const locs=Array.isArray(u.allowed_locations)?u.allowed_locations:(u.allowed_locations?u.allowed_locations.split(',').map(s=>s.trim()):[]);
+  buildLocGrid('eu-loc-grid',locs);
+  openModal('modal-edituser');
+}
+async function saveUser(){
+  const email=document.getElementById('nu-email').value.trim().toLowerCase();
+  const pass =document.getElementById('nu-pass').value;
+  const name =document.getElementById('nu-name').value.trim();
+  const role =document.getElementById('nu-role').value;
+  const locs =getSelLocs('nu-loc-grid');
+  if(!email||!pass||!name){toast('Fill all fields','err');return;}
+  showLoad('Creating user...');
+  try{
+    const pw_hash=await hashPw(pass);
+    await sbPost('users', {email,name,role,pw_hash,allowed_locations:locs,active:true});
+    hideLoad();
+    await loadUsers(); renderUsers(); closeModal('modal-adduser');
+    toast('User '+email+' created','ok');
+  }catch(e){
+    hideLoad();
+    toast('Create failed: '+e.message,'err');
+  }
+}
+async function updateUser(){
+  const email=document.getElementById('eu-email-orig').value;
+  const name =document.getElementById('eu-name').value.trim();
+  const pass =document.getElementById('eu-pass').value;
+  const role =document.getElementById('eu-role').value;
+  const locs =getSelLocs('eu-loc-grid');
+  const payload={name,role,allowed_locations:locs};
+  showLoad('Updating...');
+  try{
+    if(pass) payload.pw_hash=await hashPw(pass);
+    await sbPatch('users','email=eq.'+encodeURIComponent(email),payload);
+    hideLoad();
+    await loadUsers(); renderUsers(); closeModal('modal-edituser');
+    toast('User updated','ok');
+  }catch(e){
+    hideLoad();
+    toast('Update failed: '+e.message,'err');
+  }
+}
+async function toggleUser(email,active){
+  await sbPatch('users','email=eq.'+encodeURIComponent(email),{active: active==='true'});
+  await loadUsers(); renderUsers();
+  toast('User '+(active==='true'?'enabled':'disabled'),'ok');
+}
+async function deleteUser(email){
+  if(!confirm('Delete '+email+'?'))return;
+  await sbDelete('users','email=eq.'+encodeURIComponent(email));
+  await loadUsers(); renderUsers();
+  toast('User deleted','ok');
+}
+
+async function syncUsersToSheetNow(){
+  showLoad('Syncing users to Google Sheet...');
+  try{
+    const res=await gsPost({action:'syncUsersToSheet'});
+    hideLoad();
+    if(res?.error){ toast('Sync failed: '+res.error,'err'); return; }
+    toast('Synced '+(res?.count ?? '?')+' users to the Sheet','ok');
+  }catch(e){
+    hideLoad();
+    toast('Sync failed: '+e.message,'err');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  LOCATIONS
+// ══════════════════════════════════════════════════════════════
+function renderLocs(){
+  const locs=DB.locations;
+  const cnt=document.getElementById('loc-count');
+  if(cnt) cnt.innerHTML='<span class="pill pill-t1">'+locs.length+' locations</span>';
+  document.getElementById('loc-body').innerHTML=locs.length===0
+    ?'<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px;">No locations yet.</td></tr>'
+    :locs.map((loc,i)=>'<tr>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td style="font-family:var(--mono);font-size:15px;font-weight:700;color:'+(loc.machine_type===1||loc.machine_type==='1'?'var(--t1)':'var(--t2)')+';">'+loc.code+'</td>'
+      +'<td>'+loc.name+'</td>'
+      +'<td><span class="pill '+(loc.machine_type===1||loc.machine_type==='1'?'pill-t1':'pill-t2')+'">'+(loc.machine_type===1||loc.machine_type==='1'?'Type 1 Excel':'Type 2 Folder')+'</span></td>'
+      +'<td style="display:flex;gap:4px;">'
+      +'<button class="btn btn-ghost btn-xs" onclick="toggleLocType(\''+loc.code+'\','+(loc.machine_type===1||loc.machine_type==='1'?2:1)+')">Switch to T'+(loc.machine_type===1||loc.machine_type==='1'?2:1)+'</button>'
+      +'<button class="btn btn-danger btn-xs" onclick="deleteLoc(\''+loc.id+'\',\''+loc.code+'\')">Del</button>'
+      +'</td></tr>').join('');
+}
+function openAddLoc(){ document.getElementById('nl-code').value=''; document.getElementById('nl-name').value=''; nlMT=1; document.getElementById('nl-t1').className='mtype-btn sel-t1'; document.getElementById('nl-t2').className='mtype-btn'; openModal('modal-addloc'); }
+async function saveLoc(){
+  const code=document.getElementById('nl-code').value.trim().toUpperCase();
+  const name=document.getElementById('nl-name').value.trim();
+  if(!code||!name){toast('Code and name required','err');return;}
+  showLoad('Creating...');
+  try{
+    await sbPost('locations', {code,name,machine_type:nlMT,active:true});
+    hideLoad();
+    await loadLocs(); renderLocs(); closeModal('modal-addloc');
+    toast('Location '+code+' created','ok');
+  }catch(e){
+    hideLoad();
+    toast('Create failed: '+e.message,'err');
+  }
+}
+async function deleteLoc(id,code){
+  if(!confirm('Delete '+code+'?'))return;
+  await sbDelete('locations','code=eq.'+encodeURIComponent(code));
+  await loadLocs(); renderLocs();
+  toast(code+' deleted','ok');
+}
+async function toggleLocType(code,newType){
+  await sbPatch('locations','code=eq.'+encodeURIComponent(code),{machine_type:newType});
+  sessionStorage.removeItem('cv_locs_v2'); // clear cache so the new type is picked up immediately
+  await loadLocs(); renderLocs();
+  toast(code+' switched to Type '+newType,'ok');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  AWB MASTER
+// ══════════════════════════════════════════════════════════════
+function awbDrop(e){e.preventDefault();document.getElementById('awb-drop').classList.remove('drag');const f=e.dataTransfer.files[0];if(f)processAwb(f);}
+function awbUpload(input){const f=input.files[0];if(f)processAwb(f);input.value='';}
+async function processAwb(file){
+  document.getElementById('awb-prog').style.display='block';
+  const aC=document.getElementById('awb-col-a').value.trim()||'AWB';
+  const nC=document.getElementById('awb-col-n').value.trim()||'Product Name';
+  const cC=document.getElementById('awb-col-c').value.trim()||'Category';
+  try{
+    const ab=await file.arrayBuffer();
+    const wb=XLSX.read(ab,{type:'array'});
+    const data=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{raw:false});
+    if(!data.length){toast('File is empty','err');return;}
+    const keys=Object.keys(data[0]);
+    const fc=t=>keys.find(k=>k.toLowerCase()===t.toLowerCase())||t;
+    const rows=data.map(r=>({
+      awb:(r[fc(aC)]||'').toString().trim().toUpperCase(),
+      product_name:(r[fc(nC)]||'').toString().trim()||'Unknown',
+      product_category:(r[fc(cC)]||'').toString().trim()||'Uncategorized'
+    })).filter(r=>r.awb);
+    if(!rows.length){toast('No valid rows found','err');return;}
+    document.getElementById('awb-prog-bar').style.width='40%';
+    showLoad('Saving '+rows.length+' AWBs...');
+    const res=await gsPost({action:'saveAwb',rows,uploaded_by:CU.email});
+    hideLoad();
+    document.getElementById('awb-prog-bar').style.width='100%';
+    document.getElementById('awb-status').innerHTML='<span class="pill pill-ok">'+rows.length+' AWBs loaded</span>';
+    await loadAwbToday(); renderAwb();
+    document.getElementById('awb-prog').style.display='none';
+    toast(rows.length+' AWBs uploaded','ok');
+  }catch(e){toast('Error: '+e.message,'err');document.getElementById('awb-prog').style.display='none';hideLoad();}
+}
+function renderAwb(){
+  const s=(document.getElementById('awb-search')?.value||'').toLowerCase();
+  const all=Object.entries(DB.awbMaster).map(([awb,v])=>({awb,...v}));
+  if(!all.length){document.getElementById('awb-body').innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--text3);padding:20px;">No AWB data.</td></tr>';document.getElementById('awb-count').innerHTML='';return;}
+  const filtered=s?all.filter(r=>r.awb.toLowerCase().includes(s)||r.productName?.toLowerCase().includes(s)):all;
+  document.getElementById('awb-count').innerHTML='<span class="pill pill-t1">'+all.length+' AWBs</span>';
+  document.getElementById('awb-body').innerHTML=filtered.map((r,i)=>'<tr>'
+    +'<td style="color:var(--text3);">'+(i+1)+'</td><td class="tc-awb">'+r.awb+'</td>'
+    +'<td>'+r.productName+'</td>'
+    +'<td><span class="pill pill-dim" style="font-size:9px;">'+r.category+'</span></td>'
+    +'</tr>').join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ALL RECORDS (Admin)
+// ══════════════════════════════════════════════════════════════
+async function renderAllRec(){
+  const s=(document.getElementById('arec-search')?.value||'').toLowerCase();
+  const loc=document.getElementById('arec-loc')?.value||'';
+  const res=document.getElementById('arec-res')?.value||'';
+  const date=document.getElementById('arec-date')?.value||todayStr();
+
+  // Always fetch fresh from both Supabase + GSheet for selected date
+  const sbData=await sbGet('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00Z&scanned_at=lte.'+date+'T23:59:59Z&order=scanned_at.desc&limit=2000');
+  const sbRecs=Array.isArray(sbData)?sbData:[];
+  let gsRecs=[];
+  try{
+    const gsData=await gsGet({action:'records',date:date});
+    gsRecs=Array.isArray(gsData)?gsData.map(function(r){
+      return {
+        id:r.id||'',awb:r.awb||r.AWB||'',
+        scanned_at:r.scanned_at||r.Date||'',
+        location_code:r.location_code||r.Location||'',
+        operator_email:r.operator_email||r.Operator||'',
+        result:r.result||r['X-Ray Result']||'',
+        tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
+        shoe_box:r.shoe_box||r.Shoe||'N/A',
+        remarks:r.remarks||r.Remarks||'',
+        xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+        product_name:r.product_name||r['Product Name']||'',
+        product_category:r.product_category||r.Category||'',
+        image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+        synced_to_sheet:true
+      };
+    }):[];
+  }catch(e){ console.warn('GSheet skipped in renderAllRec:',e.message); }
+  const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
+  const allRecs=[...sbRecs];
+  gsRecs.forEach(function(gr){
+    if(gr.id&&sbIds.has(gr.id)) return;
+    const dup=allRecs.find(function(r){
+      return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+    });
+    if(!dup) allRecs.push(gr);
   });
 
-  var totalRow = ['Grand Total'].concat(days.map(function(d) { return dayTotals[d] || 0; })).concat([grandTotal]);
-  sh.appendRow(totalRow);
-  sh.getRange(sh.getLastRow(), 1, 1, totalRow.length).setFontWeight('bold').setBackground('#f0f0f0');
+  let recs=allRecs.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
+  if(s)    recs=recs.filter(r=>(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
+  if(loc)  recs=recs.filter(r=>r.location_code===loc);
+  if(res)  recs=recs.filter(r=>r.result===res);
+  if(date) recs=recs.filter(r=>String(r.scanned_at).substring(0,10)===date);
+  const cnt=document.getElementById('arec-count');
+  if(cnt) cnt.innerHTML='<span class="pill pill-t1">'+recs.length+' records</span>';
+  document.getElementById('arec-body').innerHTML=recs.length===0
+    ?'<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:20px;">No records found.</td></tr>'
+    :recs.map((r,i)=>'<tr>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td><td class="tc-awb">'+r.awb+'</td>'
+      +'<td style="font-family:var(--mono);font-size:11px;">'+new Date(r.scanned_at).toLocaleString('en-IN',{dateStyle:'short',timeStyle:'short'})+'</td>'
+      +'<td><span class="loc-tag">'+r.location_code+'</span></td>'
+      +'<td style="font-size:12px;">'+(r.product_name||'–')+'</td>'
+      +'<td>'+resultPill(r.result)+'</td>'
+      +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
+      +'<td style="font-family:var(--mono);font-size:11px;color:var(--text3);">'+r.operator_email+'</td>'
+      +'<td>'+(r.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewXray(this)" data-url="'+encodeURIComponent(r.xray_image_url)+'">View</span>':'–')+'</td>'
+      +'</tr>').join('');
+}
 
-  Logger.log('Adherence sheet built: ' + locs.length + ' locations, ' + grandTotal + ' total scans.');
+function populateLocFilter(){
+  const sel=document.getElementById('arec-loc');
+  if(!sel) return;
+  while(sel.options.length>1) sel.remove(1);
+  DB.locations.forEach(loc=>{ const o=document.createElement('option'); o.value=loc.code; o.textContent=loc.full_name||loc.code; sel.appendChild(o); });
 }
 
 // ══════════════════════════════════════════════════════════════
-//  SETUP 5AM + 2PM TRIGGERS — run once manually
+//  CSV EXPORT
 // ══════════════════════════════════════════════════════════════
-function createDailyTrigger() {
-  // Remove any existing triggers for the old or new handler names
-  ScriptApp.getProjectTriggers().forEach(function(t) {
-    var fn = t.getHandlerFunction();
-    if (fn === 'dailyEodSync' || fn === 'trigger5amSync' || fn === 'trigger2pmSync') {
-      ScriptApp.deleteTrigger(t);
+async function exportCSV(mode){
+  if(mode==='op'){ showLoad('Refreshing...'); await loadRecords(); hideLoad(); }
+  let recs;
+  if(mode==='adm'){
+    const loc=document.getElementById('arec-loc')?.value||'';
+    const res=document.getElementById('arec-res')?.value||'';
+    const date=document.getElementById('arec-date')?.value||'';
+    const s=(document.getElementById('arec-search')?.value||'').toLowerCase();
+    recs=DB.records
+      .filter(r=>!loc||r.location_code===loc)
+      .filter(r=>!res||r.result===res)
+      .filter(r=>!date||String(r.scanned_at).substring(0,10)===date)
+      .filter(r=>!s||(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
+  } else { recs=myToday(); }
+  const h=['AWB','Date','Location','Product','Category','Result','Tamper','Shoebox','Remarks','Operator','X-Ray Image','Label Image','Front Image','Back Image'];
+  const rows=recs.map(r=>[r.awb,new Date(r.scanned_at).toLocaleString('en-IN'),r.location_code,r.product_name||'',r.product_category||'',r.result,r.tamper_status||'',r.shoe_box||'',(r.remarks||'').replace(/,/g,' '),r.operator_email||'',r.xray_image_url||'',r.label_image_url||'',r.front_image_url||'',r.back_image_url||'']);
+  const csv=[h,...rows].map(r=>r.map(v=>'"'+v+'"').join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='sfclearview_'+new Date().toISOString().split('T')[0]+'.csv';
+  a.click(); toast('CSV exported','ok');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  KEEP ALIVE (prevent Apps Script timeout on idle)
+// ══════════════════════════════════════════════════════════════
+setInterval(async function(){
+  if(CU) await gsGet({action:'ping'}).catch(()=>{});
+}, 4*60*1000);
+
+// ══════════════════════════════════════════════════════════════
+//  PREVENT LOGOUT DURING UPLOAD
+// ══════════════════════════════════════════════════════════════
+window.addEventListener('beforeunload',function(e){
+  if(window._uploading>0){
+    e.preventDefault();
+    e.returnValue='Images are still uploading. Please wait.';
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  SESSION RESTORE ON REFRESH
+// ══════════════════════════════════════════════════════════════
+(async function restoreSession(){
+  const cu=sessionStorage.getItem('cu');
+  const adm=sessionStorage.getItem('isAdmin');
+  const sup=sessionStorage.getItem('isSup');
+  if(cu){
+    try{
+      CU=JSON.parse(cu);
+      isAdmin=adm==='true';
+      isSupervisor=sup==='true';
+      await enterApp();
+    }catch(e){ clearSession(); }
+  }
+})();
+
+// ══════════════════════════════════════════════════════════════
+//  KEY HANDLERS
+// ══════════════════════════════════════════════════════════════
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape') document.querySelectorAll('.modal-bg.open').forEach(m=>m.classList.remove('open'));
+});
+document.querySelectorAll('.modal-bg').forEach(el=>el.addEventListener('click',e=>{if(e.target===el)el.classList.remove('open');}));
+
+// ══════════════════════════════════════════════════════════════
+//  ADHERENCE — last 10 days scan count per location
+// ══════════════════════════════════════════════════════════════
+async function renderAdherence(){
+  const wrap = document.getElementById('adhere-table-wrap');
+  wrap.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text3);font-family:var(--mono);">Loading adherence data...</div>';
+
+  // Build last 10 days (today = last column, oldest = first)
+  const days = [];
+  for(let i=9; i>=0; i--){
+    const d = new Date(); d.setDate(d.getDate()-i);
+    days.push(d.toISOString().split('T')[0]);
+  }
+
+  // Get locations — reload fresh if empty (don't rely on cache)
+  let locs = DB.locations.map(l=>l.code).filter(Boolean).sort();
+  if(!locs.length){
+    try{
+      await loadLocs();
+      locs = DB.locations.map(l=>l.code).filter(Boolean).sort();
+    }catch(e){}
+  }
+  if(!locs.length){
+    // Last resort: fetch from GAS
+    try{
+      const ld = await gsGet({action:'locations'});
+      if(Array.isArray(ld)) locs = ld.map(l=>l.code).filter(Boolean).sort();
+    }catch(e){}
+  }
+  if(!locs.length){
+    wrap.innerHTML='<div style="text-align:center;padding:32px;color:var(--danger);font-family:var(--mono);">No locations found. Check Locations tab first.</div>';
+    return;
+  }
+
+  const countMap = {};
+  const keysWithSbData = new Set(); // FIX: track which location/day pairs Supabase already covers
+
+  // Supabase: live/recent scans for last 10 days
+  try{
+    const oldest = days[0]+'T00:00:00Z';
+    const sbData = await sbGet('/rest/v1/scans?scanned_at=gte.'+oldest+'&select=location_code,scanned_at&limit=20000');
+    if(Array.isArray(sbData)){
+      sbData.forEach(function(r){
+        const day = String(r.scanned_at||'').substring(0,10);
+        if(!day||days.indexOf(day)===-1) return;
+        const key = (r.location_code||'').trim()+'_'+day;
+        countMap[key] = (countMap[key]||0)+1;
+        keysWithSbData.add(key);
+      });
     }
+  }catch(e){ console.warn('Adherence SB:',e.message); }
+
+  // GSheet: only used as a fallback for days Supabase has already purged
+  // (synced rows aren't deleted from Supabase until 72h after syncing, so
+  // for ~3 recent days both sources have the same rows — summing them was
+  // double-counting. Now: if Supabase has ANY data for a location/day, that
+  // day is considered fully covered and the GSheet count is skipped for it.)
+  try{
+    const gsData = await gsGet({action:'adherence', days: days.join(',')});
+    if(gsData && gsData.counts){
+      Object.entries(gsData.counts).forEach(function([key,val]){
+        if(keysWithSbData.has(key)) return; // Supabase already has this — don't add on top
+        countMap[key] = (countMap[key]||0) + val;
+      });
+    }
+  }catch(e){ console.warn('Adherence GSheet error:',e.message); }
+
+  // Build table
+  const fmtDate = function(d){
+    const p=d.split('-'); return p[2]+'/'+p[1]+'/'+p[0].substring(2);
+  };
+
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  // Header row
+  html += '<thead><tr>';
+  html += '<th style="padding:8px 12px;text-align:left;background:var(--bg2);border-bottom:2px solid var(--border);font-family:var(--mono);position:sticky;left:0;z-index:1;">Location</th>';
+  days.forEach(function(d){
+    html += '<th style="padding:8px 10px;text-align:center;background:var(--bg2);border-bottom:2px solid var(--border);font-family:var(--mono);white-space:nowrap;">'+fmtDate(d)+'</th>';
+  });
+  html += '<th style="padding:8px 10px;text-align:center;background:var(--bg2);border-bottom:2px solid var(--border);font-family:var(--mono);font-weight:700;">Total</th>';
+  html += '</tr></thead><tbody>';
+
+  // Location rows
+  const dayTotals = {}; days.forEach(function(d){ dayTotals[d]=0; });
+  let grandTotal = 0;
+
+  locs.forEach(function(loc, idx){
+    const bg = idx%2===0 ? 'transparent' : 'rgba(255,255,255,.02)';
+    let rowTotal = 0;
+    html += '<tr style="background:'+bg+';">';
+    html += '<td style="padding:7px 12px;font-family:var(--mono);font-weight:700;color:var(--t1);border-bottom:1px solid var(--border);position:sticky;left:0;background:var(--bg1);">'+loc+'</td>';
+    days.forEach(function(d){
+      const cnt = countMap[loc+'_'+d]||0;
+      rowTotal += cnt;
+      dayTotals[d] += cnt;
+      const color = cnt===0?'var(--danger)':cnt<50?'var(--warn)':'var(--success)';
+      html += '<td style="padding:7px 10px;text-align:center;border-bottom:1px solid var(--border);font-family:var(--mono);color:'+color+';">'+cnt+'</td>';
+    });
+    grandTotal += rowTotal;
+    html += '<td style="padding:7px 10px;text-align:center;border-bottom:1px solid var(--border);font-family:var(--mono);font-weight:700;color:var(--text);">'+rowTotal+'</td>';
+    html += '</tr>';
   });
 
-  ScriptApp.newTrigger('trigger5amSync')
-    .timeBased().atHour(5).nearMinute(0).everyDays(1).inTimezone('Asia/Kolkata').create();
-
-  Logger.log('✅ Trigger created: 5AM (trigger5amSync) IST only — 2PM removed on request.');
-}
-
-// Run this once manually (function dropdown → removeAfternoonTrigger → Run)
-// to delete an existing 2PM trigger without touching the 5AM one.
-function removeAfternoonTrigger() {
-  var removed = 0;
-  ScriptApp.getProjectTriggers().forEach(function(t) {
-    if (t.getHandlerFunction() === 'trigger2pmSync') {
-      ScriptApp.deleteTrigger(t);
-      removed++;
-    }
+  // Grand total row
+  html += '<tr style="border-top:2px solid var(--border);">';
+  html += '<td style="padding:8px 12px;font-family:var(--mono);font-weight:700;color:var(--text);position:sticky;left:0;background:var(--bg2);">Grand Total</td>';
+  days.forEach(function(d){
+    html += '<td style="padding:8px 10px;text-align:center;font-family:var(--mono);font-weight:700;background:var(--bg2);">'+(dayTotals[d]||0)+'</td>';
   });
-  Logger.log(removed ? ('✅ Removed ' + removed + ' 2PM trigger(s).') : 'No 2PM trigger found — nothing to remove.');
+  html += '<td style="padding:8px 10px;text-align:center;font-family:var(--mono);font-weight:700;background:var(--bg2);color:var(--t1);">'+grandTotal+'</td>';
+  html += '</tr>';
+
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  document.getElementById('adhere-total').textContent = grandTotal.toLocaleString()+' total scans';
+  document.getElementById('adhere-updated').textContent = 'Updated: '+new Date().toLocaleTimeString('en-IN');
 }
 
-// ══════════════════════════════════════════════════════════════
-//  TOLERANCE REQUESTS
-// ══════════════════════════════════════════════════════════════
-var SH_TOL = 'ToleranceRequests';
 
-function ensureTolSheet() {
-  var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  var sh = ss.getSheetByName(SH_TOL);
-  if (!sh) {
-    sh = ss.insertSheet(SH_TOL);
-    sh.appendRow(['row_id','location','operator_email','current_value','requested_value','reason','status','submitted_at']);
-    sh.getRange(1,1,1,8).setFontWeight('bold').setBackground('#f57c00').setFontColor('white');
-    sh.setFrozenRows(1);
+// ── X-RAY IMAGE VIEWER ───────────────────────────────────────
+function viewXray(el) {
+  var url = decodeURIComponent(el.getAttribute('data-url') || '');
+  if (!url) return;
+
+  // Extract Drive file ID from any URL format
+  var fileId = '';
+  var m = url.match(/\/file\/d\/([^\/\?&]+)/);
+  if (m) fileId = m[1];
+  else { m = url.match(/[?&]id=([^&]+)/); if(m) fileId = m[1]; }
+
+  if (!fileId) {
+    // Not a Drive URL — open directly
+    window.open(url, '_blank');
+    return;
   }
-  return sh;
+
+  // Use thumbnail URL for direct image display (no auth needed, no download)
+  var thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1200';
+  var previewUrl = 'https://drive.google.com/file/d/' + fileId + '/preview';
+
+  // Show modal with image tag (faster than iframe, no download)
+  var modal = document.getElementById('modal-imgview');
+  var iframe = document.getElementById('xray-iframe');
+  var imgEl = document.getElementById('xray-img-direct');
+
+  if (imgEl) {
+    // Try image tag first
+    imgEl.src = thumbUrl;
+    imgEl.style.display = 'block';
+    iframe.style.display = 'none';
+    imgEl.onerror = function() {
+      // Fallback to iframe preview
+      imgEl.style.display = 'none';
+      iframe.style.display = 'block';
+      iframe.src = previewUrl;
+    };
+  } else {
+    iframe.src = previewUrl;
+  }
+
+  modal.style.display = 'flex';
+  // Store fileId for open-in-new-tab button
+  document.getElementById('xray-open-link').href = 'https://drive.google.com/file/d/' + fileId + '/view';
 }
 
-function saveToleranceRequest(data) {
-  var sh = ensureTolSheet();
-  var rowId = Utilities.getUuid();
-  sh.appendRow([
-    rowId, data.location, data.operator_email,
-    data.current_value, data.requested_value,
-    data.reason, 'PENDING', new Date().toISOString()
-  ]);
-  return { ok: true, row_id: rowId };
+function closeImgView(e) {
+  if (e.target === document.getElementById('modal-imgview')) {
+    document.getElementById('modal-imgview').style.display = 'none';
+    document.getElementById('xray-iframe').src = '';
+    var imgEl = document.getElementById('xray-img-direct');
+    if (imgEl) imgEl.src = '';
+  }
 }
 
-function getToleranceRequests() {
-  var sh = ensureTolSheet();
-  if (sh.getLastRow() < 2) return [];
-  var data = sh.getDataRange().getValues();
-  var headers = data[0];
-  var results = [];
-  for (var i = 1; i < data.length; i++) {
-    var obj = rowToObj(headers, data[i]);
-    if (obj.status === 'PENDING') {
-      obj.row = i + 1;
-      results.push(obj);
+// ══════════════════════════════════════════════════════════════
+//  TOLERANCE REQUEST — operator requests, admin approves
+// ══════════════════════════════════════════════════════════════
+function openTolRequest(){
+  var cur = document.getElementById('fd-tolerance').value || '300';
+  document.getElementById('tol-current-display').textContent = cur;
+  document.getElementById('tol-req-value').value = cur;
+  document.getElementById('tol-req-reason').value = '';
+  document.getElementById('modal-tolreq').style.display = 'flex';
+}
+
+async function submitTolRequest(){
+  var val = document.getElementById('tol-req-value').value;
+  var reason = document.getElementById('tol-req-reason').value.trim();
+  if(!val){ toast('Enter a value','err'); return; }
+  if(!reason){ toast('Please provide a reason','err'); return; }
+  showLoad('Submitting request...');
+  try{
+    var res = await gsPost({
+      action:'toleranceRequest',
+      location: myLoc(),
+      operator_email: CU.email,
+      current_value: document.getElementById('fd-tolerance').value || '300',
+      requested_value: val,
+      reason: reason
+    });
+    hideLoad();
+    document.getElementById('modal-tolreq').style.display='none';
+    toast('Request submitted. Admin will review shortly.','ok');
+  }catch(e){
+    hideLoad();
+    toast('Failed to submit: '+e.message,'err');
+  }
+}
+
+// Admin: view and approve tolerance requests
+async function openTolApprove(){
+  showLoad('Loading requests...');
+  try{
+    var res = await gsGet({action:'toleranceRequests'});
+    hideLoad();
+    var list = document.getElementById('tol-requests-list');
+    if(!res||!res.length){
+      list.innerHTML = '<div style="color:var(--text3);font-family:var(--mono);font-size:12px;text-align:center;padding:16px;">No pending requests</div>';
+    } else {
+      // Store requests for button handlers
+      window._tolRequests = res;
+      list.innerHTML = res.map(function(r,i){
+        return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:12px;margin-bottom:8px;">'
+          +'<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-bottom:4px;">'+r.location+' &middot; '+r.operator_email+'</div>'
+          +'<div style="font-size:12px;color:var(--text);margin-bottom:4px;">'+r.current_value+'s &rarr; <strong>'+r.requested_value+'s</strong></div>'
+          +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">'+r.reason+'</div>'
+          +'<div style="display:flex;gap:6px;">'
+          +'<button class="btn btn-ok btn-sm" style="flex:1;" onclick="handleApproveTol('+i+')">&#x2705; Approve</button>'
+          +'<button class="btn btn-err btn-sm" style="flex:1;" onclick="handleRejectTol('+i+')">&#x274C; Reject</button>'
+          +'</div>'
+          +'</div>';
+      }).join('');
     }
+    document.getElementById('modal-tolapprove').style.display='flex';
+  }catch(e){
+    hideLoad();
+    toast('Failed: '+e.message,'err');
   }
-  return results;
 }
 
-function approveToleranceRequest(data) {
-  var sh = ensureTolSheet();
-  var statusCol = 7;
-  sh.getRange(data.row, statusCol).setValue('APPROVED');
-
-  var locSheet = getSheet(SH_LOCS);
-  var locData = locSheet.getDataRange().getValues();
-  var headers = locData[0];
-  var codeIdx = headers.indexOf('code');
-  var tolIdx = headers.indexOf('default_tolerance');
-
-  if (tolIdx === -1) {
-    locSheet.getRange(1, headers.length + 1).setValue('default_tolerance');
-    tolIdx = headers.length;
-  }
-
-  for (var i = 1; i < locData.length; i++) {
-    if (String(locData[i][codeIdx]).trim() === String(data.location).trim()) {
-      locSheet.getRange(i + 1, tolIdx + 1).setValue(data.new_value);
-      break;
-    }
-  }
-
-  return { ok: true };
+async function handleApproveTol(idx){
+  var r = window._tolRequests && window._tolRequests[idx];
+  if(!r) return;
+  showLoad('Approving...');
+  try{
+    await gsPost({action:'approveToleranceRequest', row:r.row, location:r.location, new_value:r.requested_value});
+    hideLoad();
+    toast('Approved! Tolerance for '+r.location+' set to '+r.requested_value+'s','ok');
+    document.getElementById('modal-tolapprove').style.display='none';
+  }catch(e){ hideLoad(); toast('Error: '+e.message,'err'); }
 }
 
-function rejectToleranceRequest(data) {
-  var sh = ensureTolSheet();
-  sh.getRange(data.row, 7).setValue('REJECTED');
-  return { ok: true };
+async function handleRejectTol(idx){
+  var r = window._tolRequests && window._tolRequests[idx];
+  if(!r) return;
+  showLoad('Rejecting...');
+  try{
+    await gsPost({action:'rejectToleranceRequest', row:r.row});
+    hideLoad();
+    toast('Request rejected.','ok');
+    document.getElementById('modal-tolapprove').style.display='none';
+  }catch(e){ hideLoad(); toast('Error: '+e.message,'err'); }
 }
+
+async function approveTolRequest(idx, newVal, loc, row){
+  await handleApproveTol(idx);
+}
+async function rejectTolRequest(row){
+  await handleRejectTol(0);
+}
+
 
 // ══════════════════════════════════════════════════════════════
-//  MANUAL SYNC — admin triggered, same as 5AM/2PM but on demand
+//  MANUAL SYNC — admin triggers Supabase → GSheet immediately
 // ══════════════════════════════════════════════════════════════
-function manualSync() {
-  try {
-    Logger.log('Manual sync triggered at ' + new Date().toISOString());
-    var result = dailyEodSync('manual-force-sync');
-    if (result && result.ok) {
-      return { ok: true, synced: result.synced, message: 'Sync complete. Check Google Sheet for latest data.' };
+async function manualSyncNow(){
+  var btn = document.getElementById('manual-sync-btn');
+  var status = document.getElementById('manual-sync-status');
+  if(btn){ btn.disabled=true; btn.textContent='⏳ Syncing...'; }
+  if(status) status.textContent = '';
+  try{
+    var res = await gsPost({action:'manualSync'});
+    if(btn){ btn.disabled=false; btn.textContent='⚡ FORCE SYNC TO SHEET'; }
+    if(res && res.ok){
+      if(status) status.textContent = '✅ Sync complete — ' + new Date().toLocaleTimeString('en-IN');
+      // Reload records to show updated data
+      showLoad('Reloading data...');
+      await loadRecords();
+      hideLoad();
+      renderDash();
+      toast('Sync complete! Data updated.','ok');
+    } else {
+      if(status) status.textContent = '❌ ' + (res&&res.error||'Sync failed');
+      toast('Sync failed: '+(res&&res.error||'unknown'),'err');
     }
-    return { ok: false, error: (result && result.error) || 'Unknown sync error' };
-  } catch(e) {
-    return { ok: false, error: e.message };
+  }catch(e){
+    if(btn){ btn.disabled=false; btn.textContent='⚡ FORCE SYNC TO SHEET'; }
+    if(status) status.textContent = '❌ ' + e.message;
+    toast('Sync error: '+e.message,'err');
   }
 }
+
+</script>
+</body>
+</html>

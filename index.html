@@ -412,6 +412,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="view" id="v-ausers">
         <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;">
           <button class="btn btn-t1 btn-sm" onclick="openAddUser()">+ ADD USER</button>
+          <button class="btn btn-ghost btn-sm" onclick="syncUsersToSheetNow()">↻ SYNC TO SHEET</button>
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="user-search" placeholder="Search..." oninput="renderUsers()"></div>
         </div>
         <div class="card">
@@ -1816,6 +1817,19 @@ async function deleteUser(email){
   toast('User deleted','ok');
 }
 
+async function syncUsersToSheetNow(){
+  showLoad('Syncing users to Google Sheet...');
+  try{
+    const res=await gsPost({action:'syncUsersToSheet'});
+    hideLoad();
+    if(res?.error){ toast('Sync failed: '+res.error,'err'); return; }
+    toast('Synced '+(res?.count ?? '?')+' users to the Sheet','ok');
+  }catch(e){
+    hideLoad();
+    toast('Sync failed: '+e.message,'err');
+  }
+}
+
 // ══════════════════════════════════════════════════════════════
 //  LOCATIONS
 // ══════════════════════════════════════════════════════════════
@@ -2085,6 +2099,7 @@ async function renderAdherence(){
   }
 
   const countMap = {};
+  const keysWithSbData = new Set(); // FIX: track which location/day pairs Supabase already covers
 
   // Supabase: live/recent scans for last 10 days
   try{
@@ -2096,16 +2111,21 @@ async function renderAdherence(){
         if(!day||days.indexOf(day)===-1) return;
         const key = (r.location_code||'').trim()+'_'+day;
         countMap[key] = (countMap[key]||0)+1;
+        keysWithSbData.add(key);
       });
     }
   }catch(e){ console.warn('Adherence SB:',e.message); }
 
-  // GSheet: synced/historical records via GAS
+  // GSheet: only used as a fallback for days Supabase has already purged
+  // (synced rows aren't deleted from Supabase until 72h after syncing, so
+  // for ~3 recent days both sources have the same rows — summing them was
+  // double-counting. Now: if Supabase has ANY data for a location/day, that
+  // day is considered fully covered and the GSheet count is skipped for it.)
   try{
     const gsData = await gsGet({action:'adherence', days: days.join(',')});
     if(gsData && gsData.counts){
       Object.entries(gsData.counts).forEach(function([key,val]){
-        // GSheet counts add on top of Supabase (no double count — synced rows deleted from SB)
+        if(keysWithSbData.has(key)) return; // Supabase already has this — don't add on top
         countMap[key] = (countMap[key]||0) + val;
       });
     }

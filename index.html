@@ -2100,9 +2100,15 @@ async function renderAdherence(){
   }
 
   const countMap = {};
-  const keysWithSbData = new Set(); // FIX: track which location/day pairs Supabase already covers
 
-  // Supabase: live/recent scans for last 10 days
+  // Supabase only. GSheet cleanup is currently paused (on request), so
+  // Supabase now retains ALL scans going forward — it's a complete source
+  // by itself. The old merge-with-GSheet logic was causing two problems:
+  // stale duplicate rows in the Sheet (from the pre-fix sync crash) were
+  // still inflating some totals, and other rows were landing under keys
+  // that never matched up (e.g. HYD's today count going missing). Once
+  // cleanup gets turned back on, the GSheet fallback can be reintroduced
+  // for days old enough to have been purged — not needed while it's off.
   try{
     const oldest = days[0]+'T00:00:00Z';
     const sbData = await sbGet('/rest/v1/scans?scanned_at=gte.'+oldest+'&select=location_code,scanned_at&limit=20000');
@@ -2112,25 +2118,9 @@ async function renderAdherence(){
         if(!day||days.indexOf(day)===-1) return;
         const key = (r.location_code||'').trim()+'_'+day;
         countMap[key] = (countMap[key]||0)+1;
-        keysWithSbData.add(key);
       });
     }
   }catch(e){ console.warn('Adherence SB:',e.message); }
-
-  // GSheet: only used as a fallback for days Supabase has already purged
-  // (synced rows aren't deleted from Supabase until 72h after syncing, so
-  // for ~3 recent days both sources have the same rows — summing them was
-  // double-counting. Now: if Supabase has ANY data for a location/day, that
-  // day is considered fully covered and the GSheet count is skipped for it.)
-  try{
-    const gsData = await gsGet({action:'adherence', days: days.join(',')});
-    if(gsData && gsData.counts){
-      Object.entries(gsData.counts).forEach(function([key,val]){
-        if(keysWithSbData.has(key)) return; // Supabase already has this — don't add on top
-        countMap[key] = (countMap[key]||0) + val;
-      });
-    }
-  }catch(e){ console.warn('Adherence GSheet error:',e.message); }
 
   // Build table
   const fmtDate = function(d){

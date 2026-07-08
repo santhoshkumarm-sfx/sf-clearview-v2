@@ -334,7 +334,7 @@ video{width:100%;height:100%;object-fit:cover;}
                   <div style="font-size:10px;color:var(--text3);font-family:var(--mono);letter-spacing:1px;margin-bottom:4px;">TIME TOLERANCE</div>
                   <div style="font-family:var(--mono);font-size:14px;color:var(--text);">
                     <span id="tol-display">300</span> seconds
-                    <span style="font-size:10px;color:var(--text3);margin-left:8px;">Level 1: AWB · Level 2: Timestamp · Level 3: Sequential</span>
+                    <span style="font-size:10px;color:var(--text3);margin-left:8px;">Level 1: exact AWB match · Level 2: timestamp within tolerance · no match otherwise</span>
                   </div>
                 </div>
                 <button class="btn btn-ghost btn-sm" onclick="openTolRequest()" style="font-size:10px;letter-spacing:1px;">📧 REQUEST CHANGE</button>
@@ -1514,49 +1514,60 @@ async function processFd(files){
   const unlinked=myToday().filter(r=>!r.image_linked&&r.image_linked!=='true');
   const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
   const used=new Set(), matches=[];
+  // ── MATCHING RULES (only two ways a file may ever be matched) ────────
+  // 1. AWB found in the filename → must match a record with that EXACT
+  //    AWB, or the file stays unmatched. Never falls through to anything
+  //    else — an AWB claim is the strongest signal there is, and if it
+  //    doesn't resolve cleanly it should never be silently reassigned.
+  // 2. No AWB in the filename, but a timestamp is → matched only if
+  //    within the configured tolerance window. Outside that window, or
+  //    with no timestamp at all, the file stays unmatched.
+  // REMOVED: "Best effort" (nearest-timestamp-no-matter-how-far) and
+  // "Sequential" (next-available-record) fallbacks. Both were able to
+  // force a match onto an unrelated record once the real signal wasn't
+  // there — which is how a mismatch on one file could cascade into wrong
+  // AWB/image pairings for every file after it, invisibly, while the
+  // operator's screen just said "all matched." An unmatched file is a
+  // safe, visible outcome. A wrong match is not.
   for(let i=0;i<files.length;i++){
     document.getElementById('fd-prog-bar').style.width=Math.round(((i+1)/files.length)*80)+'%';
     const file=files[i], d=await readFile(file), parsed=parseImageFilename(file.name);
     let rec=null, method='', diffSec=null;
-    // Normalize AWB for comparison — strip spaces, uppercase both sides
     if(parsed.awb){
-      // FIX: if the filename clearly contains a real AWB, this image may
-      // ONLY be matched to a record with that exact AWB — never fall
-      // through to timestamp/sequential guessing. Previously, a second
-      // file sharing the same AWB (e.g. a retake, or two angles saved by
-      // the machine) would fail this exact match (its record already
-      // used) and silently fall through to "Sequential", attaching it to
-      // a completely unrelated shipment's record. That's a data-integrity
-      // problem, not just an unmatched file — better to leave it unmatched
-      // and flagged than attach the wrong photo to the wrong AWB.
       const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===parsed.awb.trim().toUpperCase());
       if(f){
         rec=f; method='AWB in name'; diffSec=0;
       } else {
-        method = 'AWB already linked — skipped to avoid mismatch';
+        method = 'AWB not found / already linked — left unmatched';
       }
+    } else if(parsed.timestamp){
+      let best=Infinity;
+      for(const r of unlinked){
+        if(used.has(r.id))continue;
+        const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000);
+        if(diff<best&&diff<=tolerance){ best=diff; rec=r; method='Time match'; diffSec=Math.round(diff); }
+      }
+      if(!rec) method = 'No AWB, no timestamp match within tolerance — left unmatched';
     } else {
-      if(parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best&&diff<=tolerance){best=diff;rec=r;method='Time match';diffSec=Math.round(diff);} } }
-      if(!rec&&parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best){best=diff;rec=r;method='Best('+Math.round(best/60)+'m)';diffSec=Math.round(best);} } }
-      if(!rec){ const fallback=unlinked.find(r=>!used.has(r.id)); if(fallback){rec=fallback;method='Sequential';} }
+      method = 'No AWB or readable timestamp in filename — left unmatched';
     }
     if(rec) used.add(rec.id);
     matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed});
   }
   pendingFd=matches;
   const ok=matches.filter(m=>m.ok).length;
+  const unmatchedCount=matches.length-ok;
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
   const byTime=matches.filter(m=>m.method==='Time match').length;
-  const byBest=matches.filter(m=>m.method?.startsWith('Best')).length;
   document.getElementById('fd-match-list').innerHTML=
     '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
     +'<span class="pill pill-ok">✅ '+ok+'/'+unlinked.length+'</span>'
     +(byAwb?'<span class="pill pill-t1">AWB: '+byAwb+'</span>':'')
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
-    +(byBest?'<span class="pill pill-warn">Best: '+byBest+'</span>':'')
+    +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
     +'</div>'
     +matches.map(m=>{
-      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.method?.startsWith('Best')?'var(--warn)':'var(--text3)';
+      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':'var(--text3)';
       return '<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(28,58,85,.3);font-size:11px;">'
         +'<img src="'+m.data+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;">'
         +'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+m.name+'</span>'

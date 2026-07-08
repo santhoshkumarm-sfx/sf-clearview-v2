@@ -1519,13 +1519,27 @@ async function processFd(files){
     const file=files[i], d=await readFile(file), parsed=parseImageFilename(file.name);
     let rec=null, method='', diffSec=null;
     // Normalize AWB for comparison — strip spaces, uppercase both sides
-  if(parsed.awb){
-    const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===parsed.awb.trim().toUpperCase());
-    if(f){rec=f;method='AWB in name';diffSec=0;}
-  }
-    if(!rec&&parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best&&diff<=tolerance){best=diff;rec=r;method='Time match';diffSec=Math.round(diff);} } }
-    if(!rec&&parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best){best=diff;rec=r;method='Best('+Math.round(best/60)+'m)';diffSec=Math.round(best);} } }
-    if(!rec){ const fallback=unlinked.find(r=>!used.has(r.id)); if(fallback){rec=fallback;method='Sequential';} }
+    if(parsed.awb){
+      // FIX: if the filename clearly contains a real AWB, this image may
+      // ONLY be matched to a record with that exact AWB — never fall
+      // through to timestamp/sequential guessing. Previously, a second
+      // file sharing the same AWB (e.g. a retake, or two angles saved by
+      // the machine) would fail this exact match (its record already
+      // used) and silently fall through to "Sequential", attaching it to
+      // a completely unrelated shipment's record. That's a data-integrity
+      // problem, not just an unmatched file — better to leave it unmatched
+      // and flagged than attach the wrong photo to the wrong AWB.
+      const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===parsed.awb.trim().toUpperCase());
+      if(f){
+        rec=f; method='AWB in name'; diffSec=0;
+      } else {
+        method = 'AWB already linked — skipped to avoid mismatch';
+      }
+    } else {
+      if(parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best&&diff<=tolerance){best=diff;rec=r;method='Time match';diffSec=Math.round(diff);} } }
+      if(!rec&&parsed.timestamp){ let best=Infinity; for(const r of unlinked){ if(used.has(r.id))continue; const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000); if(diff<best){best=diff;rec=r;method='Best('+Math.round(best/60)+'m)';diffSec=Math.round(best);} } }
+      if(!rec){ const fallback=unlinked.find(r=>!used.has(r.id)); if(fallback){rec=fallback;method='Sequential';} }
+    }
     if(rec) used.add(rec.id);
     matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed});
   }
@@ -1546,8 +1560,8 @@ async function processFd(files){
       return '<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(28,58,85,.3);font-size:11px;">'
         +'<img src="'+m.data+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;">'
         +'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+m.name+'</span>'
-        +'<span style="font-family:var(--mono);font-weight:700;color:'+(m.ok?'var(--success)':'var(--danger)')+';">'+(m.ok?m.rec.awb:'no match')+'</span>'
-        +(m.ok?'<span style="font-family:var(--mono);font-size:9px;color:'+tc+';">'+m.method+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>':'')
+        +'<span style="font-family:var(--mono);font-weight:700;color:'+(m.ok?'var(--success)':'var(--danger)')+';">'+(m.ok?m.rec.awb:(m.parsed?.awb||'no match'))+'</span>'
+        +'<span style="font-family:var(--mono);font-size:9px;color:'+(m.ok?tc:'var(--danger)')+';">'+(m.method||'')+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>'
         +'</div>';
     }).join('');
   document.getElementById('fd-result').style.display='block';

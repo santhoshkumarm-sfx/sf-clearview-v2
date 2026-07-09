@@ -956,8 +956,18 @@ async function enterApp(){
   }
   saveSession();
   showLoad('Loading...');
-  await Promise.all([loadLocs(), loadRecords(), loadAwbToday(), isAdmin?loadUsers():Promise.resolve()]);
-  hideLoad();
+  // FIX: this used to have no error handling — if ANY of these fetches
+  // rejected (e.g. a malformed request), the loading overlay would stay
+  // up forever with no way out, since hideLoad() on the next line would
+  // simply never be reached. Now it always dismisses, success or failure.
+  try{
+    await Promise.all([loadLocs(), loadRecords(), loadAwbToday(), isAdmin?loadUsers():Promise.resolve()]);
+  }catch(e){
+    console.error('enterApp load error:', e.message);
+    toast('Some data failed to load — try refreshing. ('+e.message+')','err');
+  }finally{
+    hideLoad();
+  }
   if(isAdmin||isSupervisor){
     const adInp=document.getElementById('dash-date');
     if(adInp) adInp.value=todayStr();
@@ -1010,7 +1020,7 @@ async function loadRecords(){
   const today=todayStr();
   if(isAdmin||isSupervisor){
     // Admin: Supabase (live unsynced) + GSheet (already synced) merged
-    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00+05:30&order=scanned_at.desc');
+    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00%2B05:30&order=scanned_at.desc');
     const sbRecs=Array.isArray(sbData)?sbData:[];
 
     // Load today's synced records from GSheet via GAS
@@ -1058,7 +1068,7 @@ async function loadRecords(){
     let syncedRecs=[];
     if(cached){ try{ syncedRecs=JSON.parse(cached); }catch(e){} }
     // Then get live unsynced from Supabase
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00+05:30&order=scanned_at.desc');
+    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00%2B05:30&order=scanned_at.desc');
     const liveRecs=Array.isArray(data)?data.map(function(r){return Object.assign({},r,{image_linked:r.image_linked||false});}):[];
     // Merge live + cached synced (live takes priority, no duplicates)
     const merged=[...liveRecs];
@@ -1700,7 +1710,7 @@ async function refreshDashboard(){
   if(lbl) lbl.style.display='inline';
   // Today: merge Supabase (live) + GSheet (synced). Past: GSheet only
   if(date===todayStr()){
-    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00+05:30&order=scanned_at.desc');
+    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00%2B05:30&order=scanned_at.desc');
     const sbRecs=Array.isArray(sbData)?sbData:[];
     let gsRecs=[];
     try{
@@ -1996,7 +2006,7 @@ async function renderAllRec(){
   const date=document.getElementById('arec-date')?.value||todayStr();
 
   // Always fetch fresh from both Supabase + GSheet for selected date
-  const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00+05:30&scanned_at=lte.'+date+'T23:59:59+05:30&order=scanned_at.desc');
+  const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.desc');
   const sbRecs=Array.isArray(sbData)?sbData:[];
   let gsRecs=[];
   try{
@@ -2175,7 +2185,7 @@ async function renderAdherence(){
   // cleanup gets turned back on, the GSheet fallback can be reintroduced
   // for days old enough to have been purged — not needed while it's off.
   try{
-    const oldest = days[0]+'T00:00:00+05:30';
+    const oldest = days[0]+'T00:00:00%2B05:30';
     const sbData = await sbGetAll('/rest/v1/scans?scanned_at=gte.'+oldest+'&select=location_code,scanned_at');
     if(Array.isArray(sbData)){
       sbData.forEach(function(r){

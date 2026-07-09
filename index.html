@@ -762,7 +762,20 @@ function hideLoad(){ document.getElementById('loadingOverlay').style.display='no
 function openModal(id){ document.getElementById(id).classList.add('open'); }
 function closeModal(id){ document.getElementById(id).classList.remove('open'); }
 function fmtDate(d){ const p=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
-function todayStr(){ return fmtDate(new Date()); }
+// FIX: today's date must be anchored to IST explicitly, not the device's
+// own local timezone setting (which should be IST but isn't guaranteed),
+// and — critically — a scan's calendar date must be read from its
+// timestamp in IST, not by chopping the first 10 chars off a UTC string.
+// IST is UTC+5:30, so any scan made 12:00am-5:29am IST has a UTC
+// timestamp still dated the PREVIOUS day — that mismatch was silently
+// dropping the whole night shift from "today" everywhere in the app.
+function todayStr(){
+  return new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Kolkata'}).format(new Date());
+}
+function toISTDateStr(ts){
+  if(!ts) return '';
+  return new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Kolkata'}).format(new Date(ts));
+}
 async function hashPw(s){
   const b=new TextEncoder().encode(s);
   const buf=await crypto.subtle.digest('SHA-256',b);
@@ -772,7 +785,7 @@ function myLoc(){ return CU?.location_code||''; }
 function myMT(){  return CU?.machine_type||1; }
 function myToday(){
   const t=todayStr();
-  return DB.records.filter(r=>r.location_code===myLoc()&&String(r.scanned_at).substring(0,10)===t);
+  return DB.records.filter(r=>r.location_code===myLoc()&&toISTDateStr(r.scanned_at)===t);
 }
 function resultPill(r){
   if(r==='ORIGINAL') return '<span class="pill pill-ok">✅ Original</span>';
@@ -997,7 +1010,7 @@ async function loadRecords(){
   const today=todayStr();
   if(isAdmin||isSupervisor){
     // Admin: Supabase (live unsynced) + GSheet (already synced) merged
-    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00Z&order=scanned_at.desc');
+    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00+05:30&order=scanned_at.desc');
     const sbRecs=Array.isArray(sbData)?sbData:[];
 
     // Load today's synced records from GSheet via GAS
@@ -1032,7 +1045,7 @@ async function loadRecords(){
     gsRecs.forEach(function(gr){
       if(gr.id&&sbIds.has(gr.id)) return; // already in Supabase set
       const exists=merged.find(function(r){
-        return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+        return r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at);
       });
       if(!exists) merged.push(gr);
     });
@@ -1045,7 +1058,7 @@ async function loadRecords(){
     let syncedRecs=[];
     if(cached){ try{ syncedRecs=JSON.parse(cached); }catch(e){} }
     // Then get live unsynced from Supabase
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00Z&order=scanned_at.desc');
+    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00+05:30&order=scanned_at.desc');
     const liveRecs=Array.isArray(data)?data.map(function(r){return Object.assign({},r,{image_linked:r.image_linked||false});}):[];
     // Merge live + cached synced (live takes priority, no duplicates)
     const merged=[...liveRecs];
@@ -1687,7 +1700,7 @@ async function refreshDashboard(){
   if(lbl) lbl.style.display='inline';
   // Today: merge Supabase (live) + GSheet (synced). Past: GSheet only
   if(date===todayStr()){
-    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00Z&order=scanned_at.desc');
+    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00+05:30&order=scanned_at.desc');
     const sbRecs=Array.isArray(sbData)?sbData:[];
     let gsRecs=[];
     try{
@@ -1715,7 +1728,7 @@ async function refreshDashboard(){
     gsRecs.forEach(function(gr){
       if(gr.id&&sbIds.has(gr.id)) return;
       const exists=merged.find(function(r){
-        return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+        return r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at);
       });
       if(!exists) merged.push(gr);
     });
@@ -1983,7 +1996,7 @@ async function renderAllRec(){
   const date=document.getElementById('arec-date')?.value||todayStr();
 
   // Always fetch fresh from both Supabase + GSheet for selected date
-  const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00Z&scanned_at=lte.'+date+'T23:59:59Z&order=scanned_at.desc');
+  const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00+05:30&scanned_at=lte.'+date+'T23:59:59+05:30&order=scanned_at.desc');
   const sbRecs=Array.isArray(sbData)?sbData:[];
   let gsRecs=[];
   try{
@@ -2011,7 +2024,7 @@ async function renderAllRec(){
   gsRecs.forEach(function(gr){
     if(gr.id&&sbIds.has(gr.id)) return;
     const dup=allRecs.find(function(r){
-      return r.awb===gr.awb&&String(r.scanned_at).substring(0,10)===String(gr.scanned_at).substring(0,10);
+      return r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at);
     });
     if(!dup) allRecs.push(gr);
   });
@@ -2020,7 +2033,7 @@ async function renderAllRec(){
   if(s)    recs=recs.filter(r=>(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   if(loc)  recs=recs.filter(r=>r.location_code===loc);
   if(res)  recs=recs.filter(r=>r.result===res);
-  if(date) recs=recs.filter(r=>String(r.scanned_at).substring(0,10)===date);
+  if(date) recs=recs.filter(r=>toISTDateStr(r.scanned_at)===date);
   const cnt=document.getElementById('arec-count');
   if(cnt) cnt.innerHTML='<span class="pill pill-t1">'+recs.length+' records</span>';
   document.getElementById('arec-body').innerHTML=recs.length===0
@@ -2058,7 +2071,7 @@ async function exportCSV(mode){
     recs=DB.records
       .filter(r=>!loc||r.location_code===loc)
       .filter(r=>!res||r.result===res)
-      .filter(r=>!date||String(r.scanned_at).substring(0,10)===date)
+      .filter(r=>!date||toISTDateStr(r.scanned_at)===date)
       .filter(r=>!s||(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   } else { recs=myToday(); }
   const h=['AWB','Date','Location','Product','Category','Result','Tamper','Shoebox','Remarks','Operator','X-Ray Image','Label Image','Front Image','Back Image'];
@@ -2119,11 +2132,16 @@ async function renderAdherence(){
   const wrap = document.getElementById('adhere-table-wrap');
   wrap.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text3);font-family:var(--mono);">Loading adherence data...</div>';
 
-  // Build last 10 days (today = last column, oldest = first)
+  // Build last 10 days (today = last column, oldest = first) — anchored
+  // on IST "today" and stepped backwards a whole day at a time via UTC
+  // noon (avoids any DST/boundary edge cases), so this doesn't drift even
+  // if the device's own clock/timezone isn't set to IST.
   const days = [];
+  const todayIST = todayStr();
   for(let i=9; i>=0; i--){
-    const d = new Date(); d.setDate(d.getDate()-i);
-    days.push(d.toISOString().split('T')[0]);
+    const base = new Date(todayIST+'T12:00:00Z');
+    base.setUTCDate(base.getUTCDate()-i);
+    days.push(base.toISOString().split('T')[0]);
   }
 
   // Get locations — reload fresh if empty (don't rely on cache)
@@ -2157,11 +2175,11 @@ async function renderAdherence(){
   // cleanup gets turned back on, the GSheet fallback can be reintroduced
   // for days old enough to have been purged — not needed while it's off.
   try{
-    const oldest = days[0]+'T00:00:00Z';
+    const oldest = days[0]+'T00:00:00+05:30';
     const sbData = await sbGetAll('/rest/v1/scans?scanned_at=gte.'+oldest+'&select=location_code,scanned_at');
     if(Array.isArray(sbData)){
       sbData.forEach(function(r){
-        const day = String(r.scanned_at||'').substring(0,10);
+        const day = toISTDateStr(r.scanned_at);
         if(!day||days.indexOf(day)===-1) return;
         const key = (r.location_code||'').trim()+'_'+day;
         countMap[key] = (countMap[key]||0)+1;

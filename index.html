@@ -207,6 +207,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item"   id="ni-aawb"   onclick="show('v-aawb')"><span class="nav-icon">📦</span>AWB Master</div>
       <div class="nav-item"   id="ni-arec"   onclick="show('v-arec')"><span class="nav-icon">📋</span>All Records</div>
       <div class="nav-item"   id="ni-adhere" onclick="show('v-adhere')"><span class="nav-icon">📊</span>Adherence</div>
+      <div class="nav-item"   id="ni-shifts" onclick="show('v-shifts')"><span class="nav-icon">🕐</span>Shift Logs</div>
       <div class="nav-item"   id="ni-tolreq" onclick="openTolApprove()"><span class="nav-icon">⚙️</span>Tol. Requests</div>
     </div>
     <div class="sb-foot">
@@ -509,6 +510,23 @@ video{width:100%;height:100%;object-fit:cover;}
         </div>
       </div>
 
+      <!-- ── SHIFT LOGS ── -->
+      <div class="view" id="v-shifts">
+        <div class="fbar">
+          <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="shifts-search" placeholder="Search operator or location..." oninput="renderShifts()"></div>
+          <input type="date" id="shifts-date" onchange="renderShifts()">
+          <button class="btn btn-ghost btn-sm" onclick="setShiftsDate('today')">📅 Today</button>
+          <button class="btn btn-ghost btn-sm" onclick="renderShifts()" style="letter-spacing:1px;">↻ REFRESH</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">🕐</span><span class="card-head-title">SHIFT LOGS</span><span id="shifts-count" class="card-head-right"></span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>Operator</th><th>Location</th><th>Shift Start</th><th>Shift End</th><th>Duration</th><th>Scans</th><th>Status</th></tr></thead>
+            <tbody id="shifts-body"></tbody>
+          </table></div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -638,6 +656,7 @@ let DB = {records:[], users:[], locations:[], awbMaster:{}};
 let camStream=null, captured=[null,null,null], nlMT=1;
 let pendingXl=[], pendingFd=[];
 let pendingUser=null;
+let currentShiftId=null;
 
 // ══════════════════════════════════════════════════════════════
 //  SUPABASE HELPERS (scan save, login, locations, users, awb)
@@ -736,6 +755,7 @@ function dismissNotif(){ var el=document.getElementById('post-upload-notif'); if
 function continueScanning(){ dismissNotif(); show('v-scan'); }
 function endShift(){
   dismissNotif();
+  endCurrentShift(); // records shift_end + final scan count — fire and forget, don't block the UI
   // Show simple thank you — no sync, no navigation noise
   const thanks = document.createElement('div');
   thanks.style.cssText = 'position:fixed;inset:0;background:rgba(6,11,16,.95);z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
@@ -787,6 +807,37 @@ function myToday(){
   const t=todayStr();
   return DB.records.filter(r=>r.location_code===myLoc()&&toISTDateStr(r.scanned_at)===t);
 }
+
+// ══════════════════════════════════════════════════════════════
+//  SHIFT LOGGING — start on login, end on the End Shift button
+// ══════════════════════════════════════════════════════════════
+async function ensureShift(){
+  if(currentShiftId) return currentShiftId;
+  const key='cv_shift_id_'+todayStr()+'_'+myLoc()+'_'+CU.email;
+  const saved=sessionStorage.getItem(key);
+  if(saved){ currentShiftId=saved; return currentShiftId; }
+  try{
+    const saved2=await sbPost('shift_logs',{operator_email:CU.email,location_code:myLoc(),scan_count:0});
+    if(saved2?.id){
+      currentShiftId=saved2.id;
+      sessionStorage.setItem(key,currentShiftId);
+    }
+  }catch(e){ console.warn('ensureShift failed:',e.message); }
+  return currentShiftId;
+}
+async function endCurrentShift(){
+  if(!currentShiftId) return;
+  try{
+    await sbPatch('shift_logs','id=eq.'+encodeURIComponent(currentShiftId),{
+      shift_end:new Date().toISOString(),
+      scan_count:myToday().length
+    });
+  }catch(e){ console.warn('endCurrentShift failed:',e.message); }
+  const key='cv_shift_id_'+todayStr()+'_'+myLoc()+'_'+CU.email;
+  sessionStorage.removeItem(key);
+  currentShiftId=null;
+}
+
 function resultPill(r){
   if(r==='ORIGINAL') return '<span class="pill pill-ok">✅ Original</span>';
   if(r==='FAKE')     return '<span class="pill pill-err">🚫 Fake</span>';
@@ -834,7 +885,7 @@ function clearSession(){
 function show(id){
   // Role guards
   const opOnly=['v-scan','v-shift','v-rec'];
-  const admOnly=['v-adash','v-ausers','v-aloc','v-aawb','v-arec','v-adhere'];
+  const admOnly=['v-adash','v-ausers','v-aloc','v-aawb','v-arec','v-adhere','v-shifts'];
   if((isAdmin||isSupervisor) && opOnly.includes(id)){ show('v-adash'); return; }
   if(!isAdmin && !isSupervisor && admOnly.includes(id)){ show('v-scan'); return; }
 
@@ -843,10 +894,10 @@ function show(id){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('on'));
   const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec',
             'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
-            'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere'};
+            'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts'};
   const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS',
             'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
-            'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE'};
+            'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS'};
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
   if(id==='v-shift')  renderShift();
@@ -861,6 +912,11 @@ function show(id){
     renderAllRec();
   }
   if(id==='v-adhere') renderAdherence();
+  if(id==='v-shifts'){
+    var sd=document.getElementById('shifts-date');
+    if(sd&&!sd.value) sd.value=todayStr();
+    renderShifts();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -953,6 +1009,7 @@ async function enterApp(){
     const mt=myMT();
     document.getElementById('sb-machine').innerHTML=mt===1?'<span class="pill pill-t1">TYPE 1 EXCEL</span>':'<span class="pill pill-t2">TYPE 2 FOLDER</span>';
     document.getElementById('tb-machine').innerHTML=mt===1?'<span class="pill pill-t1">T1</span>':'<span class="pill pill-t2">T2</span>';
+    ensureShift(); // records shift start = login time; safe no-op if one's already open today
   }
   saveSession();
   showLoad('Loading...');
@@ -1152,12 +1209,14 @@ async function submitScan(){
   const btn=document.getElementById('save-btn');
   btn.disabled=true; btn.textContent='SAVING...';
 
+  const shiftId=await ensureShift(); // safety net — normally already set from login
+
   const scanPayload={
     awb,
     location_code:myLoc(), machine_type:myMT(),
     operator_email:CU.email, result, tamper_status:tamper,
     shoe_box:awb.startsWith('R')?(document.querySelector('input[name="shoe"]:checked')?.value||''):'N/A',
-    remarks, seq_num:seq,
+    remarks, seq_num:seq, shift_id:shiftId||null,
     product_name:product?.productName||'', product_category:product?.category||'',
     synced_to_sheet:false
   };
@@ -1578,6 +1637,26 @@ async function processFd(files){
     matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed});
   }
   pendingFd=matches;
+
+  // Log every matching decision (matched AND unmatched) to the MatchLog
+  // sheet in one batch — this is the permanent record of why any given
+  // image did or didn't link, instead of only a transient console line.
+  try{
+    gsPost({
+      action:'logMatchResults',
+      location: myLoc(),
+      operator: CU.email,
+      results: matches.map(m=>({
+        filename: m.name,
+        parsedAwb: m.parsed?.awb || '',
+        matchedAwb: m.ok ? m.rec.awb : '',
+        method: m.method || '',
+        diffSec: m.diffSec,
+        ok: m.ok
+      }))
+    });
+  }catch(e){ console.warn('MatchLog send failed (non-fatal):', e.message); }
+
   const ok=matches.filter(m=>m.ok).length;
   const unmatchedCount=matches.length-ok;
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
@@ -2247,6 +2326,61 @@ async function renderAdherence(){
 
   document.getElementById('adhere-total').textContent = grandTotal.toLocaleString()+' total scans';
   document.getElementById('adhere-updated').textContent = 'Updated: '+new Date().toLocaleTimeString('en-IN');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  SHIFT LOGS — start/end time, duration, scan count per operator
+// ══════════════════════════════════════════════════════════════
+function setShiftsDate(range){
+  const inp=document.getElementById('shifts-date');
+  if(!inp) return;
+  if(range==='today') inp.value=todayStr();
+  renderShifts();
+}
+
+async function renderShifts(){
+  const body=document.getElementById('shifts-body');
+  const date=document.getElementById('shifts-date')?.value||todayStr();
+  const s=(document.getElementById('shifts-search')?.value||'').toLowerCase();
+  body.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:20px;">Loading...</td></tr>';
+  let rows=[];
+  try{
+    // shift_start falling on the selected IST date — fetched with a wide
+    // enough UTC window to safely cover it, then filtered precisely by
+    // IST date client-side (same fix as everywhere else date-related).
+    rows = await sbGetAll('/rest/v1/shift_logs?order=shift_start.desc&shift_start=gte.'+date+'T00:00:00%2B05:30&shift_start=lte.'+date+'T23:59:59%2B05:30');
+  }catch(e){
+    body.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--danger);padding:20px;">Failed to load: '+e.message+'</td></tr>';
+    return;
+  }
+  if(s){
+    rows=rows.filter(r=>(r.operator_email||'').toLowerCase().includes(s)||(r.location_code||'').toLowerCase().includes(s));
+  }
+  document.getElementById('shifts-count').innerHTML='<span class="pill pill-t1">'+rows.length+' shift(s)</span>';
+  body.innerHTML=rows.length===0
+    ?'<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:20px;">No shifts found for this date.</td></tr>'
+    :rows.map((r,i)=>{
+      const start=r.shift_start?new Date(r.shift_start):null;
+      const end=r.shift_end?new Date(r.shift_end):null;
+      const ongoing=!end;
+      let dur='–';
+      if(start){
+        const endPoint = end || new Date();
+        const mins=Math.round((endPoint-start)/60000);
+        const h=Math.floor(mins/60), m=mins%60;
+        dur=h+'h '+m+'m'+(ongoing?' (so far)':'');
+      }
+      return '<tr>'
+        +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+        +'<td style="font-family:var(--mono);font-size:12px;">'+(r.operator_email||'–')+'</td>'
+        +'<td><span class="loc-tag">'+(r.location_code||'–')+'</span></td>'
+        +'<td style="font-family:var(--mono);font-size:11px;">'+(start?start.toLocaleString('en-IN',{dateStyle:'short',timeStyle:'short'}):'–')+'</td>'
+        +'<td style="font-family:var(--mono);font-size:11px;">'+(end?end.toLocaleString('en-IN',{dateStyle:'short',timeStyle:'short'}):'–')+'</td>'
+        +'<td style="font-family:var(--mono);font-size:11px;">'+dur+'</td>'
+        +'<td style="font-family:var(--mono);">'+(r.scan_count??0)+'</td>'
+        +'<td>'+(ongoing?'<span class="pill pill-warn">⏳ Ongoing</span>':'<span class="pill pill-ok">✅ Ended</span>')+'</td>'
+        +'</tr>';
+    }).join('');
 }
 
 

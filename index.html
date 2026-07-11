@@ -257,7 +257,7 @@ video{width:100%;height:100%;object-fit:cover;}
               <div class="fg"><label class="lbl">Tamper Status</label>
                 <div class="radio-row">
                   <label class="rchip r-warn"><input type="radio" name="tr" value="TAMPERED" onchange="updateCameraReq()"><span>⚠ Tampered</span></label>
-                  <label class="rchip r-ok"><input type="radio" name="tr" value="NON-TAMPERED" onchange="updateCameraReq()"><span>✓ Non-Tampered</span></label>
+                  <label class="rchip r-ok"><input type="radio" name="tr" value="NON-TAMPERED" onchange="updateCameraReq()" checked><span>✓ Non-Tampered</span></label>
                 </div>
               </div>
               <div class="fg"><label class="lbl">Remarks</label><textarea id="remarks" placeholder="Optional notes..."></textarea></div>
@@ -335,7 +335,6 @@ video{width:100%;height:100%;object-fit:cover;}
                   <div style="font-size:10px;color:var(--text3);font-family:var(--mono);letter-spacing:1px;margin-bottom:4px;">TIME TOLERANCE</div>
                   <div style="font-family:var(--mono);font-size:14px;color:var(--text);">
                     <span id="tol-display">300</span> seconds
-                    <span style="font-size:10px;color:var(--text3);margin-left:8px;">Level 1: exact AWB match · Level 2: timestamp within tolerance · no match otherwise</span>
                   </div>
                 </div>
                 <button class="btn btn-ghost btn-sm" onclick="openTolRequest()" style="font-size:10px;letter-spacing:1px;">📧 REQUEST CHANGE</button>
@@ -362,7 +361,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="card">
           <div class="card-head"><span class="card-head-icon">✅</span><span class="card-head-title">LINKED TODAY</span></div>
           <div class="tbl-wrap"><table>
-            <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Product</th><th>X-Ray</th><th>Result</th><th>Tamper</th></tr></thead>
+            <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Product</th><th>X-Ray</th><th>Result</th><th>Tamper</th><th>Actions</th></tr></thead>
             <tbody id="eos-linked-body"></tbody>
           </table></div>
         </div>
@@ -1321,11 +1320,16 @@ async function blobToB64(blob){
 
 function clearScan(){
   document.getElementById('awb-inp').value='';
-  document.querySelectorAll('input[name="tr"],input[name="shoe"]').forEach(r=>r.checked=false);
+  document.querySelectorAll('input[name="shoe"]').forEach(r=>r.checked=false);
   // Reset result to ORIGINAL (default)
   const origRadio=document.querySelector('input[name="xr"][value="ORIGINAL"]');
-  if(origRadio){ origRadio.checked=true; updateCameraReq(); }
+  if(origRadio){ origRadio.checked=true; }
   document.querySelectorAll('input[name="xr"]:not([value="ORIGINAL"])').forEach(r=>r.checked=false);
+  // Reset tamper status back to NON-TAMPERED (default)
+  const nonTamperedRadio=document.querySelector('input[name="tr"][value="NON-TAMPERED"]');
+  if(nonTamperedRadio){ nonTamperedRadio.checked=true; }
+  document.querySelectorAll('input[name="tr"]:not([value="NON-TAMPERED"])').forEach(r=>r.checked=false);
+  updateCameraReq();
   document.getElementById('remarks').value='';
   document.getElementById('cam-notice').style.display='none';
   document.getElementById('cam-badge').innerHTML='';
@@ -1463,15 +1467,58 @@ function renderT2(){
 function renderEosLinked(){
   const r=myToday().filter(x=>x.image_linked||x.xray_image_url);
   document.getElementById('eos-linked-body').innerHTML=r.length===0
-    ?'<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:12px;">No linked records yet</td></tr>'
+    ?'<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:12px;">No linked records yet</td></tr>'
     :r.map((rec,i)=>'<tr>'
       +'<td style="color:var(--text3);">'+(i+1)+'</td>'
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
-      +'<td>'+(rec.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewXray(this)" data-url="'+encodeURIComponent(rec.xray_image_url)+'">View</span>':'<span class="pill pill-warn">⏳</span>')+'</td>'
+      +'<td>'+(rec.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewXray(this)" data-url="'+encodeURIComponent(rec.xray_image_url)+'">View</span>':'<span class="pill pill-warn">⏳</span>')
+        +(rec.manually_corrected?' <span class="pill pill-warn" style="margin-left:4px;" title="Manually replaced by operator">⚠ FORCED</span>':'')+'</td>'
       +'<td>'+resultPill(rec.result)+'</td>'
-      +'<td style="font-size:12px;">'+(rec.tamper_status||'–')+'</td></tr>').join('');
+      +'<td style="font-size:12px;">'+(rec.tamper_status||'–')+'</td>'
+      +'<td><button class="btn btn-ghost btn-xs" onclick="forceReplaceImage(\''+rec.id+'\',\''+rec.awb+'\')" title="Replace with a different image if this one is wrong/misaligned">✏️ Force Change</button></td>'
+      +'</tr>').join('');
+}
+
+// Lets an operator manually override a wrongly-matched or misaligned image.
+// Opens a file picker, uploads the chosen image in place of the current
+// one, and tags the record as manually_corrected — visible on this screen
+// as "FORCED" and written through to Records/Scans as "Forced by <email>"
+// so it's auditable, not a silent overwrite.
+function forceReplaceImage(recId, awb){
+  const input=document.createElement('input');
+  input.type='file'; input.accept='image/*';
+  input.onchange=async function(){
+    const file=input.files[0];
+    if(!file) return;
+    showLoad('Uploading replacement image for '+awb+'...');
+    try{
+      const dataUrl=await readFile(file);
+      const blob=await(await fetch(dataUrl)).blob();
+      const b64=await blobToB64(blob);
+      const fn=todayStr().replace(/-/g,'')+'_'+awb+'_forced.jpg';
+      const res=await gsPost({
+        action:'uploadImageDrive',
+        fileName:fn, base64:b64, mimeType:'image/jpeg',
+        location:myLoc(), awb, type:'xray', scanId:recId,
+        forced:true, operatorEmail:CU.email
+      });
+      hideLoad();
+      if(res?.url){
+        const r=DB.records.find(x=>x.id===recId);
+        if(r){ r.xray_image_url=res.url; r.image_linked=true; r.manually_corrected=true; }
+        renderShift(); updateStats();
+        toast('Image replaced for '+awb+' — marked as manually corrected','ok');
+      }else{
+        toast('Replacement failed: '+(res?.error||'unknown error'),'err');
+      }
+    }catch(e){
+      hideLoad();
+      toast('Replacement failed: '+e.message,'err');
+    }
+  };
+  input.click();
 }
 
 // T1 Excel matching
@@ -2163,6 +2210,10 @@ async function exportCSV(mode){
       .filter(r=>!date||toISTDateStr(r.scanned_at)===date)
       .filter(r=>!s||(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   } else { recs=myToday(); }
+  // Export in chronological (scan) order — 1,2,3 — not the newest-first
+  // order used for on-screen tables, so it lines up with AWB sequence
+  // and is easy to cross-check against the machine's own timestamps.
+  recs=[...recs].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
   const h=['AWB','Date','Location','Product','Category','Result','Tamper','Shoebox','Remarks','Operator','X-Ray Image','Label Image','Front Image','Back Image'];
   const rows=recs.map(r=>[r.awb,new Date(r.scanned_at).toLocaleString('en-IN'),r.location_code,r.product_name||'',r.product_category||'',r.result,r.tamper_status||'',r.shoe_box||'',(r.remarks||'').replace(/,/g,' '),r.operator_email||'',r.xray_image_url||'',r.label_image_url||'',r.front_image_url||'',r.back_image_url||'']);
   const csv=[h,...rows].map(r=>r.map(v=>'"'+v+'"').join(',')).join('\n');

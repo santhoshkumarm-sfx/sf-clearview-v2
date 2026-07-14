@@ -241,6 +241,7 @@ video{width:100%;height:100%;object-fit:cover;}
             <div class="card-body">
               <div class="awb-wrap"><span class="awb-cap">SCAN / TYPE AWB</span>
                 <input class="awb-inp" id="awb-inp" type="text" placeholder="AWB NUMBER" autocomplete="off" oninput="onAwbChange()">
+                <span id="awb-autosave-badge" style="display:none;position:absolute;right:12px;top:50%;transform:translateY(-50%);font-family:var(--mono);font-size:10px;color:var(--t1);background:rgba(0,207,255,.1);border:1px solid rgba(0,207,255,.3);border-radius:3px;padding:3px 8px;"></span>
               </div>
               <div class="awb-product-chip" id="awb-chip">
                 <span style="color:var(--text3);">Declared:</span>
@@ -282,11 +283,14 @@ video{width:100%;height:100%;object-fit:cover;}
                 <div class="thumb-slot" id="th0" onclick="capPhoto(0)"><span style="font-size:18px;">🏷</span><span>LABEL</span></div>
                 <div class="thumb-slot" id="th1" onclick="capPhoto(1)"><span style="font-size:18px;">⬆</span><span>FRONT</span></div>
                 <div class="thumb-slot" id="th2" onclick="capPhoto(2)"><span style="font-size:18px;">⬇</span><span>BACK</span></div>
+                <div class="thumb-slot" id="th3" onclick="capPhoto(3)"><span style="font-size:18px;">📦</span><span>PRODUCT</span></div>
               </div>
+              <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin:-6px 0 8px;">PRODUCT = optional photo of the opened shipment/item — not required to save</div>
               <div style="display:flex;gap:6px;">
                 <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Label<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,0)"></label>
                 <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Front<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,1)"></label>
                 <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Back<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,2)"></label>
+                <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Product<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,3)"></label>
               </div>
             </div>
           </div>
@@ -635,7 +639,9 @@ video{width:100%;height:100%;object-fit:cover;}
   <div class="modal">
     <div class="modal-head"><span class="modal-title">EDIT RECORD</span><button class="modal-close" onclick="closeModal('modal-editrec')">✕</button></div>
     <div class="modal-body">
-      <div style="font-family:var(--mono);font-size:16px;color:var(--t1);font-weight:700;margin-bottom:14px;" id="er-awb">–</div>
+      <div class="fg"><label class="lbl">AWB (correct if the barcode scanner misread it)</label>
+        <input id="er-awb" style="font-family:var(--mono);font-size:16px;color:var(--t1);font-weight:700;" autocomplete="off">
+      </div>
       <div class="fg"><label class="lbl">X-Ray Result</label>
         <div class="radio-row" id="er-result-row">
           <label class="rchip r-ok"><input type="radio" name="er-xr" value="ORIGINAL"><span>✅ Original</span></label>
@@ -711,7 +717,7 @@ const SCAN_LIMIT = 2000; // warn operator at this count
 // ══════════════════════════════════════════════════════════════
 let CU=null, isAdmin=false, isSupervisor=false;
 let DB = {records:[], users:[], locations:[], awbMaster:{}};
-let camStream=null, captured=[null,null,null], nlMT=1;
+let camStream=null, captured=[null,null,null,null], nlMT=1;
 let pendingXl=[], pendingFd=[];
 let pendingUser=null;
 let currentShiftId=null;
@@ -1220,6 +1226,7 @@ async function loadAwbToday(){
 // ══════════════════════════════════════════════════════════════
 //  SCAN — FAST SAVE (save immediately, upload images in background)
 // ══════════════════════════════════════════════════════════════
+let awbAutoSaveTimer=null, awbAutoSaveInterval=null;
 function onAwbChange(){
   const awb=document.getElementById('awb-inp').value.trim().toUpperCase();
   if(myMT()===2){
@@ -1232,6 +1239,37 @@ function onAwbChange(){
     document.getElementById('awb-cat').textContent='['+p.category+']';
     chip.style.display='block';
   } else chip.style.display='none';
+
+  // ── AUTO-SAVE ──────────────────────────────────────────────
+  // A barcode scanner fills this field almost instantly and then stops
+  // (unlike manual typing). So: any time the field changes, restart a
+  // 3-second countdown; if nothing changes it again before that runs
+  // out, submit automatically — no click needed for the common case.
+  // submitScan() already validates (e.g. images required for Fake/
+  // Empty), so an incomplete auto-save just shows the normal error
+  // toast instead of silently failing.
+  clearAwbAutoSave();
+  if(awb.length>=6){
+    const badge=document.getElementById('awb-autosave-badge');
+    let secondsLeft=3;
+    badge.style.display='inline';
+    badge.textContent='⏱ Auto-save in '+secondsLeft+'s';
+    awbAutoSaveInterval=setInterval(()=>{
+      secondsLeft--;
+      if(secondsLeft>0) badge.textContent='⏱ Auto-save in '+secondsLeft+'s';
+    },1000);
+    awbAutoSaveTimer=setTimeout(()=>{
+      clearAwbAutoSave();
+      const stillSameAwb=document.getElementById('awb-inp').value.trim().toUpperCase()===awb;
+      if(stillSameAwb && awb) submitScan();
+    },3000);
+  }
+}
+function clearAwbAutoSave(){
+  if(awbAutoSaveTimer){ clearTimeout(awbAutoSaveTimer); awbAutoSaveTimer=null; }
+  if(awbAutoSaveInterval){ clearInterval(awbAutoSaveInterval); awbAutoSaveInterval=null; }
+  const badge=document.getElementById('awb-autosave-badge');
+  if(badge) badge.style.display='none';
 }
 
 function updateCameraReq(){
@@ -1249,8 +1287,9 @@ async function submitScan(){
   if(!awb)   { toast('Enter AWB number','err'); return; }
   if(!result){ toast('Select X-Ray result','err'); return; }
   const needImg=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
-  if(needImg&&captured.filter(Boolean).length<3){
-    toast('Capture all 3 images ('+captured.filter(Boolean).length+'/3)','err'); return;
+  const requiredCaptured=captured.slice(0,3).filter(Boolean).length; // label/front/back only — product is optional
+  if(needImg&&requiredCaptured<3){
+    toast('Capture all 3 images ('+requiredCaptured+'/3)','err'); return;
   }
   const remarks=document.getElementById('remarks').value.trim();
   const product=DB.awbMaster[awb]||null;
@@ -1307,12 +1346,19 @@ async function submitScan(){
   };
   DB.records.unshift(localRec);
   toast('AWB '+awb+' saved'+(product?' · '+product.productName:''),'ok');
+
+  // FIX: this used to check `captured` AFTER clearScan() already reset it
+  // to all-null on the same line below — meaning this condition was ALWAYS
+  // false and inline-captured images (for Fake/Empty/Tampered, captured
+  // directly on this page rather than via the Type-2 folder flow) were
+  // never actually uploaded. Snapshotting BEFORE clearScan() runs fixes it.
+  const capturedSnapshot=captured.slice();
   updateStats(); updateBanner(); clearScan();
 
   // ── BACKGROUND IMAGE UPLOAD (non-blocking) ───────────────
-  if(needImg&&captured.filter(Boolean).length>0){
+  if(capturedSnapshot.filter(Boolean).length>0){
     const recId=saved.id||localRec.id;
-    uploadImagesBackground(awb, recId, captured.slice());
+    uploadImagesBackground(awb, recId, capturedSnapshot);
   }
 }
 
@@ -1321,9 +1367,9 @@ async function uploadImagesBackground(awb, recId, imgs){
   window._uploading = (window._uploading||0)+1;
   const failedTypes=[];
   try{
-    const types=['label','front','back'];
-    const urls=['','',''];
-    for(let i=0;i<3;i++){
+    const types=['label','front','back','product'];
+    const urls=['','','',''];
+    for(let i=0;i<4;i++){
       if(!imgs[i]) continue;
       const fn=todayStr().replace(/-/g,'')+'_'+awb+'_'+types[i]+'.jpg';
       let res=null;
@@ -1359,12 +1405,15 @@ async function uploadImagesBackground(awb, recId, imgs){
         }catch(dlErr){ console.warn('Local save fallback failed:',dlErr.message); }
       }
     }
-    // Update record with whatever image URLs did succeed
+    // Update record with whatever image URLs did succeed. Product (slot 3)
+    // is separate from the required x-ray trio — it doesn't drive
+    // xray_image_url or image_linked, same as the Edit Record flow.
     const r=DB.records.find(x=>x.id===recId);
     if(r){
       r.label_image_url=urls[0]; r.front_image_url=urls[1]; r.back_image_url=urls[2];
+      r.product_image_url=urls[3];
       r.xray_image_url=urls[0]||urls[1]||urls[2];
-      r.image_linked = urls.some(u=>u); // only mark linked if at least one actually made it to Drive
+      r.image_linked = urls.slice(0,3).some(u=>u); // only the required 3 count toward "linked"
     }
     if(failedTypes.length){
       toast('⚠️ '+awb+': '+failedTypes.length+' image(s) saved to your Downloads folder — Drive upload failed. Show admin.','err');
@@ -1384,6 +1433,7 @@ async function blobToB64(blob){
 }
 
 function clearScan(){
+  clearAwbAutoSave();
   document.getElementById('awb-inp').value='';
   document.querySelectorAll('input[name="shoe"]').forEach(r=>r.checked=false);
   // Reset result to ORIGINAL (default)
@@ -1399,10 +1449,11 @@ function clearScan(){
   document.getElementById('cam-notice').style.display='none';
   document.getElementById('cam-badge').innerHTML='';
   document.getElementById('awb-chip').style.display='none';
-  captured=[null,null,null];
-  [0,1,2].forEach(i=>{
+  captured=[null,null,null,null];
+  [0,1,2,3].forEach(i=>{
     const s=document.getElementById('th'+i);
-    if(s) s.innerHTML='<span style="font-size:18px;">'+(i===0?'🏷':i===1?'⬆':'⬇')+'</span><span>'+(i===0?'LABEL':i===1?'FRONT':'BACK')+'</span>';
+    const icons=['🏷','⬆','⬇','📦'], labels=['LABEL','FRONT','BACK','PRODUCT'];
+    if(s) s.innerHTML='<span style="font-size:18px;">'+icons[i]+'</span><span>'+labels[i]+'</span>';
   });
 }
 
@@ -1448,7 +1499,7 @@ function capPhoto(slot){
   c.getContext('2d').drawImage(v,0,0);
   const d=c.toDataURL('image/jpeg',.85);
   captured[slot]=d; setThumb(slot,d);
-  toast(['Label','Front','Back'][slot]+' captured!','ok');
+  toast(['Label','Front','Back','Product'][slot]+' captured!','ok');
 }
 function loadImg(input,slot){
   const f=input.files[0]; if(!f)return;
@@ -1458,7 +1509,8 @@ function loadImg(input,slot){
 }
 function setThumb(slot,data){
   const s=document.getElementById('th'+slot);
-  if(s) s.innerHTML='<img src="'+data+'" style="width:100%;height:60px;object-fit:cover;border-radius:2px;"><span style="font-size:10px;">'+(slot===0?'LABEL':slot===1?'FRONT':'BACK')+'</span>';
+  const labels=['LABEL','FRONT','BACK','PRODUCT'];
+  if(s) s.innerHTML='<img src="'+data+'" style="width:100%;height:60px;object-fit:cover;border-radius:2px;"><span style="font-size:10px;">'+labels[slot]+'</span>';
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1600,7 +1652,7 @@ function openEditRecord(recId){
   if(!r){ toast('Record not found','err'); return; }
   erRecId=recId;
   erPickedImages={label:null,front:null,back:null,product:null};
-  document.getElementById('er-awb').textContent=r.awb;
+  document.getElementById('er-awb').value=r.awb;
   const xr=document.querySelector('input[name="er-xr"][value="'+(r.result||'ORIGINAL')+'"]');
   if(xr) xr.checked=true;
   const tr=document.querySelector('input[name="er-tr"][value="'+(r.tamper_status||'NON-TAMPERED')+'"]');
@@ -1628,8 +1680,12 @@ function erPickImage(input,slot){
 async function saveEditRecord(){
   const r=recPool().find(x=>x.id===erRecId) || DB.records.find(x=>x.id===erRecId);
   if(!r){ toast('Record not found','err'); return; }
+  const originalAwb=r.awb;
+  const newAwb=(document.getElementById('er-awb').value||'').trim().toUpperCase();
   const newResult=document.querySelector('input[name="er-xr"]:checked')?.value;
   const newTamper=document.querySelector('input[name="er-tr"]:checked')?.value;
+
+  if(!newAwb){ toast('AWB cannot be blank','err'); return; }
 
   // If switching to FAKE/EMPTY, all 3 x-ray images must end up present (existing or newly picked)
   const needsImages = newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED';
@@ -1646,6 +1702,7 @@ async function saveEditRecord(){
   }
 
   const changes=[];
+  if(newAwb && newAwb!==originalAwb) changes.push({field:'awb',oldValue:originalAwb,newValue:newAwb});
   if(newResult && newResult!==r.result) changes.push({field:'result',oldValue:r.result||'',newValue:newResult});
   if(newTamper && newTamper!==r.tamper_status) changes.push({field:'tamper_status',oldValue:r.tamper_status||'',newValue:newTamper});
   ['label','front','back','product'].forEach(slot=>{
@@ -1654,13 +1711,23 @@ async function saveEditRecord(){
 
   if(!changes.length){ toast('No changes to save','info'); closeModal('modal-editrec'); return; }
 
+  // Optional heads-up if the new AWB already exists elsewhere in the
+  // currently-loaded list — not a hard block (duplicates can be
+  // legitimate, e.g. a genuine re-scan), just a check before saving.
+  if(newAwb!==originalAwb){
+    const dupe=recPool().find(x=>x.id!==erRecId && (x.awb||'').toUpperCase()===newAwb);
+    if(dupe && !confirm('AWB '+newAwb+' already exists in this list. Save anyway?')) return;
+  }
+
   showLoad('Saving corrections...');
   try{
-    // 1. Patch result/tamper if changed, mark manually_corrected
+    // 1. Patch AWB/result/tamper if changed, mark manually_corrected
     const patchPayload={ manually_corrected:true, corrected_by:CU.email, corrected_at:new Date().toISOString() };
+    if(newAwb && newAwb!==originalAwb) patchPayload.awb=newAwb;
     if(newResult && newResult!==r.result) patchPayload.result=newResult;
     if(newTamper && newTamper!==r.tamper_status) patchPayload.tamper_status=newTamper;
     await sbPatch('scans','id=eq.'+encodeURIComponent(erRecId),patchPayload);
+    if(patchPayload.awb) r.awb=patchPayload.awb;
     if(patchPayload.result) r.result=patchPayload.result;
     if(patchPayload.tamper_status) r.tamper_status=patchPayload.tamper_status;
     r.manually_corrected=true;
@@ -1668,6 +1735,7 @@ async function saveEditRecord(){
     // 2. Upload any newly picked images — label/front/back/product each go
     // to their own column; only label/front/back also update the primary
     // xray_image_url pointer (product is a separate "opened shipment" shot)
+    // Uses r.awb, which by this point already reflects any AWB correction.
     for(const slot of ['label','front','back','product']){
       if(!erPickedImages[slot]) continue;
       const blob=await(await fetch(erPickedImages[slot])).blob();
@@ -1685,10 +1753,11 @@ async function saveEditRecord(){
       }
     }
 
-    // 3. Log every changed field
+    // 3. Log every changed field — under the ORIGINAL awb, since that's
+    // the identity this correction is about (the new one is in the row itself)
     await gsPost({
       action:'logCorrection',
-      location:myLoc(), operator:CU.email, awb:r.awb,
+      location:myLoc(), operator:CU.email, awb:originalAwb,
       changes
     });
 

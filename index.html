@@ -373,12 +373,14 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="fbar">
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="rec-search" placeholder="Search AWB..." oninput="renderRec()"></div>
           <select id="rec-res" onchange="renderRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <input type="date" id="rec-date" onchange="onRecDateChange()">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('rec-date').value=todayStr();onRecDateChange();">📅 Today</button>
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('op')">CSV</button>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">MY RECORDS — TODAY</span></div>
+          <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title" id="rec-title">MY RECORDS — TODAY</span><span id="rec-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;margin-left:8px;">⏳ Loading...</span></div>
           <div class="tbl-wrap"><table>
-            <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Product</th><th>Result</th><th>Tamper</th><th>Shoebox</th><th>Remarks</th><th>Actions</th></tr></thead>
+            <thead><tr><th>#</th><th>📌</th><th>AWB</th><th>Time</th><th>Product</th><th>Result</th><th>Tamper</th><th>Shoebox</th><th>Remarks</th><th>Actions</th></tr></thead>
             <tbody id="rec-body"></tbody>
           </table></div>
         </div>
@@ -647,7 +649,7 @@ video{width:100%;height:100%;object-fit:cover;}
           <label class="rchip r-ok"><input type="radio" name="er-tr" value="NON-TAMPERED"><span>✓ Non-Tampered</span></label>
         </div>
       </div>
-      <div class="fg"><label class="lbl">Images — add or replace if needed</label>
+      <div class="fg"><label class="lbl">X-Ray Images — add or replace if needed</label>
         <div class="thumb-row">
           <div>
             <label class="btn btn-ghost btn-sm" style="width:100%;cursor:pointer;display:block;text-align:center;">
@@ -668,6 +670,12 @@ video{width:100%;height:100%;object-fit:cover;}
             </label>
           </div>
         </div>
+      </div>
+      <div class="fg"><label class="lbl">Product Image — photo of the opened shipment (optional)</label>
+        <label class="btn btn-ghost btn-sm" style="width:100%;cursor:pointer;display:block;text-align:center;">
+          <span id="er-product-thumb">📦 PRODUCT IMAGE</span>
+          <input type="file" accept="image/*" style="display:none;" onchange="erPickImage(this,'product')">
+        </label>
       </div>
       <div style="font-size:10px;color:var(--text3);font-family:var(--mono);">Any change here is logged as a manual correction — visible to admin and in the Sheet.</div>
     </div>
@@ -707,7 +715,8 @@ let camStream=null, captured=[null,null,null], nlMT=1;
 let pendingXl=[], pendingFd=[];
 let pendingUser=null;
 let currentShiftId=null;
-let erRecId=null, erPickedImages={label:null,front:null,back:null};
+let erRecId=null, erPickedImages={label:null,front:null,back:null,product:null};
+let myRecordsViewData=null; // null = live "today" via myToday(); otherwise a fetched past-date array
 
 // ══════════════════════════════════════════════════════════════
 //  SUPABASE HELPERS (scan save, login, locations, users, awb)
@@ -952,7 +961,11 @@ function show(id){
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
   if(id==='v-shift')  renderShift();
-  if(id==='v-rec')    renderRec();
+  if(id==='v-rec'){
+    var rd=document.getElementById('rec-date');
+    if(rd&&!rd.value) rd.value=todayStr();
+    renderRec();
+  }
   if(id==='v-adash')  renderDash();
   if(id==='v-ausers') renderUsers();
   if(id==='v-aloc')   renderLocs();
@@ -1531,7 +1544,7 @@ function renderEosLinked(){
       +'<td style="font-size:12px;">'+(rec.tamper_status||'–')+'</td>'
       +'<td style="display:flex;gap:4px;">'
         +'<button class="btn btn-ghost btn-xs" onclick="forceReplaceImage(\''+rec.id+'\',\''+rec.awb+'\')" title="Replace the primary X-ray image if it is wrong/misaligned">✏️ Force Image</button>'
-        +(currentShiftId?'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+rec.id+'\')" title="Edit result/tamper or add label/front/back images">📝 Edit</button>':'')
+        +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+rec.id+'\')" title="Edit result/tamper or add label/front/back/product images">📝 Edit</button>'
       +'</td>'
       +'</tr>').join('');
 }
@@ -1583,20 +1596,21 @@ function forceReplaceImage(recId, awb){
 //  visible to admin and in the CorrectionLog sheet — never silent.
 // ══════════════════════════════════════════════════════════════
 function openEditRecord(recId){
-  const r=DB.records.find(x=>x.id===recId);
+  const r=recPool().find(x=>x.id===recId) || DB.records.find(x=>x.id===recId);
   if(!r){ toast('Record not found','err'); return; }
-  if(!currentShiftId){ toast('Shift already ended — corrections are only allowed during an active shift','err'); return; }
   erRecId=recId;
-  erPickedImages={label:null,front:null,back:null};
+  erPickedImages={label:null,front:null,back:null,product:null};
   document.getElementById('er-awb').textContent=r.awb;
   const xr=document.querySelector('input[name="er-xr"][value="'+(r.result||'ORIGINAL')+'"]');
   if(xr) xr.checked=true;
   const tr=document.querySelector('input[name="er-tr"][value="'+(r.tamper_status||'NON-TAMPERED')+'"]');
   if(tr) tr.checked=true;
-  ['label','front','back'].forEach(slot=>{
+  ['label','front','back','product'].forEach(slot=>{
     const el=document.getElementById('er-'+slot+'-thumb');
+    if(!el) return;
     const url=r[slot+'_image_url'];
-    el.textContent = url ? '✅ '+slot.toUpperCase()+' (set)' : (slot==='label'?'🏷':slot==='front'?'⬆':'⬇')+' '+slot.toUpperCase();
+    const icon=slot==='label'?'🏷':slot==='front'?'⬆':slot==='back'?'⬇':'📦';
+    el.textContent = url ? '✅ '+slot.toUpperCase()+' (set)' : icon+' '+slot.toUpperCase();
   });
   openModal('modal-editrec');
 }
@@ -1612,13 +1626,12 @@ function erPickImage(input,slot){
 }
 
 async function saveEditRecord(){
-  const r=DB.records.find(x=>x.id===erRecId);
+  const r=recPool().find(x=>x.id===erRecId) || DB.records.find(x=>x.id===erRecId);
   if(!r){ toast('Record not found','err'); return; }
   const newResult=document.querySelector('input[name="er-xr"]:checked')?.value;
   const newTamper=document.querySelector('input[name="er-tr"]:checked')?.value;
-  const anyImagePicked=erPickedImages.label||erPickedImages.front||erPickedImages.back;
 
-  // If switching to FAKE/EMPTY, all 3 images must end up present (existing or newly picked)
+  // If switching to FAKE/EMPTY, all 3 x-ray images must end up present (existing or newly picked)
   const needsImages = newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED';
   if(needsImages){
     const willHave = {
@@ -1635,7 +1648,7 @@ async function saveEditRecord(){
   const changes=[];
   if(newResult && newResult!==r.result) changes.push({field:'result',oldValue:r.result||'',newValue:newResult});
   if(newTamper && newTamper!==r.tamper_status) changes.push({field:'tamper_status',oldValue:r.tamper_status||'',newValue:newTamper});
-  ['label','front','back'].forEach(slot=>{
+  ['label','front','back','product'].forEach(slot=>{
     if(erPickedImages[slot]) changes.push({field:slot+'_image', oldValue:r[slot+'_image_url']?'(had image)':'(none)', newValue:'(replaced)'});
   });
 
@@ -1652,8 +1665,10 @@ async function saveEditRecord(){
     if(patchPayload.tamper_status) r.tamper_status=patchPayload.tamper_status;
     r.manually_corrected=true;
 
-    // 2. Upload any newly picked images
-    for(const slot of ['label','front','back']){
+    // 2. Upload any newly picked images — label/front/back/product each go
+    // to their own column; only label/front/back also update the primary
+    // xray_image_url pointer (product is a separate "opened shipment" shot)
+    for(const slot of ['label','front','back','product']){
       if(!erPickedImages[slot]) continue;
       const blob=await(await fetch(erPickedImages[slot])).blob();
       const b64=await blobToB64(blob);
@@ -1666,8 +1681,7 @@ async function saveEditRecord(){
       });
       if(res?.url){
         r[slot+'_image_url']=res.url;
-        r.xray_image_url=res.url;
-        r.image_linked=true;
+        if(slot!=='product'){ r.xray_image_url=res.url; r.image_linked=true; }
       }
     }
 
@@ -1966,23 +1980,62 @@ async function applyFolder(){
 // ══════════════════════════════════════════════════════════════
 //  RECORDS VIEWS
 // ══════════════════════════════════════════════════════════════
+async function onRecDateChange(){
+  const date=document.getElementById('rec-date')?.value||todayStr();
+  if(date===todayStr()){
+    myRecordsViewData=null;
+    document.getElementById('rec-title').textContent='MY RECORDS — TODAY';
+    renderRec();
+    return;
+  }
+  document.getElementById('rec-loading').style.display='inline';
+  document.getElementById('rec-title').textContent='MY RECORDS — '+date;
+  try{
+    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&operator_email=eq.'+encodeURIComponent(CU.email)+'&scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.asc');
+    myRecordsViewData=Array.isArray(data)?data:[];
+  }catch(e){
+    toast('Failed to load '+date+': '+e.message,'err');
+    myRecordsViewData=[];
+  }
+  document.getElementById('rec-loading').style.display='none';
+  renderRec();
+}
+
+function recPool(){ return myRecordsViewData!==null ? myRecordsViewData : myToday(); }
+
+async function togglePin(recId){
+  const pool=recPool();
+  const r=pool.find(x=>x.id===recId);
+  if(!r) return;
+  const newVal=!r.pinned;
+  try{
+    await sbPatch('scans','id=eq.'+encodeURIComponent(recId),{pinned:newVal});
+    r.pinned=newVal;
+    renderRec();
+  }catch(e){ toast('Pin failed: '+e.message,'err'); }
+}
+
 function renderRec(){
   const s=(document.getElementById('rec-search')?.value||'').toLowerCase();
   const res=document.getElementById('rec-res')?.value||'';
-  let recs=[...myToday()].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  let recs=[...recPool()].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
   if(s) recs=recs.filter(r=>r.awb.toLowerCase().includes(s));
   if(res) recs=recs.filter(r=>r.result===res);
+  // Pinned AWBs float to the top for quick access, keeping chronological order within each group
+  recs.sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0));
   document.getElementById('rec-body').innerHTML=recs.length===0
-    ?'<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:20px;">No records today.</td></tr>'
+    ?'<tr><td colspan="10" style="text-align:center;color:var(--text3);padding:20px;">No records for this date.</td></tr>'
     :recs.map((r,i)=>'<tr>'
-      +'<td style="color:var(--text3);">'+(i+1)+'</td><td class="tc-awb">'+r.awb+(r.manually_corrected?' <span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')+'</td>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td style="cursor:pointer;text-align:center;" onclick="togglePin(\''+r.id+'\')" title="Pin to find this AWB quickly later">'+(r.pinned?'📌':'<span style="color:var(--text3);opacity:.4;">📌</span>')+'</td>'
+      +'<td class="tc-awb">'+r.awb+(r.manually_corrected?' <span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')+'</td>'
       +'<td style="font-family:var(--mono);font-size:11px;color:var(--text2);">'+new Date(r.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(r.product_name||'–')+'</td>'
       +'<td>'+resultPill(r.result)+'</td>'
       +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
       +'<td style="font-size:12px;">'+(r.shoe_box||'–')+'</td>'
       +'<td style="font-size:11px;color:var(--text2);">'+(r.remarks||'–')+'</td>'
-      +'<td>'+(currentShiftId?'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+r.id+'\')">✏️ Edit</button>':'<span style="color:var(--text3);font-size:10px;">shift ended</span>')+'</td>'
+      +'<td><button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+r.id+'\')">✏️ Edit</button></td>'
       +'</tr>').join('');
 }
 

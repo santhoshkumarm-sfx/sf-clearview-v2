@@ -95,6 +95,7 @@ th{background:var(--bg2);font-family:var(--mono);font-size:9px;letter-spacing:2p
 td{padding:8px 12px;border-bottom:1px solid rgba(28,58,85,.4);font-size:13px;vertical-align:middle;}
 tr:hover td{background:rgba(0,207,255,.03);}
 .tc-awb{font-family:var(--mono);font-weight:600;color:var(--t1);font-size:12px;}
+.fd-match-row:hover{background:rgba(0,207,255,.09)!important;}
 .fbar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;}
 .search-wrap{position:relative;display:flex;align-items:center;}
 .search-icon{position:absolute;left:10px;font-size:13px;pointer-events:none;}
@@ -295,6 +296,13 @@ video{width:100%;height:100%;object-fit:cover;}
             </div>
           </div>
         </div>
+        <div class="card" style="margin-top:16px;">
+          <div class="card-head"><span class="card-head-icon">🕐</span><span class="card-head-title">RECENT SCANS</span><span style="margin-left:auto;font-size:10px;color:var(--text3);font-family:var(--mono);">last 5 — check here if auto-save fired before you could review</span></div>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Result</th><th>Tamper</th></tr></thead>
+            <tbody id="recent-scans-body"></tbody>
+          </table></div>
+        </div>
       </div>
 
       <!-- ── END OF SHIFT ── -->
@@ -380,14 +388,9 @@ video{width:100%;height:100%;object-fit:cover;}
           <input type="date" id="rec-date" onchange="onRecDateChange()">
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('rec-date').value=todayStr();onRecDateChange();">📅 Today</button>
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('op')">CSV</button>
+          <span id="rec-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
         </div>
-        <div class="card">
-          <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title" id="rec-title">MY RECORDS — TODAY</span><span id="rec-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;margin-left:8px;">⏳ Loading...</span></div>
-          <div class="tbl-wrap"><table>
-            <thead><tr><th>#</th><th>📌</th><th>AWB</th><th>Time</th><th>Product</th><th>Result</th><th>Tamper</th><th>Shoebox</th><th>Remarks</th><th>Actions</th></tr></thead>
-            <tbody id="rec-body"></tbody>
-          </table></div>
-        </div>
+        <div id="rec-container"></div>
       </div>
 
       <!-- ── ADMIN DASHBOARD ── -->
@@ -491,7 +494,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="card">
           <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">ALL RECORDS</span><span id="arec-count" class="card-head-right"></span></div>
           <div class="tbl-wrap"><table>
-            <thead><tr><th>#</th><th>AWB</th><th>Date/Time</th><th>Location</th><th>Product</th><th>Result</th><th>Tamper</th><th>Operator</th><th>X-Ray</th></tr></thead>
+            <thead><tr><th>#</th><th>Seq</th><th>AWB</th><th>Date/Time</th><th>Location</th><th>Product</th><th>Result</th><th>Tamper</th><th>Operator</th><th>Images</th><th>Flags</th></tr></thead>
             <tbody id="arec-body"></tbody>
           </table></div>
         </div>
@@ -538,9 +541,11 @@ video{width:100%;height:100%;object-fit:cover;}
 
 <!-- IMAGE VIEWER MODAL -->
 <div id="modal-imgview" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;" onclick="closeImgView(event)">
-  <div style="position:relative;width:90vw;max-width:900px;height:85vh;background:#0f1117;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;">
+  <div id="imgview-tabs" style="display:flex;gap:6px;" onclick="event.stopPropagation()"></div>
+  <div style="position:relative;width:90vw;max-width:900px;height:78vh;background:#0f1117;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;" onclick="event.stopPropagation()">
+    <div id="imgview-current-label" style="position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(0,0,0,.7);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:4px;padding:4px 14px;font-size:13px;font-weight:700;letter-spacing:2px;font-family:monospace;"></div>
     <button onclick="document.getElementById('modal-imgview').style.display='none';document.getElementById('xray-iframe').src=''" style="position:absolute;top:10px;right:12px;z-index:10;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:14px;">✕ Close</button>
-    <a id="xray-open-link" href="#" target="_blank" style="position:absolute;top:10px;left:12px;z-index:10;background:rgba(0,100,255,.5);border:1px solid rgba(0,150,255,.4);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;text-decoration:none;">⬡ Open in Drive</a>
+    <a id="xray-open-link" href="#" target="_blank" style="position:absolute;bottom:10px;left:12px;z-index:10;background:rgba(0,100,255,.5);border:1px solid rgba(0,150,255,.4);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;text-decoration:none;">⬡ Open in Drive</a>
     <img id="xray-img-direct" src="" style="max-width:100%;max-height:100%;object-fit:contain;display:none;" />
     <iframe id="xray-iframe" src="" style="width:100%;height:100%;border:none;display:block;"></iframe>
   </div>
@@ -966,11 +971,16 @@ function show(id){
             'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS'};
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
+  if(id==='v-scan'){
+    // Auto-focus the AWB field so a barcode scanner can type into it
+    // right away — no manual click needed every time this page opens.
+    setTimeout(()=>document.getElementById('awb-inp')?.focus(),50);
+  }
   if(id==='v-shift')  renderShift();
   if(id==='v-rec'){
     var rd=document.getElementById('rec-date');
-    if(rd&&!rd.value) rd.value=todayStr();
-    renderRec();
+    if(rd&&!rd.value){ rd.value=todayStr(); onRecDateChange(); }
+    else renderRec();
   }
   if(id==='v-adash')  renderDash();
   if(id==='v-ausers') renderUsers();
@@ -1455,6 +1465,7 @@ function clearScan(){
     const icons=['🏷','⬆','⬇','📦'], labels=['LABEL','FRONT','BACK','PRODUCT'];
     if(s) s.innerHTML='<span style="font-size:18px;">'+icons[i]+'</span><span>'+labels[i]+'</span>';
   });
+  document.getElementById('awb-inp')?.focus();
 }
 
 function updateStats(){
@@ -1472,7 +1483,29 @@ function updateStats(){
     const el=document.getElementById('scan-limit-warn');
     if(el) el.style.display='none';
   }
+  renderRecentScans();
 }
+
+// Last 5 scans, newest first, using the SAME permanent serial numbers as
+// My Records/End of Shift — so an operator whose barcode auto-saved
+// before they could double-check can immediately verify what was saved,
+// right here, without leaving the Scan AWB page.
+function renderRecentScans(){
+  const body=document.getElementById('recent-scans-body');
+  if(!body) return;
+  const all=assignSerials(myToday());
+  const recent=[...all].sort((a,b)=>new Date(b.scanned_at)-new Date(a.scanned_at)).slice(0,5);
+  body.innerHTML=recent.length===0
+    ?'<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:12px;">No scans yet today</td></tr>'
+    :recent.map(r=>'<tr>'
+      +'<td style="color:var(--text3);">'+r._serial+'</td>'
+      +'<td class="tc-awb">'+r.awb+'</td>'
+      +'<td style="font-family:var(--mono);font-size:11px;color:var(--text2);">'+new Date(r.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+'</td>'
+      +'<td>'+resultPill(r.result)+'</td>'
+      +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
+      +'</tr>').join('');
+}
+
 function updateBanner(){
   const r=myToday(), p=r.filter(x=>!x.image_linked).length;
   const b=document.getElementById('recon-banner');
@@ -1580,6 +1613,7 @@ function renderT2(){
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td>'+resultPill(rec.result)+'</td>'
       +'<td><span class="pill pill-warn">⏳</span></td></tr>').join('');
+  scrollTableToBottom('t2-body');
 }
 function renderEosLinked(){
   const r=myToday().filter(x=>x.image_linked||x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
@@ -1590,15 +1624,18 @@ function renderEosLinked(){
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
-      +'<td>'+(rec.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewXray(this)" data-url="'+encodeURIComponent(rec.xray_image_url)+'">View</span>':'<span class="pill pill-warn">⏳</span>')
+      +'<td>'+(rec.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="View X-Ray/Label/Front/Back">🖼 Images</span>':'<span class="pill pill-warn">⏳</span>')
+        +(rec.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="Product photo also attached">📦 Product</span>':'')
         +(rec.manually_corrected?' <span class="pill pill-warn" style="margin-left:4px;" title="Manually replaced by operator">⚠ FORCED</span>':'')+'</td>'
       +'<td>'+resultPill(rec.result)+'</td>'
       +'<td style="font-size:12px;">'+(rec.tamper_status||'–')+'</td>'
       +'<td style="display:flex;gap:4px;">'
         +'<button class="btn btn-ghost btn-xs" onclick="forceReplaceImage(\''+rec.id+'\',\''+rec.awb+'\')" title="Replace the primary X-ray image if it is wrong/misaligned">✏️ Force Image</button>'
         +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+rec.id+'\')" title="Edit result/tamper or add label/front/back/product images">📝 Edit</button>'
+        +'<button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+rec.id+'\')" title="Delete this record entirely">🗑</button>'
       +'</td>'
       +'</tr>').join('');
+  scrollTableToBottom('eos-linked-body');
 }
 
 // Lets an operator manually override a wrongly-matched or misaligned image.
@@ -1639,6 +1676,48 @@ function forceReplaceImage(recId, awb){
     }
   };
   input.click();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DELETE RECORD — full audit trail written to DeletedRecords BEFORE
+//  removal from Supabase, so admin always sees what was deleted, by
+//  whom, and why. Used when a scan needs to be scrapped entirely
+//  (e.g. a barcode misread so badly it's easier to delete and rescan
+//  than correct) rather than edited.
+// ══════════════════════════════════════════════════════════════
+async function deleteRecord(recId){
+  const r=recPool().find(x=>x.id===recId) || DB.records.find(x=>x.id===recId);
+  if(!r){ toast('Record not found','err'); return; }
+  const reason=prompt('Delete AWB '+r.awb+'? Enter a short reason (required):');
+  if(reason===null) return; // cancelled
+  if(!reason.trim()){ toast('A reason is required to delete a record','err'); return; }
+
+  showLoad('Deleting '+r.awb+'...');
+  try{
+    // 1. Log the full record BEFORE deleting it — this is the audit trail
+    await gsPost({
+      action:'logDeletion',
+      deletedBy:CU.email, reason:reason.trim(),
+      record:{
+        id:r.id, awb:r.awb, scanned_at:r.scanned_at, location_code:r.location_code,
+        operator_email:r.operator_email, result:r.result, tamper_status:r.tamper_status,
+        remarks:r.remarks, xray_image_url:r.xray_image_url, label_image_url:r.label_image_url,
+        front_image_url:r.front_image_url, back_image_url:r.back_image_url, product_image_url:r.product_image_url
+      }
+    });
+    // 2. Delete from Supabase
+    await sbDelete('scans','id=eq.'+encodeURIComponent(recId));
+    // 3. Remove from local state
+    DB.records=DB.records.filter(x=>x.id!==recId);
+    if(myRecordsViewData) myRecordsViewData=myRecordsViewData.filter(x=>x.id!==recId);
+
+    hideLoad();
+    renderShift(); renderRec(); updateStats(); updateBanner();
+    toast('AWB '+r.awb+' deleted — logged for admin review','ok');
+  }catch(e){
+    hideLoad();
+    toast('Delete failed: '+e.message,'err');
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1887,13 +1966,14 @@ function parseImageFilename(filename){
 function fdDrop(e){e.preventDefault();document.getElementById('fd-drop').classList.remove('drag');const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));if(files.length)processFd(files);}
 function fdUpload(input){const files=Array.from(input.files).filter(f=>f.type.startsWith('image/'));if(files.length)processFd(files);input.value='';}
 
+let fdUnlinkedPool=[]; // tracks which unlinked records are still available to manually assign
 async function processFd(files){
   document.getElementById('fd-prog').style.display='block';
   files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
   const unlinked=myToday().filter(r=>!r.image_linked&&r.image_linked!=='true');
   const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
   const used=new Set(), matches=[];
-  // ── MATCHING RULES (only two ways a file may ever be matched) ────────
+  // ── MATCHING RULES (only two ways a file may ever be AUTO-matched) ────
   // 1. AWB found in the filename → must match a record with that EXACT
   //    AWB, or the file stays unmatched. Never falls through to anything
   //    else — an AWB claim is the strongest signal there is, and if it
@@ -1901,13 +1981,9 @@ async function processFd(files){
   // 2. No AWB in the filename, but a timestamp is → matched only if
   //    within the configured tolerance window. Outside that window, or
   //    with no timestamp at all, the file stays unmatched.
-  // REMOVED: "Best effort" (nearest-timestamp-no-matter-how-far) and
-  // "Sequential" (next-available-record) fallbacks. Both were able to
-  // force a match onto an unrelated record once the real signal wasn't
-  // there — which is how a mismatch on one file could cascade into wrong
-  // AWB/image pairings for every file after it, invisibly, while the
-  // operator's screen just said "all matched." An unmatched file is a
-  // safe, visible outcome. A wrong match is not.
+  // Anything that doesn't auto-match stays unmatched and visible — the
+  // operator can manually assign it to a specific AWB right here (see
+  // renderFdMatchList/manualAssignFd below), never silently guessed.
   for(let i=0;i<files.length;i++){
     document.getElementById('fd-prog-bar').style.width=Math.round(((i+1)/files.length)*80)+'%';
     const file=files[i], d=await readFile(file), parsed=parseImageFilename(file.name);
@@ -1931,9 +2007,10 @@ async function processFd(files){
       method = 'No AWB or readable timestamp in filename — left unmatched';
     }
     if(rec) used.add(rec.id);
-    matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed});
+    matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed,manual:false});
   }
   pendingFd=matches;
+  fdUnlinkedPool=unlinked.filter(r=>!used.has(r.id)); // whatever's left, available for manual assignment
 
   // Log every matching decision (matched AND unmatched) to the MatchLog
   // sheet in one batch — this is the permanent record of why any given
@@ -1954,29 +2031,61 @@ async function processFd(files){
     });
   }catch(e){ console.warn('MatchLog send failed (non-fatal):', e.message); }
 
+  renderFdMatchList();
+  document.getElementById('fd-result').style.display='block';
+  document.getElementById('fd-prog').style.display='none';
+}
+
+// Manually assign one unmatched image to a specific AWB. This is the
+// direct answer to locations where the auto-parser can't read the
+// filename convention at all (e.g. MDC/ST/JAI historically showing near-
+// zero auto-match rates) — the operator can always link an image by hand
+// instead of it just staying stuck unmatched forever.
+function manualAssignFd(matchIdx, recId){
+  const m=pendingFd[matchIdx];
+  if(!m) return;
+  const rec=fdUnlinkedPool.find(r=>r.id===recId);
+  if(!rec){ toast('That AWB is no longer available','err'); return; }
+  m.rec=rec; m.ok=true; m.method='Manually assigned by operator'; m.diffSec=null; m.manual=true;
+  fdUnlinkedPool=fdUnlinkedPool.filter(r=>r.id!==recId);
+  renderFdMatchList();
+}
+
+function renderFdMatchList(){
+  const matches=pendingFd;
   const ok=matches.filter(m=>m.ok).length;
+  const manualCount=matches.filter(m=>m.manual).length;
   const unmatchedCount=matches.length-ok;
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
   const byTime=matches.filter(m=>m.method==='Time match').length;
   document.getElementById('fd-match-list').innerHTML=
     '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
-    +'<span class="pill pill-ok">✅ '+ok+'/'+unlinked.length+'</span>'
+    +'<span class="pill pill-ok">✅ '+ok+'/'+matches.length+'</span>'
     +(byAwb?'<span class="pill pill-t1">AWB: '+byAwb+'</span>':'')
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
+    +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
     +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
     +'</div>'
-    +matches.map(m=>{
-      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':'var(--text3)';
-      return '<div style="display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid rgba(28,58,85,.3);font-size:11px;">'
+    +matches.map((m,idx)=>{
+      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.manual?'var(--warn)':'var(--text3)';
+      const assignPicker = (!m.ok && fdUnlinkedPool.length)
+        ? '<select onchange="if(this.value)manualAssignFd('+idx+',this.value)" style="width:auto;padding:2px 6px;font-size:10px;margin-left:6px;" onclick="event.stopPropagation()">'
+          +'<option value="">🔗 Assign to AWB...</option>'
+          +fdUnlinkedPool.map(r=>'<option value="'+r.id+'">'+r.awb+'</option>').join('')
+          +'</select>'
+        : '';
+      // Hover highlight on each row — makes it unambiguous which
+      // filename lines up with which AWB when scanning down the list.
+      return '<div class="fd-match-row" style="display:flex;gap:6px;align-items:center;padding:5px 6px;border-bottom:1px solid rgba(28,58,85,.3);border-radius:3px;font-size:11px;transition:background .1s;">'
         +'<img src="'+m.data+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;">'
         +'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+m.name+'</span>'
         +'<span style="font-family:var(--mono);font-weight:700;color:'+(m.ok?'var(--success)':'var(--danger)')+';">'+(m.ok?m.rec.awb:(m.parsed?.awb||'no match'))+'</span>'
         +'<span style="font-family:var(--mono);font-size:9px;color:'+(m.ok?tc:'var(--danger)')+';">'+(m.method||'')+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>'
+        +assignPicker
         +'</div>';
     }).join('');
-  document.getElementById('fd-result').style.display='block';
-  document.getElementById('fd-prog').style.display='none';
 }
+
 
 async function applyFolder(){
   const matches=pendingFd.filter(m=>m.ok&&m.rec);
@@ -1984,6 +2093,7 @@ async function applyFolder(){
   showLoad('Uploading 0/'+matches.length+'...');
   const linked=[];
   const failed=[];
+  const manualLog=[];
   const BATCH=5;
 
   async function uploadOne(m){
@@ -1991,8 +2101,12 @@ async function applyFolder(){
     if(m.file){ const d=await readFile(m.file); blob=await(await fetch(d)).blob(); }
     else blob=await(await fetch(m.data)).blob();
     const b64=await blobToB64(blob);
-    const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray.jpg';
-    return await gsPost({action:'uploadImageDrive',fileName:fn,base64:b64,mimeType:'image/jpeg',location:myLoc(),awb:m.rec.awb,scanId:m.rec.id});
+    const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray'+(m.manual?'_MANUAL':'')+'.jpg';
+    return await gsPost({
+      action:'uploadImageDrive', fileName:fn, base64:b64, mimeType:'image/jpeg',
+      location:myLoc(), awb:m.rec.awb, scanId:m.rec.id,
+      forced:m.manual||false, operatorEmail:CU.email
+    });
   }
 
   for(let i=0;i<matches.length;i+=BATCH){
@@ -2007,7 +2121,10 @@ async function applyFolder(){
       }
       if(res?.url){
         const r=DB.records.find(x=>x.id===m.rec.id);
-        if(r){r.xray_image_url=res.url;r.image_linked=true;linked.push(r);}
+        if(r){
+          r.xray_image_url=res.url;r.image_linked=true;linked.push(r);
+          if(m.manual){ r.manually_corrected=true; manualLog.push({awb:r.awb, field:'image_match',oldValue:'unmatched ('+m.name+')',newValue:'manually assigned by operator'}); }
+        }
       }else{
         const reason = errMsg || (res && res.error) || 'no url returned';
         const stepInfo = (res && res.step) ? (' [failed at: '+res.step+']') : '';
@@ -2016,6 +2133,17 @@ async function applyFolder(){
       }
     }));
   }
+
+  // Log manual assignments to CorrectionLog — visible to admin as flagged
+  // mismatches that were manually resolved rather than auto-matched.
+  // One call per AWB so each row carries its own correct AWB, not a
+  // shared placeholder covering the whole batch.
+  for(const entry of manualLog){
+    try{
+      await gsPost({ action:'logCorrection', location:myLoc(), operator:CU.email, awb:entry.awb, changes:[{field:entry.field,oldValue:entry.oldValue,newValue:entry.newValue}] });
+    }catch(e){ console.warn('manual-assign log failed (non-fatal):', e.message); }
+  }
+
   hideLoad();
   document.getElementById('fd-result').style.display='none';
   renderShift(); updateStats(); updateBanner();
@@ -2049,22 +2177,26 @@ async function applyFolder(){
 // ══════════════════════════════════════════════════════════════
 //  RECORDS VIEWS
 // ══════════════════════════════════════════════════════════════
+let myShiftsForDate=[]; // shift_logs rows for whichever date is being viewed
+
 async function onRecDateChange(){
   const date=document.getElementById('rec-date')?.value||todayStr();
-  if(date===todayStr()){
-    myRecordsViewData=null;
-    document.getElementById('rec-title').textContent='MY RECORDS — TODAY';
-    renderRec();
-    return;
-  }
   document.getElementById('rec-loading').style.display='inline';
-  document.getElementById('rec-title').textContent='MY RECORDS — '+date;
   try{
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&operator_email=eq.'+encodeURIComponent(CU.email)+'&scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.asc');
-    myRecordsViewData=Array.isArray(data)?data:[];
+    if(date===todayStr()){
+      myRecordsViewData=null;
+    }else{
+      const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&operator_email=eq.'+encodeURIComponent(CU.email)+'&scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.asc');
+      myRecordsViewData=Array.isArray(data)?data:[];
+    }
+    // Fetch this operator's shifts for the selected date, so records can
+    // be grouped by which shift they belong to instead of one flat list.
+    const shiftData=await sbGetAll('/rest/v1/shift_logs?operator_email=eq.'+encodeURIComponent(CU.email)+'&location_code=eq.'+encodeURIComponent(myLoc())+'&shift_start=gte.'+date+'T00:00:00%2B05:30&shift_start=lte.'+date+'T23:59:59%2B05:30&order=shift_start.asc');
+    myShiftsForDate=Array.isArray(shiftData)?shiftData:[];
   }catch(e){
     toast('Failed to load '+date+': '+e.message,'err');
-    myRecordsViewData=[];
+    if(date!==todayStr()) myRecordsViewData=[];
+    myShiftsForDate=[];
   }
   document.getElementById('rec-loading').style.display='none';
   renderRec();
@@ -2084,29 +2216,127 @@ async function togglePin(recId){
   }catch(e){ toast('Pin failed: '+e.message,'err'); }
 }
 
+// Assigns a permanent serial number (1..N, chronological) to every record
+// in a pool — shared by My Records, End of Shift, and the Recent Scans
+// panel on Scan AWB, so the same AWB always shows the same number
+// everywhere, regardless of sort/filter/pin state in any one view.
+function assignSerials(pool){
+  const chrono=[...pool].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  chrono.forEach((r,i)=>{ r._serial=i+1; });
+  return chrono;
+}
+
+// Renders one shift's records as its own card: its own header (start/end
+// time, status), its own scan count, its own matched/unmatched
+// breakdown — never combined with any other shift's numbers.
+function renderShiftSection(title, statusBadge, recs){
+  const matched=recs.filter(r=>r.image_linked||r.xray_image_url).length;
+  const unmatched=recs.length-matched;
+  const rows=recs.length===0
+    ? '<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:16px;">No records in this shift.</td></tr>'
+    : recs.map(r=>'<tr>'
+        +'<td style="color:var(--text3);">'+r._serial+'</td>'
+        +'<td style="cursor:pointer;text-align:center;" onclick="togglePin(\''+r.id+'\')" title="Pin to find this AWB quickly later">'+(r.pinned?'📌':'<span style="color:var(--text3);opacity:.4;">📌</span>')+'</td>'
+        +'<td class="tc-awb">'+r.awb+(r.manually_corrected?' <span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')+'</td>'
+        +'<td style="font-family:var(--mono);font-size:11px;color:var(--text2);">'+new Date(r.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
+        +'<td style="font-size:12px;">'+(r.product_name||'–')+'</td>'
+        +'<td>'+resultPill(r.result)+'</td>'
+        +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
+        +'<td style="font-size:12px;">'+(r.shoe_box||'–')+'</td>'
+        +'<td style="font-size:11px;color:var(--text2);">'+(r.remarks||'–')+'</td>'
+        +'<td>'+(r.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼</span>':'<span class="pill pill-warn">⏳</span>')
+          +(r.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">📦</span>':'')+'</td>'
+        +'<td style="display:flex;gap:4px;">'
+          +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+r.id+'\')">✏️ Edit</button>'
+          +'<button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+r.id+'\')">🗑</button>'
+        +'</td>'
+        +'</tr>').join('');
+  return '<div class="card">'
+    +'<div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">'+title+'</span>'+statusBadge
+    +'<span class="card-head-right" style="font-family:var(--mono);font-size:11px;">'
+      +'<span class="pill pill-t1">'+recs.length+' scans</span> '
+      +'<span class="pill pill-ok">'+matched+' matched</span> '
+      +(unmatched?'<span class="pill pill-warn">'+unmatched+' unmatched</span>':'')
+    +'</span></div>'
+    +'<div class="tbl-wrap"><table>'
+    +'<thead><tr><th>#</th><th>📌</th><th>AWB</th><th>Time</th><th>Product</th><th>Result</th><th>Tamper</th><th>Shoebox</th><th>Remarks</th><th>Images</th><th>Actions</th></tr></thead>'
+    +'<tbody>'+rows+'</tbody></table></div></div>';
+}
+
 function renderRec(){
   const s=(document.getElementById('rec-search')?.value||'').toLowerCase();
   const res=document.getElementById('rec-res')?.value||'';
-  let recs=[...recPool()].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  // Serial numbers are assigned ONCE from the full chronological list,
+  // before any search/filter/pin/shift-grouping reordering — so a
+  // record's number is a permanent property of when it was scanned, not
+  // its current on-screen position. Pinning moves a row to the top of
+  // its shift's section visually; it does NOT renumber it.
+  const allChrono=assignSerials(recPool());
+
+  let recs=allChrono;
   if(s) recs=recs.filter(r=>r.awb.toLowerCase().includes(s));
   if(res) recs=recs.filter(r=>r.result===res);
-  // Pinned AWBs float to the top for quick access, keeping chronological order within each group
-  recs.sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0));
-  document.getElementById('rec-body').innerHTML=recs.length===0
-    ?'<tr><td colspan="10" style="text-align:center;color:var(--text3);padding:20px;">No records for this date.</td></tr>'
-    :recs.map((r,i)=>'<tr>'
-      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
-      +'<td style="cursor:pointer;text-align:center;" onclick="togglePin(\''+r.id+'\')" title="Pin to find this AWB quickly later">'+(r.pinned?'📌':'<span style="color:var(--text3);opacity:.4;">📌</span>')+'</td>'
-      +'<td class="tc-awb">'+r.awb+(r.manually_corrected?' <span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')+'</td>'
-      +'<td style="font-family:var(--mono);font-size:11px;color:var(--text2);">'+new Date(r.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
-      +'<td style="font-size:12px;">'+(r.product_name||'–')+'</td>'
-      +'<td>'+resultPill(r.result)+'</td>'
-      +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
-      +'<td style="font-size:12px;">'+(r.shoe_box||'–')+'</td>'
-      +'<td style="font-size:11px;color:var(--text2);">'+(r.remarks||'–')+'</td>'
-      +'<td><button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+r.id+'\')">✏️ Edit</button></td>'
-      +'</tr>').join('');
+
+  const container=document.getElementById('rec-container');
+  if(recs.length===0){
+    container.innerHTML='<div class="card"><div class="card-body" style="text-align:center;color:var(--text3);padding:20px;">No records for this date.</div></div>';
+    return;
+  }
+
+  // Group by shift_id — each shift gets its own section with its own
+  // count and matched/unmatched breakdown, never combined with another
+  // shift's numbers. Records with no matching shift fall into "Unassigned".
+  const shiftMap={};
+  myShiftsForDate.forEach(sh=>{ shiftMap[sh.id]={shift:sh, recs:[]}; });
+  const unassigned=[];
+  recs.forEach(r=>{
+    if(r.shift_id && shiftMap[r.shift_id]) shiftMap[r.shift_id].recs.push(r);
+    else unassigned.push(r);
+  });
+
+  let html='';
+  myShiftsForDate.forEach((sh,idx)=>{
+    const group=shiftMap[sh.id];
+    if(!group.recs.length) return; // skip empty shifts (e.g. filtered out by search)
+    // Pinned rows float to the top within their own shift section
+    const pinned=group.recs.filter(r=>r.pinned);
+    const unpinned=group.recs.filter(r=>!r.pinned);
+    const ordered=[...pinned,...unpinned];
+    const start=sh.shift_start?new Date(sh.shift_start).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}):'?';
+    const end=sh.shift_end?new Date(sh.shift_end).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}):null;
+    const badge=end?'<span class="pill pill-ok" style="margin-left:8px;">✅ '+start+' – '+end+'</span>':'<span class="pill pill-warn" style="margin-left:8px;">⏳ '+start+' – ongoing</span>';
+    html+=renderShiftSection('SHIFT '+(idx+1), badge, ordered);
+  });
+  if(unassigned.length){
+    const pinned=unassigned.filter(r=>r.pinned);
+    const unpinned=unassigned.filter(r=>!r.pinned);
+    html+=renderShiftSection('OTHER RECORDS', '<span class="pill pill-dim" style="margin-left:8px;">no shift on record</span>', [...pinned,...unpinned]);
+  }
+  container.innerHTML=html;
+  setTimeout(()=>{
+    const panel=document.querySelector('.content');
+    if(panel) panel.scrollTop=panel.scrollHeight;
+  },100);
 }
+
+// Brings the last row of a table into view, so the latest scan (and the
+// running count next to it) is visible without the operator manually
+// scrolling down every time a new row is added.
+function scrollTableToBottom(tbodyId){
+  setTimeout(()=>{
+    const tbody=document.getElementById(tbodyId);
+    const lastRow=tbody?.lastElementChild;
+    if(lastRow){
+      lastRow.scrollIntoView({block:'end',behavior:'smooth'});
+    }
+    // Reinforce: .content is the actual scrollable panel (overflow-y:auto) —
+    // directly scrolling it to its bottom is a reliable fallback in case
+    // scrollIntoView doesn't fully resolve within the nested layout.
+    const panel=document.querySelector('.content');
+    if(panel) panel.scrollTop=panel.scrollHeight;
+  },80);
+}
+
 
 // ══════════════════════════════════════════════════════════════
 //  ADMIN DASHBOARD
@@ -2200,11 +2430,17 @@ function renderDash(){
     ?'<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text3);">No locations yet.</div>'
     :DB.locations.map(loc=>{
       const lr=recs.filter(r=>r.location_code===loc.code);
+      const pending=lr.filter(r=>!r.image_linked&&!r.xray_image_url).length;
+      const forced=lr.filter(r=>r.manually_corrected).length;
+      const withProduct=lr.filter(r=>r.product_image_url).length;
       return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;border-top:2px solid '+(loc.machine_type===1||loc.machine_type==='1'?'var(--t1)':'var(--t2)')+';">'
         +'<div style="font-family:var(--mono);font-size:13px;font-weight:700;color:'+(loc.machine_type===1||loc.machine_type==='1'?'var(--t1)':'var(--t2)')+';margin-bottom:4px;">'+loc.code+'</div>'
         +'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">'+loc.name+'</div>'
         +'<div style="font-family:var(--mono);font-size:11px;">Scans: <strong>'+lr.length+'</strong></div>'
         +'<div style="font-family:var(--mono);font-size:11px;">Issues: <strong style="color:var(--danger);">'+lr.filter(r=>r.result==='FAKE'||r.result==='EMPTY').length+'</strong></div>'
+        +'<div style="font-family:var(--mono);font-size:11px;">Pending images: <strong style="color:'+(pending?'var(--warn)':'var(--success)')+';">'+pending+'</strong></div>'
+        +(forced?'<div style="font-family:var(--mono);font-size:11px;">Manually corrected: <strong style="color:var(--warn);">'+forced+'</strong></div>':'')
+        +(withProduct?'<div style="font-family:var(--mono);font-size:11px;">With product photo: <strong>'+withProduct+'</strong></div>':'')
         +'</div>';
     }).join('');
 }
@@ -2463,16 +2699,21 @@ async function renderAllRec(){
   const cnt=document.getElementById('arec-count');
   if(cnt) cnt.innerHTML='<span class="pill pill-t1">'+recs.length+' records</span>';
   document.getElementById('arec-body').innerHTML=recs.length===0
-    ?'<tr><td colspan="9" style="text-align:center;color:var(--text3);padding:20px;">No records found.</td></tr>'
+    ?'<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:20px;">No records found.</td></tr>'
     :recs.map((r,i)=>'<tr>'
-      +'<td style="color:var(--text3);">'+(i+1)+'</td><td class="tc-awb">'+r.awb+'</td>'
+      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td style="font-family:var(--mono);font-size:11px;color:var(--text3);">'+(r.seq_num||'–')+'</td>'
+      +'<td class="tc-awb">'+r.awb+'</td>'
       +'<td style="font-family:var(--mono);font-size:11px;">'+new Date(r.scanned_at).toLocaleString('en-IN',{dateStyle:'short',timeStyle:'short'})+'</td>'
       +'<td><span class="loc-tag">'+r.location_code+'</span></td>'
       +'<td style="font-size:12px;">'+(r.product_name||'–')+'</td>'
       +'<td>'+resultPill(r.result)+'</td>'
       +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
       +'<td style="font-family:var(--mono);font-size:11px;color:var(--text3);">'+r.operator_email+'</td>'
-      +'<td>'+(r.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewXray(this)" data-url="'+encodeURIComponent(r.xray_image_url)+'">View</span>':'–')+'</td>'
+      +'<td>'+(r.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼 Images</span>':'–')
+        +(r.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">📦</span>':'')+'</td>'
+      +'<td>'+(r.manually_corrected?'<span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')
+        +(r.pinned?' <span style="font-size:11px;">📌</span>':'')+'</td>'
       +'</tr>').join('');
 }
 
@@ -2726,49 +2967,73 @@ async function renderShifts(){
 
 
 // ── X-RAY IMAGE VIEWER ───────────────────────────────────────
-function viewXray(el) {
-  var url = decodeURIComponent(el.getAttribute('data-url') || '');
-  if (!url) return;
-
-  // Extract Drive file ID from any URL format
+// Renders one image (by Drive URL) into the modal's main viewer, with a
+// clear label showing exactly which type it is — this is the core fix
+// for "product photo displayed where X-ray should be": the viewer now
+// always states plainly what's on screen, never just an unlabeled image.
+function showImgInModal(url, label) {
   var fileId = '';
   var m = url.match(/\/file\/d\/([^\/\?&]+)/);
   if (m) fileId = m[1];
   else { m = url.match(/[?&]id=([^&]+)/); if(m) fileId = m[1]; }
 
-  if (!fileId) {
-    // Not a Drive URL — open directly
-    window.open(url, '_blank');
-    return;
-  }
-
-  // Use thumbnail URL for direct image display (no auth needed, no download)
-  var thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1200';
-  var previewUrl = 'https://drive.google.com/file/d/' + fileId + '/preview';
-
-  // Show modal with image tag (faster than iframe, no download)
-  var modal = document.getElementById('modal-imgview');
+  document.getElementById('imgview-current-label').textContent = label;
   var iframe = document.getElementById('xray-iframe');
   var imgEl = document.getElementById('xray-img-direct');
 
-  if (imgEl) {
-    // Try image tag first
-    imgEl.src = thumbUrl;
-    imgEl.style.display = 'block';
-    iframe.style.display = 'none';
-    imgEl.onerror = function() {
-      // Fallback to iframe preview
-      imgEl.style.display = 'none';
-      iframe.style.display = 'block';
-      iframe.src = previewUrl;
-    };
-  } else {
-    iframe.src = previewUrl;
+  if (!fileId) {
+    iframe.style.display='block'; imgEl.style.display='none';
+    iframe.src = url;
+    document.getElementById('xray-open-link').href = url;
+    return;
   }
-
-  modal.style.display = 'flex';
-  // Store fileId for open-in-new-tab button
+  var thumbUrl = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w1200';
+  var previewUrl = 'https://drive.google.com/file/d/' + fileId + '/preview';
+  imgEl.src = thumbUrl;
+  imgEl.style.display = 'block';
+  iframe.style.display = 'none';
+  imgEl.onerror = function() {
+    imgEl.style.display = 'none';
+    iframe.style.display = 'block';
+    iframe.src = previewUrl;
+  };
   document.getElementById('xray-open-link').href = 'https://drive.google.com/file/d/' + fileId + '/view';
+}
+
+// Opens the gallery for a record — builds a tab per available image type
+// (only types that actually exist), defaulting to X-Ray if present, else
+// whichever comes first. Each tab is unmistakably labeled.
+function viewImages(recId) {
+  const r = recPool().find(x=>x.id===recId) || DB.records.find(x=>x.id===recId);
+  if (!r) { toast('Record not found','err'); return; }
+  const types = [
+    { key:'xray_image_url',    label:'X-RAY',   cls:'pill-ok'   },
+    { key:'label_image_url',   label:'LABEL',   cls:'pill-t1'   },
+    { key:'front_image_url',   label:'FRONT',   cls:'pill-t1'   },
+    { key:'back_image_url',    label:'BACK',    cls:'pill-t1'   },
+    { key:'product_image_url', label:'PRODUCT', cls:'pill-warn' }
+  ].filter(t => r[t.key]);
+
+  if (!types.length) { toast('No images linked for this AWB yet','info'); return; }
+
+  const tabWrap = document.getElementById('imgview-tabs');
+  tabWrap.innerHTML = types.map((t,i) =>
+    '<button class="pill '+t.cls+'" style="cursor:pointer;padding:6px 12px;font-size:11px;" '
+    +'onclick="showImgInModal(\''+r[t.key].replace(/'/g,"\\'")+'\',\''+t.label+'\')">'+t.label+'</button>'
+  ).join('');
+
+  document.getElementById('modal-imgview').style.display = 'flex';
+  showImgInModal(r[types[0].key], types[0].label);
+}
+
+// Kept for any old onclick markup still referencing it directly with a
+// bare URL (data-url attribute) — routes to the same labeled viewer.
+function viewXray(el) {
+  var url = decodeURIComponent(el.getAttribute('data-url') || '');
+  if (!url) return;
+  document.getElementById('imgview-tabs').innerHTML = '';
+  document.getElementById('modal-imgview').style.display = 'flex';
+  showImgInModal(url, 'X-RAY');
 }
 
 function closeImgView(e) {

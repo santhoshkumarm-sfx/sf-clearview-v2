@@ -2075,8 +2075,13 @@ async function processFd(files){
     const windowStartDate=new Date(todayStr()+'T12:00:00Z');
     windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
     const windowStartStr=windowStartDate.toISOString().split('T')[0];
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&xray_image_url=is.null&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&order=scanned_at.asc');
-    unlinked=Array.isArray(data)?data:[];
+    // FIX: "xray_image_url=is.null" only matches actual database NULL —
+    // any row where it's an empty string instead would be silently
+    // excluded by that filter even though it's genuinely missing its
+    // photo. Fetching everything in the window and filtering client-
+    // side (which treats null/undefined/'' all as "missing") is safer.
+    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&order=scanned_at.asc');
+    unlinked=(Array.isArray(data)?data:[]).filter(r=>!r.xray_image_url);
   }catch(e){
     console.warn('Widened unlinked-pool fetch failed, falling back to today only:',e.message);
     unlinked=myToday().filter(r=>!r.xray_image_url);

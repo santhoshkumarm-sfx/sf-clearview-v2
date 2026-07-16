@@ -1470,15 +1470,22 @@ async function uploadImagesBackground(awb, recId, imgs){
         }catch(dlErr){ console.warn('Local save fallback failed:',dlErr.message); }
       }
     }
-    // Update record with whatever image URLs did succeed. Product (slot 3)
-    // is separate from the required x-ray trio — it doesn't drive
-    // xray_image_url or image_linked, same as the Edit Record flow.
+    // Update record with whatever image URLs did succeed. Label/Front/
+    // Back/Product each stay in their own field — NONE of them fabricate
+    // xray_image_url locally anymore (that was the actual root cause of
+    // images mixing: whichever uploaded last silently became "the X-ray
+    // image"). xray_image_url is only ever set by a genuine type='xray'
+    // upload (folder-match or Force Image), which patches it server-side
+    // and gets picked up on next reload — this local mirror just leaves
+    // it alone. "Linked" now means the full Label+Front+Back trio is
+    // actually complete, not "something got uploaded."
     const r=DB.records.find(x=>x.id===recId);
     if(r){
-      r.label_image_url=urls[0]; r.front_image_url=urls[1]; r.back_image_url=urls[2];
-      r.product_image_url=urls[3];
-      r.xray_image_url=urls[0]||urls[1]||urls[2];
-      r.image_linked = urls.slice(0,3).some(u=>u); // only the required 3 count toward "linked"
+      r.label_image_url=urls[0]||r.label_image_url;
+      r.front_image_url=urls[1]||r.front_image_url;
+      r.back_image_url=urls[2]||r.back_image_url;
+      r.product_image_url=urls[3]||r.product_image_url;
+      r.image_linked = !!(r.xray_image_url || (r.label_image_url&&r.front_image_url&&r.back_image_url));
     }
     if(failedTypes.length){
       toast('⚠️ '+awb+': '+failedTypes.length+' image(s) saved to your Downloads folder — Drive upload failed. Show admin.','err');
@@ -1679,7 +1686,7 @@ function renderEosLinked(){
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
-      +'<td>'+(rec.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="View X-Ray/Label/Front/Back">🖼 Images</span>':'<span class="pill pill-warn">⏳</span>')
+      +'<td>'+((rec.xray_image_url||rec.image_linked)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="View X-Ray/Label/Front/Back">🖼 Images</span>':'<span class="pill pill-warn">⏳</span>')
         +(rec.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="Product photo also attached">📦 Product</span>':'')
         +(rec.manually_corrected?' <span class="pill pill-warn" style="margin-left:4px;" title="Manually replaced by operator">⚠ FORCED</span>':'')+'</td>'
       +'<td>'+resultPill(rec.result)+'</td>'
@@ -1879,6 +1886,11 @@ async function saveEditRecord(){
     // to their own column; only label/front/back also update the primary
     // xray_image_url pointer (product is a separate "opened shipment" shot)
     // Uses r.awb, which by this point already reflects any AWB correction.
+    // Same fix as the inline-capture flow: each slot only ever writes to
+    // its own field. Nothing here fabricates xray_image_url from label/
+    // front/back — only the server-side type='xray' patch does that, and
+    // only when explicitly asked (Force Image). "Linked" is recomputed
+    // after each upload from actual completeness, not "something changed."
     for(const slot of ['label','front','back','product']){
       if(!erPickedImages[slot]) continue;
       const blob=await(await fetch(erPickedImages[slot])).blob();
@@ -1892,7 +1904,7 @@ async function saveEditRecord(){
       });
       if(res?.url){
         r[slot+'_image_url']=res.url;
-        if(slot!=='product'){ r.xray_image_url=res.url; r.image_linked=true; }
+        r.image_linked = !!(r.xray_image_url || (r.label_image_url&&r.front_image_url&&r.back_image_url));
       }
     }
 
@@ -2308,7 +2320,7 @@ function renderShiftSection(title, statusBadge, recs){
         +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
         +'<td style="font-size:12px;">'+(r.shoe_box||'–')+'</td>'
         +'<td style="font-size:11px;color:var(--text2);">'+(r.remarks||'–')+'</td>'
-        +'<td>'+(r.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼</span>':'<span class="pill pill-warn">⏳</span>')
+        +'<td>'+((r.xray_image_url||r.image_linked)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼</span>':'<span class="pill pill-warn">⏳</span>')
           +(r.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">📦</span>':'')+'</td>'
         +'<td style="display:flex;gap:4px;">'
           +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+r.id+'\')">✏️ Edit</button>'
@@ -2774,7 +2786,7 @@ async function renderAllRec(){
       +'<td>'+resultPill(r.result)+'</td>'
       +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
       +'<td style="font-family:var(--mono);font-size:11px;color:var(--text3);">'+r.operator_email+'</td>'
-      +'<td>'+(r.xray_image_url?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼 Images</span>':'–')
+      +'<td>'+((r.xray_image_url||r.image_linked)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼 Images</span>':'–')
         +(r.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">📦</span>':'')+'</td>'
       +'<td>'+(r.manually_corrected?'<span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')
         +(r.pinned?' <span style="font-size:11px;">📌</span>':'')+'</td>'

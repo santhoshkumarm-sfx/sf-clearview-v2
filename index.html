@@ -212,6 +212,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item"   id="ni-tolreq" onclick="openTolApprove()"><span class="nav-icon">⚙️</span>Tol. Requests</div>
     </div>
     <div class="sb-foot">
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-16</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -284,14 +285,16 @@ video{width:100%;height:100%;object-fit:cover;}
                 <div class="thumb-slot" id="th0" onclick="capPhoto(0)"><span style="font-size:18px;">🏷</span><span>LABEL</span></div>
                 <div class="thumb-slot" id="th1" onclick="capPhoto(1)"><span style="font-size:18px;">⬆</span><span>FRONT</span></div>
                 <div class="thumb-slot" id="th2" onclick="capPhoto(2)"><span style="font-size:18px;">⬇</span><span>BACK</span></div>
-                <div class="thumb-slot" id="th3" onclick="capPhoto(3)"><span style="font-size:18px;">📦</span><span>PRODUCT</span></div>
+                <div class="thumb-slot" id="th3-wrap" style="flex:1;display:none;">
+                  <div class="thumb-slot" id="th3" onclick="capPhoto(3)" style="width:100%;"><span style="font-size:18px;">📦</span><span>PRODUCT</span></div>
+                </div>
               </div>
-              <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin:-6px 0 8px;">PRODUCT = optional photo of the opened shipment/item — not required to save</div>
+              <div id="product-hint" style="font-size:9px;color:var(--text3);font-family:var(--mono);margin:-6px 0 8px;display:none;">PRODUCT = optional photo of the opened shipment/item — only relevant for Fake/Empty, not required to save</div>
               <div style="display:flex;gap:6px;">
                 <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Label<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,0)"></label>
                 <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Front<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,1)"></label>
                 <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Back<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,2)"></label>
-                <label class="btn btn-ghost btn-sm" style="flex:1;cursor:pointer;">Product<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,3)"></label>
+                <label class="btn btn-ghost btn-sm" id="product-filepicker" style="flex:1;cursor:pointer;display:none;">Product<input type="file" accept="image/*" style="display:none;" onchange="loadImg(this,3)"></label>
               </div>
             </div>
           </div>
@@ -649,9 +652,9 @@ video{width:100%;height:100%;object-fit:cover;}
       </div>
       <div class="fg"><label class="lbl">X-Ray Result</label>
         <div class="radio-row" id="er-result-row">
-          <label class="rchip r-ok"><input type="radio" name="er-xr" value="ORIGINAL"><span>✅ Original</span></label>
-          <label class="rchip r-danger"><input type="radio" name="er-xr" value="FAKE"><span>🚫 Fake</span></label>
-          <label class="rchip r-warn"><input type="radio" name="er-xr" value="EMPTY"><span>📦 Empty</span></label>
+          <label class="rchip r-ok"><input type="radio" name="er-xr" value="ORIGINAL" onchange="toggleErProductVisibility()"><span>✅ Original</span></label>
+          <label class="rchip r-danger"><input type="radio" name="er-xr" value="FAKE" onchange="toggleErProductVisibility()"><span>🚫 Fake</span></label>
+          <label class="rchip r-warn"><input type="radio" name="er-xr" value="EMPTY" onchange="toggleErProductVisibility()"><span>📦 Empty</span></label>
         </div>
       </div>
       <div class="fg"><label class="lbl">Tamper Status</label>
@@ -682,7 +685,7 @@ video{width:100%;height:100%;object-fit:cover;}
           </div>
         </div>
       </div>
-      <div class="fg"><label class="lbl">Product Image — photo of the opened shipment (optional)</label>
+      <div class="fg" id="er-product-wrap" style="display:none;"><label class="lbl">Product Image — photo of the opened shipment (Fake/Empty only)</label>
         <label class="btn btn-ghost btn-sm" style="width:100%;cursor:pointer;display:block;text-align:center;">
           <span id="er-product-thumb">📦 PRODUCT IMAGE</span>
           <input type="file" accept="image/*" style="display:none;" onchange="erPickImage(this,'product')">
@@ -907,6 +910,21 @@ async function endCurrentShift(){
   const key='cv_shift_id_'+todayStr()+'_'+myLoc()+'_'+CU.email;
   sessionStorage.removeItem(key);
   currentShiftId=null;
+}
+
+// Real AWBs (per every example seen so far) are short, purely
+// alphanumeric strings — typically 8-20 characters, a few letters plus
+// digits. A barcode scanner picking up the WRONG sticker (invoice
+// barcode, courier routing barcode, etc.) produces long strings full of
+// pipes, colons, slashes, spaces — or two real AWBs concatenated
+// together from a double-scan. This rejects anything that doesn't look
+// like a real AWB, so garbage can never be saved as a scan record,
+// whether via auto-save or a manual click.
+function isValidAwbFormat(awb){
+  if(!awb) return false;
+  if(awb.length<6||awb.length>20) return false;
+  if(!/^[A-Z0-9]+$/i.test(awb)) return false; // letters/digits only — no |, \, /, :, spaces, commas
+  return true;
 }
 
 function resultPill(r){
@@ -1258,9 +1276,27 @@ function onAwbChange(){
   // submitScan() already validates (e.g. images required for Fake/
   // Empty), so an incomplete auto-save just shows the normal error
   // toast instead of silently failing.
+  //
+  // FIX: this used to start the countdown for ANY non-empty text of
+  // sufficient length — meaning a barcode scanner picking up the wrong
+  // sticker (an invoice barcode, a courier routing barcode, garbled
+  // multi-line label text) would auto-save that garbage as a real scan
+  // record within 3 seconds, before anyone could notice and stop it.
+  // Now it checks the format FIRST — if it doesn't look like a real
+  // AWB, the countdown never starts at all, and a clear warning shows
+  // immediately instead of silently ticking down toward a bad save.
   clearAwbAutoSave();
   if(awb.length>=6){
     const badge=document.getElementById('awb-autosave-badge');
+    if(!isValidAwbFormat(awb)){
+      badge.style.display='inline';
+      badge.style.color='var(--danger)';
+      badge.style.borderColor='rgba(255,82,82,.4)';
+      badge.style.background='rgba(255,82,82,.1)';
+      badge.textContent='⚠️ Not a valid AWB — check barcode';
+      return;
+    }
+    badge.style.color=''; badge.style.borderColor=''; badge.style.background='';
     let secondsLeft=3;
     badge.style.display='inline';
     badge.textContent='⏱ Auto-save in '+secondsLeft+'s';
@@ -1279,7 +1315,10 @@ function clearAwbAutoSave(){
   if(awbAutoSaveTimer){ clearTimeout(awbAutoSaveTimer); awbAutoSaveTimer=null; }
   if(awbAutoSaveInterval){ clearInterval(awbAutoSaveInterval); awbAutoSaveInterval=null; }
   const badge=document.getElementById('awb-autosave-badge');
-  if(badge) badge.style.display='none';
+  if(badge){
+    badge.style.display='none';
+    badge.style.color=''; badge.style.borderColor=''; badge.style.background='';
+  }
 }
 
 function updateCameraReq(){
@@ -1288,6 +1327,18 @@ function updateCameraReq(){
   const need=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
   document.getElementById('cam-notice').style.display=need?'block':'none';
   document.getElementById('cam-badge').innerHTML=need?'<span class="pill pill-err">IMAGES REQUIRED</span>':'';
+  // Product photo is only relevant for Fake/Empty declarations (not
+  // Tampered, not Original) — hidden otherwise so it can't be mistakenly
+  // used outside that context.
+  const productApplicable=result==='FAKE'||result==='EMPTY';
+  document.getElementById('th3-wrap').style.display=productApplicable?'block':'none';
+  document.getElementById('product-hint').style.display=productApplicable?'block':'none';
+  document.getElementById('product-filepicker').style.display=productApplicable?'flex':'none';
+  if(!productApplicable && captured[3]){
+    captured[3]=null;
+    const s=document.getElementById('th3');
+    if(s) s.innerHTML='<span style="font-size:18px;">📦</span><span>PRODUCT</span>';
+  }
 }
 
 async function submitScan(){
@@ -1295,6 +1346,10 @@ async function submitScan(){
   const result=document.querySelector('input[name="xr"]:checked')?.value;
   const tamper=document.querySelector('input[name="tr"]:checked')?.value||'';
   if(!awb)   { toast('Enter AWB number','err'); return; }
+  if(!isValidAwbFormat(awb)){
+    toast('⚠️ "'+awb.substring(0,30)+(awb.length>30?'...':'')+'" doesn\'t look like a valid AWB — check the barcode and rescan','err');
+    return;
+  }
   if(!result){ toast('Select X-Ray result','err'); return; }
   const needImg=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
   const requiredCaptured=captured.slice(0,3).filter(Boolean).length; // label/front/back only — product is optional
@@ -1743,7 +1798,16 @@ function openEditRecord(recId){
     const icon=slot==='label'?'🏷':slot==='front'?'⬆':slot==='back'?'⬇':'📦';
     el.textContent = url ? '✅ '+slot.toUpperCase()+' (set)' : icon+' '+slot.toUpperCase();
   });
+  toggleErProductVisibility();
   openModal('modal-editrec');
+}
+
+// Product photo is only relevant for Fake/Empty declarations — hidden
+// otherwise in the Edit modal too, same rule as Scan AWB.
+function toggleErProductVisibility(){
+  const result=document.querySelector('input[name="er-xr"]:checked')?.value||'';
+  const wrap=document.getElementById('er-product-wrap');
+  if(wrap) wrap.style.display=(result==='FAKE'||result==='EMPTY')?'block':'none';
 }
 
 function erPickImage(input,slot){

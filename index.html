@@ -927,17 +927,13 @@ function isValidAwbFormat(awb){
   return true;
 }
 
-// Matches the backend's evidence-completeness rule exactly: Fake/Empty/
-// Tampered scans need BOTH the genuine X-ray photo AND the full Label+
-// Front+Back trio; everything else just needs the X-ray photo. Getting
-// this wrong here (even just client-side, until the next reload) is
-// what caused a record to look "done" before its real X-ray photo was
-// ever attached, hiding it from folder-matching.
+// SIMPLIFIED (per explicit request): matches the backend exactly now —
+// "linked" means the genuine X-ray photo exists, full stop. Label/Front/
+// Back/Product don't factor into this at all (they're still required
+// to SAVE a Fake/Empty/Tampered scan — that's a separate check in
+// submitScan(), unrelated to this flag).
 function computeImageLinked(r){
-  const neededImages = r.result==='FAKE'||r.result==='EMPTY'||r.tamper_status==='TAMPERED';
-  return neededImages
-    ? !!(r.xray_image_url && r.label_image_url && r.front_image_url && r.back_image_url)
-    : !!r.xray_image_url;
+  return !!r.xray_image_url;
 }
 
 function resultPill(r){

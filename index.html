@@ -927,6 +927,19 @@ function isValidAwbFormat(awb){
   return true;
 }
 
+// Matches the backend's evidence-completeness rule exactly: Fake/Empty/
+// Tampered scans need BOTH the genuine X-ray photo AND the full Label+
+// Front+Back trio; everything else just needs the X-ray photo. Getting
+// this wrong here (even just client-side, until the next reload) is
+// what caused a record to look "done" before its real X-ray photo was
+// ever attached, hiding it from folder-matching.
+function computeImageLinked(r){
+  const neededImages = r.result==='FAKE'||r.result==='EMPTY'||r.tamper_status==='TAMPERED';
+  return neededImages
+    ? !!(r.xray_image_url && r.label_image_url && r.front_image_url && r.back_image_url)
+    : !!r.xray_image_url;
+}
+
 function resultPill(r){
   if(r==='ORIGINAL') return '<span class="pill pill-ok">✅ Original</span>';
   if(r==='FAKE')     return '<span class="pill pill-err">🚫 Fake</span>';
@@ -1485,7 +1498,7 @@ async function uploadImagesBackground(awb, recId, imgs){
       r.front_image_url=urls[1]||r.front_image_url;
       r.back_image_url=urls[2]||r.back_image_url;
       r.product_image_url=urls[3]||r.product_image_url;
-      r.image_linked = !!(r.xray_image_url || (r.label_image_url&&r.front_image_url&&r.back_image_url));
+      r.image_linked = computeImageLinked(r);
     }
     if(failedTypes.length){
       toast('⚠️ '+awb+': '+failedTypes.length+' image(s) saved to your Downloads folder — Drive upload failed. Show admin.','err');
@@ -1667,7 +1680,10 @@ function renderShift(){
   renderEosLinked();
 }
 function renderT2(){
-  const r=myToday().filter(x=>!x.image_linked).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  // Same fix as the folder-matching pool — this shows what still needs
+  // its X-ray-machine photo attached, regardless of whether Label/Front/
+  // Back are already done.
+  const r=myToday().filter(x=>!x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
   document.getElementById('t2-body').innerHTML=r.length===0
     ?'<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:12px;">All linked</td></tr>'
     :r.map(rec=>'<tr><td style="font-family:var(--mono);color:var(--t2);">#'+rec.seq_num+'</td>'
@@ -1904,7 +1920,7 @@ async function saveEditRecord(){
       });
       if(res?.url){
         r[slot+'_image_url']=res.url;
-        r.image_linked = !!(r.xray_image_url || (r.label_image_url&&r.front_image_url&&r.back_image_url));
+        r.image_linked = computeImageLinked(r);
       }
     }
 
@@ -2046,7 +2062,14 @@ let fdUnlinkedPool=[]; // tracks which unlinked records are still available to m
 async function processFd(files){
   document.getElementById('fd-prog').style.display='block';
   files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
-  const unlinked=myToday().filter(r=>!r.image_linked&&r.image_linked!=='true');
+  // FIX: this used to check the broader image_linked flag — but that
+  // becomes true once Label+Front+Back are done inline, even before the
+  // genuine X-ray-machine photo is ever attached. That made a record
+  // vanish from THIS pool (folder-matching, whose whole job is attaching
+  // the real X-ray photo) before it ever got one — showing "already
+  // linked" and leaving the actual X-ray unattachable. This is
+  // specifically about the X-ray photo, so it checks for that directly.
+  const unlinked=myToday().filter(r=>!r.xray_image_url);
   const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
   const used=new Set(), matches=[];
   // ── MATCHING RULES (only two ways a file may ever be AUTO-matched) ────

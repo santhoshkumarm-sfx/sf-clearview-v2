@@ -2058,14 +2058,29 @@ let fdUnlinkedPool=[]; // tracks which unlinked records are still available to m
 async function processFd(files){
   document.getElementById('fd-prog').style.display='block';
   files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
-  // FIX: this used to check the broader image_linked flag — but that
-  // becomes true once Label+Front+Back are done inline, even before the
-  // genuine X-ray-machine photo is ever attached. That made a record
-  // vanish from THIS pool (folder-matching, whose whole job is attaching
-  // the real X-ray photo) before it ever got one — showing "already
-  // linked" and leaving the actual X-ray unattachable. This is
-  // specifically about the X-ray photo, so it checks for that directly.
-  const unlinked=myToday().filter(r=>!r.xray_image_url);
+  // FIX: this used to only look at TODAY's scans — but the X-ray
+  // machine's output folder isn't cleared daily, so a folder selection
+  // routinely mixes files from several different days (confirmed:
+  // filenames from yesterday and today both appearing in the same
+  // batch). Anything from a day other than today would show "AWB not
+  // found" even though it was a completely valid, still-unmatched
+  // record — and since nothing ever looked further back, that backlog
+  // just kept silently piling up day after day. Now this pulls every
+  // still-unmatched record from the last 14 days directly from
+  // Supabase, not just today's in-memory list, so leftover files from
+  // recent days can still find their match.
+  document.getElementById('loadingMsg') && (document.getElementById('fd-prog-bar').style.width='5%');
+  let unlinked;
+  try{
+    const windowStartDate=new Date(todayStr()+'T12:00:00Z');
+    windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
+    const windowStartStr=windowStartDate.toISOString().split('T')[0];
+    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&xray_image_url=is.null&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&order=scanned_at.asc');
+    unlinked=Array.isArray(data)?data:[];
+  }catch(e){
+    console.warn('Widened unlinked-pool fetch failed, falling back to today only:',e.message);
+    unlinked=myToday().filter(r=>!r.xray_image_url);
+  }
   const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
   const used=new Set(), matches=[];
   // ── MATCHING RULES (only two ways a file may ever be AUTO-matched) ────

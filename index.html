@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.17 - 2026-07-04 - FIX: GS_URL updated to latest Apps Script deployment (...eaeLo7sM) -->
+<!-- SF ClearView v2.18 - 2026-07-17 - ADD: POC role — location-scoped read-only admin access (Dashboard/All Records/Adherence/Shift Logs, filtered to allowed_locations). GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes in this version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -212,7 +212,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item"   id="ni-tolreq" onclick="openTolApprove()"><span class="nav-icon">⚙️</span>Tol. Requests</div>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-16</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-17</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -723,7 +723,7 @@ const SCAN_LIMIT = 2000; // warn operator at this count
 // ══════════════════════════════════════════════════════════════
 //  STATE
 // ══════════════════════════════════════════════════════════════
-let CU=null, isAdmin=false, isSupervisor=false;
+let CU=null, isAdmin=false, isSupervisor=false, isPoc=false;
 let DB = {records:[], users:[], locations:[], awbMaster:{}};
 let camStream=null, captured=[null,null,null,null], nlMT=1;
 let pendingXl=[], pendingFd=[];
@@ -877,6 +877,12 @@ async function hashPw(s){
 }
 function myLoc(){ return CU?.location_code||''; }
 function myMT(){  return CU?.machine_type||1; }
+// POC = location-scoped read-only admin. myPocLocs() returns null for
+// everyone else (admin/supervisor/operator), so scopeRecs()/scopeLocs()
+// are harmless no-ops for them and only actually filter for a POC.
+function myPocLocs(){ return (CU && Array.isArray(CU.poc_locations)) ? CU.poc_locations : null; }
+function scopeRecs(recs){ var pl=myPocLocs(); return pl ? recs.filter(function(r){return pl.indexOf(r.location_code)!==-1;}) : recs; }
+function scopeLocs(locs){ var pl=myPocLocs(); return pl ? locs.filter(function(l){return pl.indexOf(l.code)!==-1;}) : locs; }
 function myToday(){
   const t=todayStr();
   return DB.records.filter(r=>r.location_code===myLoc()&&toISTDateStr(r.scanned_at)===t);
@@ -970,11 +976,13 @@ function saveSession(){
   sessionStorage.setItem('cu', JSON.stringify(CU));
   sessionStorage.setItem('isAdmin', isAdmin);
   sessionStorage.setItem('isSup', isSupervisor);
+  sessionStorage.setItem('isPoc', isPoc);
 }
 function clearSession(){
   sessionStorage.removeItem('cu');
   sessionStorage.removeItem('isAdmin');
   sessionStorage.removeItem('isSup');
+  sessionStorage.removeItem('isPoc');
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -984,8 +992,10 @@ function show(id){
   // Role guards
   const opOnly=['v-scan','v-shift','v-rec'];
   const admOnly=['v-adash','v-ausers','v-aloc','v-aawb','v-arec','v-adhere','v-shifts'];
-  if((isAdmin||isSupervisor) && opOnly.includes(id)){ show('v-adash'); return; }
-  if(!isAdmin && !isSupervisor && admOnly.includes(id)){ show('v-scan'); return; }
+  const pocAllowed=['v-adash','v-arec','v-adhere','v-shifts']; // POC's read-only subset
+  if((isAdmin||isSupervisor||isPoc) && opOnly.includes(id)){ show('v-adash'); return; }
+  if(!isAdmin && !isSupervisor && !isPoc && admOnly.includes(id)){ show('v-scan'); return; }
+  if(isPoc && admOnly.includes(id) && !pocAllowed.includes(id)){ show('v-adash'); return; }
 
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
   document.getElementById(id)?.classList.add('on');
@@ -1059,6 +1069,14 @@ async function doLogin(){
       CU={...user,location_code:'ALL',machine_type:null,location_full:'ALL LOCATIONS'};
       isAdmin=false; isSupervisor=true; enterApp(); return;
     }
+    if(user.role==='poc'){
+      // POC = location-scoped supervisor. Views their own locations only,
+      // sees everything at once (no per-location login like an operator),
+      // read-only — no Users/Locations/AWB Master/Tolerance access.
+      const pocLocs=Array.isArray(user.allowed_locations)?user.allowed_locations:[];
+      CU={...user,location_code:'ALL',machine_type:null,location_full:'POC — '+pocLocs.join(', '),poc_locations:pocLocs};
+      isAdmin=false; isSupervisor=false; isPoc=true; enterApp(); return;
+    }
     const locs=user.allowed_locations||[];
     if(!locs.length){ errEl.textContent='No locations assigned. Contact admin.'; errEl.style.display='block'; return; }
     await loadLocs();
@@ -1110,9 +1128,17 @@ async function enterApp(){
   document.getElementById('sb-loc').textContent=CU.location_full||CU.location_code;
   document.getElementById('tb-loc').textContent=CU.location_code;
   document.getElementById('tb-date').textContent=new Date().toLocaleDateString('en-IN');
-  document.getElementById('nav-op').style.display=(!isAdmin&&!isSupervisor)?'block':'none';
-  document.getElementById('nav-adm').style.display=(isAdmin||isSupervisor)?'block':'none';
-  if(!isAdmin&&!isSupervisor){
+  document.getElementById('nav-op').style.display=(!isAdmin&&!isSupervisor&&!isPoc)?'block':'none';
+  document.getElementById('nav-adm').style.display=(isAdmin||isSupervisor||isPoc)?'block':'none';
+  // POC gets a read-scoped subset of the admin nav — hide true admin
+  // config screens (Users/Locations/AWB Master/Tolerance Requests).
+  ['ni-ausers','ni-aloc','ni-aawb','ni-tolreq'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(el) el.style.display=isPoc?'none':'flex';
+  });
+  var admLbl=document.querySelector('#nav-adm .nav-sec-lbl');
+  if(admLbl) admLbl.textContent=isPoc?'POC VIEW':'Admin';
+  if(!isAdmin&&!isSupervisor&&!isPoc){
     const mt=myMT();
     document.getElementById('sb-machine').innerHTML=mt===1?'<span class="pill pill-t1">TYPE 1 EXCEL</span>':'<span class="pill pill-t2">TYPE 2 FOLDER</span>';
     document.getElementById('tb-machine').innerHTML=mt===1?'<span class="pill pill-t1">T1</span>':'<span class="pill pill-t2">T2</span>';
@@ -1132,7 +1158,7 @@ async function enterApp(){
   }finally{
     hideLoad();
   }
-  if(isAdmin||isSupervisor){
+  if(isAdmin||isSupervisor||isPoc){
     const adInp=document.getElementById('dash-date');
     if(adInp) adInp.value=todayStr();
     show('v-adash');
@@ -1147,7 +1173,7 @@ async function enterApp(){
 
 function doLogout(){
   if(camStream)stopCam();
-  CU=null; isAdmin=false; isSupervisor=false;
+  CU=null; isAdmin=false; isSupervisor=false; isPoc=false;
   clearSession();
   document.getElementById('app').style.display='none';
   document.getElementById('loginScreen').style.display='flex';
@@ -1224,7 +1250,7 @@ async function loadRecords(){
       if(!exists) merged.push(gr);
     });
     // Sort by time desc
-    DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
+    DB.records=scopeRecs(merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);}));
   } else {
     // Operator: check sessionStorage for post-EOS records first
     const cacheKey='cv_synced_records_'+today+'_'+myLoc();
@@ -2503,11 +2529,11 @@ async function refreshDashboard(){
       });
       if(!exists) merged.push(gr);
     });
-    DB.records=merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
+    DB.records=scopeRecs(merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);}));
   } else {
     // Past date — load from GSheet only, normalize fields
     const data=await gsGet({action:'records',date});
-    DB.records=Array.isArray(data)?data.map(function(r){
+    DB.records=scopeRecs(Array.isArray(data)?data.map(function(r){
       return {
         id:r.id||'',
         awb:r.awb||r.AWB||'',
@@ -2524,7 +2550,7 @@ async function refreshDashboard(){
         image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
         synced_to_sheet:true
       };
-    }):[];
+    }):[]);
   }
   if(lbl) lbl.style.display='none';
   const cnt=document.getElementById('dash-count');
@@ -2537,13 +2563,16 @@ function renderDash(){
   const recs=DB.records;
   document.getElementById('ad-total').textContent =recs.length;
   document.getElementById('ad-failed').textContent=recs.filter(r=>r.result==='FAKE'||r.result==='EMPTY').length;
-  document.getElementById('ad-locs').textContent  =DB.locations.length;
-  document.getElementById('ad-users').textContent =DB.users.filter(u=>u.role!=='admin').length;
+  const dashLocs=scopeLocs(DB.locations);
+  document.getElementById('ad-locs').textContent  =dashLocs.length;
+  document.getElementById('ad-users').textContent =isPoc
+    ? new Set(recs.map(r=>r.operator_email)).size   // POC: distinct operators active in-scope, not a global user count
+    : DB.users.filter(u=>u.role!=='admin').length;
   const grid=document.getElementById('ad-loc-grid');
   if(!grid) return;
-  grid.innerHTML=DB.locations.length===0
+  grid.innerHTML=dashLocs.length===0
     ?'<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text3);">No locations yet.</div>'
-    :DB.locations.map(loc=>{
+    :dashLocs.map(loc=>{
       const lr=recs.filter(r=>r.location_code===loc.code);
       const pending=lr.filter(r=>!r.image_linked&&!r.xray_image_url).length;
       const forced=lr.filter(r=>r.manually_corrected).length;
@@ -2806,7 +2835,7 @@ async function renderAllRec(){
     if(!dup) allRecs.push(gr);
   });
 
-  let recs=allRecs.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
+  let recs=scopeRecs(allRecs).sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
   if(s)    recs=recs.filter(r=>(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   if(loc)  recs=recs.filter(r=>r.location_code===loc);
   if(res)  recs=recs.filter(r=>r.result===res);
@@ -2836,7 +2865,7 @@ function populateLocFilter(){
   const sel=document.getElementById('arec-loc');
   if(!sel) return;
   while(sel.options.length>1) sel.remove(1);
-  DB.locations.forEach(loc=>{ const o=document.createElement('option'); o.value=loc.code; o.textContent=loc.full_name||loc.code; sel.appendChild(o); });
+  scopeLocs(DB.locations).forEach(loc=>{ const o=document.createElement('option'); o.value=loc.code; o.textContent=loc.full_name||loc.code; sel.appendChild(o); });
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2893,11 +2922,13 @@ window.addEventListener('beforeunload',function(e){
   const cu=sessionStorage.getItem('cu');
   const adm=sessionStorage.getItem('isAdmin');
   const sup=sessionStorage.getItem('isSup');
+  const poc=sessionStorage.getItem('isPoc');
   if(cu){
     try{
       CU=JSON.parse(cu);
       isAdmin=adm==='true';
       isSupervisor=sup==='true';
+      isPoc=poc==='true';
       await enterApp();
     }catch(e){ clearSession(); }
   }
@@ -2931,18 +2962,18 @@ async function renderAdherence(){
   }
 
   // Get locations — reload fresh if empty (don't rely on cache)
-  let locs = DB.locations.map(l=>l.code).filter(Boolean).sort();
+  let locs = scopeLocs(DB.locations).map(l=>l.code).filter(Boolean).sort();
   if(!locs.length){
     try{
       await loadLocs();
-      locs = DB.locations.map(l=>l.code).filter(Boolean).sort();
+      locs = scopeLocs(DB.locations).map(l=>l.code).filter(Boolean).sort();
     }catch(e){}
   }
   if(!locs.length){
     // Last resort: fetch from GAS
     try{
       const ld = await gsGet({action:'locations'});
-      if(Array.isArray(ld)) locs = ld.map(l=>l.code).filter(Boolean).sort();
+      if(Array.isArray(ld)) locs = scopeLocs(ld).map(l=>l.code).filter(Boolean).sort();
     }catch(e){}
   }
   if(!locs.length){
@@ -3050,6 +3081,7 @@ async function renderShifts(){
     body.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--danger);padding:20px;">Failed to load: '+e.message+'</td></tr>';
     return;
   }
+  rows=scopeRecs(rows);
   if(s){
     rows=rows.filter(r=>(r.operator_email||'').toLowerCase().includes(s)||(r.location_code||'').toLowerCase().includes(s));
   }

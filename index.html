@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.18 - 2026-07-17 - ADD: POC role — location-scoped read-only admin access (Dashboard/All Records/Adherence/Shift Logs, filtered to allowed_locations). GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes in this version. -->
+<!-- SF ClearView v2.19 - 2026-07-17 - ADD: POC role (location-scoped read-only admin: Dashboard/All Records/Adherence/Shift Logs). HIDE: Force Sync To Sheet button removed from POC dashboard — it syncs Supabase to GSheet for every location, not appropriate for a scoped read-only role. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -398,7 +398,7 @@ video{width:100%;height:100%;object-fit:cover;}
 
       <!-- ── ADMIN DASHBOARD ── -->
       <div class="view" id="v-adash">
-        <div class="fbar" style="margin-bottom:8px;">
+        <div class="fbar" style="margin-bottom:8px;" id="dash-sync-bar">
           <button class="btn btn-ghost btn-sm" onclick="manualSyncNow()" id="manual-sync-btn" style="letter-spacing:1px;">⚡ FORCE SYNC TO SHEET</button>
           <span id="manual-sync-status" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
         </div>
@@ -1138,6 +1138,11 @@ async function enterApp(){
   });
   var admLbl=document.querySelector('#nav-adm .nav-sec-lbl');
   if(admLbl) admLbl.textContent=isPoc?'POC VIEW':'Admin';
+  // Force Sync triggers Supabase → GSheet for EVERY location, not just a
+  // POC's own — a POC-scoped read view has no business exposing an
+  // action that writes/deletes data outside (and inside) their scope.
+  var syncBar=document.getElementById('dash-sync-bar');
+  if(syncBar) syncBar.style.display=isPoc?'none':'flex';
   if(!isAdmin&&!isSupervisor&&!isPoc){
     const mt=myMT();
     document.getElementById('sb-machine').innerHTML=mt===1?'<span class="pill pill-t1">TYPE 1 EXCEL</span>':'<span class="pill pill-t2">TYPE 2 FOLDER</span>';

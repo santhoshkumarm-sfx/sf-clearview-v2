@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.19 - 2026-07-17 - ADD: POC role (location-scoped read-only admin: Dashboard/All Records/Adherence/Shift Logs). HIDE: Force Sync To Sheet button removed from POC dashboard — it syncs Supabase to GSheet for every location, not appropriate for a scoped read-only role. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
+<!-- SF ClearView v2.20 - 2026-07-17 - FIX: POC Dashboard showing 0 scans on login. loadRecords() branched on isAdmin||isSupervisor only, missing isPoc — so a POC fell into the operator branch, which queries Supabase for location_code=eq.ALL (since myLoc()='ALL' for POC) and matches nothing. Added isPoc to that branch check. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -1213,8 +1213,8 @@ async function loadLocs(){
 }
 async function loadRecords(){
   const today=todayStr();
-  if(isAdmin||isSupervisor){
-    // Admin: Supabase (live unsynced) + GSheet (already synced) merged
+  if(isAdmin||isSupervisor||isPoc){
+    // Admin/Supervisor/POC: Supabase (live unsynced) + GSheet (already synced) merged
     const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00%2B05:30&order=scanned_at.desc');
     const sbRecs=Array.isArray(sbData)?sbData:[];
 

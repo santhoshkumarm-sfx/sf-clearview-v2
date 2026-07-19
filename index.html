@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.20 - 2026-07-17 - FIX: POC Dashboard showing 0 scans on login. loadRecords() branched on isAdmin||isSupervisor only, missing isPoc — so a POC fell into the operator branch, which queries Supabase for location_code=eq.ALL (since myLoc()='ALL' for POC) and matches nothing. Added isPoc to that branch check. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
+<!-- SF ClearView v2.21 - 2026-07-19 - ADD: X-Ray Reference Library — new "Reference" nav tab (visible to every role: operator/POC/supervisor/admin) browsing genuine/original X-ray images by AWB/category/product, sourced read-only from a separate Google Sheet (177bzU6wRnqK1YfLHZTpYk3gfAuA7GQAZk40xGQrMdyo) via a new GAS action 'xrayLibrary'. Admin Dashboard gets admin-only shortcut links to edit that Sheet/Drive folder directly. Nothing in scans/EOS/sync/records touched. GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs itself changed — MUST redeploy as New Version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -147,6 +147,23 @@ video{width:100%;height:100%;object-fit:cover;}
 #loadingOverlay{position:fixed;inset:0;background:rgba(6,11,16,.85);z-index:5000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .awb-product-chip{background:rgba(0,207,255,.07);border:1px solid rgba(0,207,255,.2);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:11px;margin-bottom:10px;display:none;}
+/* ── X-Ray Reference Library — same theme vars as the rest of the app ── */
+.lib-shell{display:flex;gap:16px;align-items:flex-start;}
+.lib-sidebar{width:210px;flex-shrink:0;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);overflow-y:auto;max-height:calc(100vh - 220px);padding:6px 0;}
+.lib-cat{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 14px;font-size:12px;color:var(--text2);cursor:pointer;letter-spacing:.3px;}
+.lib-cat:hover{background:var(--bg2);color:var(--text);}
+.lib-cat.on{background:rgba(0,207,255,.1);color:var(--t1);border-right:2px solid var(--t1);}
+.lib-cat-count{font-family:var(--mono);font-size:10px;color:var(--text3);flex-shrink:0;}
+.lib-main{flex:1;min-width:0;}
+.lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;}
+.lib-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;transition:border-color .15s;}
+.lib-card:hover{border-color:var(--t1);}
+.lib-card-img{background:#0f1117;height:140px;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.lib-card-img img{max-width:100%;max-height:100%;object-fit:contain;}
+.lib-card-body{padding:10px 12px;}
+.lib-card-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:32px;}
+.lib-card-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10px;color:var(--text3);font-family:var(--mono);}
+.lib-card-meta span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 </style>
 </head>
 <body>
@@ -211,8 +228,16 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item"   id="ni-shifts" onclick="show('v-shifts')"><span class="nav-icon">🕐</span>Shift Logs</div>
       <div class="nav-item"   id="ni-tolreq" onclick="openTolApprove()"><span class="nav-icon">⚙️</span>Tol. Requests</div>
     </div>
+    <!-- Reference nav — deliberately OUTSIDE nav-op/nav-adm, so it is
+         never touched by the operator/admin/POC visibility toggles and
+         stays visible to every logged-in role: operator, POC, supervisor,
+         admin. Purely a read-only reference lookup, no write path at all. -->
+    <div class="nav-sec" id="nav-lib">
+      <div class="nav-sec-lbl">Reference</div>
+      <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
+    </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-17</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-19</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -402,6 +427,15 @@ video{width:100%;height:100%;object-fit:cover;}
           <button class="btn btn-ghost btn-sm" onclick="manualSyncNow()" id="manual-sync-btn" style="letter-spacing:1px;">⚡ FORCE SYNC TO SHEET</button>
           <span id="manual-sync-status" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
         </div>
+        <!-- Admin-only management links for the X-Ray Reference Library
+             data (a separate Sheet + Drive folder maintained outside this
+             app). Deliberately admin-only, not POC/supervisor, and not on
+             the shared X-Ray Reference tab itself — that tab stays pure
+             read-only browsing for every role. -->
+        <div class="fbar" style="margin-bottom:14px;" id="dash-lib-admin-bar">
+          <a class="btn btn-ghost btn-sm" href="https://docs.google.com/spreadsheets/d/177bzU6wRnqK1YfLHZTpYk3gfAuA7GQAZk40xGQrMdyo/edit" target="_blank" style="letter-spacing:1px;text-decoration:none;">📊 Edit Reference Sheet</a>
+          <a class="btn btn-ghost btn-sm" href="https://drive.google.com/drive/folders/1HouXx6-D024TFHV2paipHa_yVwNflRc8" target="_blank" style="letter-spacing:1px;text-decoration:none;">📁 Reference Images Folder</a>
+        </div>
         <!-- Date picker -->
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;">
           <span style="font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--text3);">SELECT DATE</span>
@@ -538,6 +572,20 @@ video{width:100%;height:100%;object-fit:cover;}
         </div>
       </div>
 
+      <!-- ── X-RAY REFERENCE LIBRARY (every role — operator/POC/supervisor/admin) ── -->
+      <div class="view" id="v-xraylib">
+        <div class="fbar">
+          <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="lib-search" placeholder="Search AWB or product name..." oninput="renderXrayLibGrid()"></div>
+          <button class="btn btn-ghost btn-sm" onclick="loadXrayLibrary(true)">↻ Refresh</button>
+          <span id="lib-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
+          <span id="lib-count" style="font-family:var(--mono);font-size:11px;color:var(--t1);"></span>
+        </div>
+        <div class="lib-shell">
+          <div class="lib-sidebar" id="lib-cat-list"></div>
+          <div class="lib-main"><div class="lib-grid" id="lib-grid"></div></div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -553,6 +601,25 @@ video{width:100%;height:100%;object-fit:cover;}
     <iframe id="xray-iframe" src="" style="width:100%;height:100%;border:none;display:block;"></iframe>
   </div>
   <div style="font-size:11px;color:rgba(255,255,255,.4);font-family:monospace;">Click outside to close · Opens full image in Drive</div>
+</div>
+
+<!-- X-RAY REFERENCE LIBRARY VIEWER MODAL — deliberately separate from
+     modal-imgview above, since that one is tightly coupled to a scan
+     record id (viewImages/showImgInModal); this one is coupled to
+     nothing but a plain {awb, category, product_name, image_url} item. -->
+<div id="modal-libview" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;" onclick="if(event.target===this){this.style.display='none';document.getElementById('lib-iframe').src='';}">
+  <div style="position:relative;width:90vw;max-width:900px;height:70vh;background:#0f1117;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;" onclick="event.stopPropagation()">
+    <button onclick="document.getElementById('modal-libview').style.display='none';document.getElementById('lib-iframe').src=''" style="position:absolute;top:10px;right:12px;z-index:10;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:14px;">✕ Close</button>
+    <img id="lib-img-direct" src="" style="max-width:100%;max-height:100%;object-fit:contain;display:none;" />
+    <iframe id="lib-iframe" src="" style="width:100%;height:100%;border:none;display:block;"></iframe>
+  </div>
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 18px;width:90vw;max-width:900px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;" onclick="event.stopPropagation()">
+    <div>
+      <div id="lib-modal-name" style="font-size:13px;font-weight:600;color:var(--text);"></div>
+      <div id="lib-modal-awb" style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:2px;"></div>
+    </div>
+    <a id="lib-modal-download" href="#" target="_blank" class="btn btn-t1 btn-sm" style="text-decoration:none;">⬇ Open / Download</a>
+  </div>
 </div>
 
 <!-- TOLERANCE REQUEST MODAL -->
@@ -1002,10 +1069,12 @@ function show(id){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('on'));
   const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec',
             'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
-            'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts'};
+            'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts',
+            'v-xraylib':'ni-xraylib'};
   const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS',
             'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
-            'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS'};
+            'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS',
+            'v-xraylib':'X-RAY REFERENCE'};
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
   if(id==='v-scan'){
@@ -1033,6 +1102,10 @@ function show(id){
     var sd=document.getElementById('shifts-date');
     if(sd&&!sd.value) sd.value=todayStr();
     renderShifts();
+  }
+  if(id==='v-xraylib'){
+    if(!DB.xrayLib.length) loadXrayLibrary(false);
+    else { renderXrayLibCategories(); renderXrayLibGrid(); }
   }
 }
 
@@ -1143,6 +1216,11 @@ async function enterApp(){
   // action that writes/deletes data outside (and inside) their scope.
   var syncBar=document.getElementById('dash-sync-bar');
   if(syncBar) syncBar.style.display=isPoc?'none':'flex';
+  // Reference Library management links: admin only (not POC, not
+  // supervisor) — matches "special access goes on the admin dashboard,
+  // not the shared reference tab" exactly.
+  var libAdminBar=document.getElementById('dash-lib-admin-bar');
+  if(libAdminBar) libAdminBar.style.display=isAdmin?'flex':'none';
   if(!isAdmin&&!isSupervisor&&!isPoc){
     const mt=myMT();
     document.getElementById('sb-machine').innerHTML=mt===1?'<span class="pill pill-t1">TYPE 1 EXCEL</span>':'<span class="pill pill-t2">TYPE 2 FOLDER</span>';
@@ -1289,6 +1367,110 @@ async function loadAwbToday(){
     DB.awbMaster[(r.awb||'').toUpperCase()]={productName:r.product_name,category:r.product_category};
   });
   try{ sessionStorage.setItem(key,JSON.stringify(DB.awbMaster)); }catch(e){}
+}
+
+// ══════════════════════════════════════════════════════════════
+//  X-RAY REFERENCE LIBRARY — read-only browse of genuine/original
+//  X-ray images by AWB/product, for operator/POC/admin reference.
+//  Own data source (a separate Google Sheet, maintained by its own
+//  Apps Script trigger elsewhere) — completely independent of
+//  scans/records/AWB_Master/Supabase. Visible to every role; nothing
+//  here writes anything back anywhere, it's pure lookup.
+// ══════════════════════════════════════════════════════════════
+DB.xrayLib = [];
+let libActiveCat = '';
+
+async function loadXrayLibrary(forceRefresh){
+  const cacheKey='cv_xraylib_v1';
+  if(!forceRefresh){
+    const cached=sessionStorage.getItem(cacheKey);
+    if(cached){
+      try{ DB.xrayLib=JSON.parse(cached); renderXrayLibCategories(); renderXrayLibGrid(); return; }catch(e){}
+    }
+  }
+  const loadingEl=document.getElementById('lib-loading');
+  if(loadingEl) loadingEl.style.display='inline';
+  try{
+    const data=await gsGet({action:'xrayLibrary'});
+    DB.xrayLib=Array.isArray(data)?data:[];
+    try{ sessionStorage.setItem(cacheKey, JSON.stringify(DB.xrayLib)); }catch(e){ /* payload too big for sessionStorage — fine, just re-fetches next time */ }
+  }catch(e){
+    toast('Failed to load reference library: '+e.message,'err');
+  }
+  if(loadingEl) loadingEl.style.display='none';
+  renderXrayLibCategories();
+  renderXrayLibGrid();
+}
+
+function renderXrayLibCategories(){
+  const wrap=document.getElementById('lib-cat-list');
+  if(!wrap) return;
+  const counts={};
+  DB.xrayLib.forEach(it=>{ counts[it.category]=(counts[it.category]||0)+1; });
+  const cats=Object.keys(counts).sort();
+  let html='<div class="lib-cat '+(libActiveCat===''?'on':'')+'" onclick="setLibCat(\'\')"><span>All categories</span><span class="lib-cat-count">'+DB.xrayLib.length+'</span></div>';
+  html+=cats.map(c=>'<div class="lib-cat '+(libActiveCat===c?'on':'')+'" onclick="setLibCat(\''+c.replace(/'/g,"\\'")+'\')"><span>'+c+'</span><span class="lib-cat-count">'+counts[c]+'</span></div>').join('');
+  wrap.innerHTML=html;
+}
+
+function setLibCat(cat){ libActiveCat=cat; renderXrayLibCategories(); renderXrayLibGrid(); }
+
+function renderXrayLibGrid(){
+  const s=(document.getElementById('lib-search')?.value||'').toLowerCase();
+  let items=DB.xrayLib;
+  if(libActiveCat) items=items.filter(it=>it.category===libActiveCat);
+  if(s) items=items.filter(it=>(it.awb||'').toLowerCase().includes(s)||(it.product_name||'').toLowerCase().includes(s));
+  const countEl=document.getElementById('lib-count');
+  if(countEl) countEl.textContent=items.length+' item'+(items.length===1?'':'s');
+  const grid=document.getElementById('lib-grid');
+  if(!grid) return;
+  if(!items.length){
+    grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text3);">No matching reference images.</div>';
+    return;
+  }
+  grid.innerHTML=items.map(it=>{
+    const idx=DB.xrayLib.indexOf(it);
+    const thumb=libThumbUrl(it.image_url);
+    return '<div class="lib-card" onclick="openLibItem('+idx+')">'
+      +'<div class="lib-card-img">'+(thumb?'<img src="'+thumb+'" loading="lazy">':'<span style="color:var(--text3);font-size:11px;">No preview</span>')+'</div>'
+      +'<div class="lib-card-body">'
+        +'<div class="lib-card-name">'+(it.product_name||'Unnamed product')+'</div>'
+        +'<div class="lib-card-meta"><span class="pill pill-dim" style="font-size:9px;">'+it.category+'</span><span>'+it.awb+'</span></div>'
+      +'</div></div>';
+  }).join('');
+}
+
+function libFileId(url){
+  var m=(url||'').match(/\/file\/d\/([^\/\?&]+)/);
+  if(m) return m[1];
+  m=(url||'').match(/[?&]id=([^&]+)/);
+  return m?m[1]:'';
+}
+function libThumbUrl(url){
+  var id=libFileId(url);
+  return id?('https://drive.google.com/thumbnail?id='+id+'&sz=w400'):'';
+}
+
+function openLibItem(idx){
+  const it=DB.xrayLib[idx];
+  if(!it) return;
+  const id=libFileId(it.image_url);
+  const imgEl=document.getElementById('lib-img-direct');
+  const iframe=document.getElementById('lib-iframe');
+  if(id){
+    imgEl.src='https://drive.google.com/thumbnail?id='+id+'&sz=w1200';
+    imgEl.style.display='block'; iframe.style.display='none';
+    imgEl.onerror=function(){
+      imgEl.style.display='none'; iframe.style.display='block';
+      iframe.src='https://drive.google.com/file/d/'+id+'/preview';
+    };
+  } else {
+    imgEl.style.display='none'; iframe.style.display='block'; iframe.src=it.image_url;
+  }
+  document.getElementById('lib-modal-name').textContent=it.product_name||'Unnamed product';
+  document.getElementById('lib-modal-awb').textContent=it.awb+'  ·  '+it.category;
+  document.getElementById('lib-modal-download').href=it.image_url;
+  document.getElementById('modal-libview').style.display='flex';
 }
 
 // ══════════════════════════════════════════════════════════════

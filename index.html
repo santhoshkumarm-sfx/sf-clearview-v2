@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.21 - 2026-07-19 - ADD: X-Ray Reference Library — new "Reference" nav tab (visible to every role: operator/POC/supervisor/admin) browsing genuine/original X-ray images by AWB/category/product, sourced read-only from a separate Google Sheet (177bzU6wRnqK1YfLHZTpYk3gfAuA7GQAZk40xGQrMdyo) via a new GAS action 'xrayLibrary'. Admin Dashboard gets admin-only shortcut links to edit that Sheet/Drive folder directly. Nothing in scans/EOS/sync/records touched. GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs itself changed — MUST redeploy as New Version. -->
+<!-- SF ClearView v2.22 - 2026-07-20 - FIX: LKO Type1→Type2 switch caused "#null" seq_num on End of Shift — clearSession() wasn't clearing the cached 'cv_locs_v2' locations list, so a same-tab logout/login kept reading the stale machine_type and new scans saved with seq_num=null. Now cleared on every logout. Also made renderT2's seq_num display fall back gracefully (~N) instead of literally printing "#null" if this ever recurs for any other reason. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -237,7 +237,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-19</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-20</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -1050,6 +1050,14 @@ function clearSession(){
   sessionStorage.removeItem('isAdmin');
   sessionStorage.removeItem('isSup');
   sessionStorage.removeItem('isPoc');
+  // FIX: this used to leave 'cv_locs_v2' in place, so a location's
+  // machine_type change (e.g. Type 1 → Type 2) wouldn't take effect for
+  // an operator until they fully closed the tab — logging out and back
+  // in on the SAME tab kept reading the stale cached type, and any scan
+  // saved in that window got seq_num=null (the "#null" End of Shift bug).
+  // Clearing it here means the very next login always re-fetches current
+  // location data from Supabase, no tab-close required.
+  sessionStorage.removeItem('cv_locs_v2');
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1895,7 +1903,7 @@ function renderT2(){
   const r=myToday().filter(x=>!x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
   document.getElementById('t2-body').innerHTML=r.length===0
     ?'<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:12px;">All linked</td></tr>'
-    :r.map(rec=>'<tr><td style="font-family:var(--mono);color:var(--t2);">#'+rec.seq_num+'</td>'
+    :r.map((rec,i)=>'<tr><td style="font-family:var(--mono);color:var(--t2);">#'+(rec.seq_num!=null?rec.seq_num:('~'+(i+1)))+'</td>'
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td>'+resultPill(rec.result)+'</td>'

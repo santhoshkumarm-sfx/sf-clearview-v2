@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.26 - 2026-07-21 - FIX: End of Shift folder-matching, affecting every Type 2 DC (LKO/HYD/BLR/etc), not just one. (1) The two-pass AWB-priority matching fix from earlier this project had never actually landed in what's been shipping — reapplied: AWB-named files now always get first claim on their record before any timestamp-only file can steal it. (2) File reading during a folder selection was fully sequential (one FileReader await at a time) — now parallelized in batches of 8, the main cause of matching feeling stuck/needing repeated re-runs on large folders. (3) The widened 14-day unlinked-pool fetch now retries once before silently degrading to today-only, and shows a visible banner if that fallback ever actually happens, instead of a silent console.warn. (4) That same fetch now requests only the 4 columns matching actually needs (select=id,awb,scanned_at,xray_image_url) instead of every column on every row — real payload savings for busy DCs where a 14-day window can be several thousand rows. (5) The old ambiguous "AWB not found / already linked — left unmatched" message is now three distinct messages (not found in the last 14 days / already linked / claimed by another file in this same batch). (6) Added a search box above the EOS match list to jump straight to a specific AWB/filename instead of using the browser's own Find. No Code.gs changes. -->
+<!-- SF ClearView v2.27 - 2026-07-21 - FIX: End of Shift "Linked Today" table was rebuilding EVERY linked record of the whole shift as one giant HTML block on every render — on a busy day (200-900+ scans) that's thousands of DOM nodes torn down/rebuilt every time this tab opens or refreshes, getting heavier as the shift goes on. Now capped to the most recent 50 by default with a one-click "Show All" — nothing hidden, just collapsed, full history always still in My Records/All Records. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -2310,12 +2310,31 @@ function renderT2(){
       +'<td><span class="pill pill-warn">⏳</span></td></tr>').join('');
   scrollTableToBottom('t2-body');
 }
+let eosLinkedShowAll=false; // capped by default — see renderEosLinked
 function renderEosLinked(){
-  const r=myToday().filter(x=>x.image_linked||x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
-  document.getElementById('eos-linked-body').innerHTML=r.length===0
+  const all=myToday().filter(x=>x.image_linked||x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  // FIX: this used to rebuild EVERY linked record of the whole shift as
+  // one giant HTML block on every single render — on a busy day with
+  // 200-900+ scans, that's several thousand DOM nodes torn down and
+  // rebuilt from scratch every time this tab opens or refreshes, and it
+  // only gets heavier as the shift goes on. Capping to the most recent
+  // 50 by default keeps this fast all day; nothing is hidden, just
+  // collapsed behind one click, and full history is always still
+  // available in My Records / All Records regardless.
+  const CAP=50;
+  const capped=!eosLinkedShowAll && all.length>CAP;
+  const r=capped?all.slice(-CAP):all;
+  const banner=all.length>CAP
+    ?'<tr><td colspan="8" style="text-align:center;padding:8px;background:var(--bg2);font-size:11px;font-family:var(--mono);color:var(--text3);">'
+      +(capped
+        ?'Showing last '+CAP+' of '+all.length+' linked today — <button class="btn btn-ghost btn-xs" onclick="eosLinkedShowAll=true;renderEosLinked();">Show All</button>'
+        :'Showing all '+all.length+' — <button class="btn btn-ghost btn-xs" onclick="eosLinkedShowAll=false;renderEosLinked();">Collapse to last '+CAP+'</button>')
+      +'</td></tr>'
+    :'';
+  document.getElementById('eos-linked-body').innerHTML=banner+(r.length===0
     ?'<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:12px;">No linked records yet</td></tr>'
     :r.map((rec,i)=>'<tr>'
-      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td style="color:var(--text3);">'+(all.length-r.length+i+1)+'</td>'
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
@@ -2329,7 +2348,7 @@ function renderEosLinked(){
         +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+rec.id+'\')" title="Edit result/tamper or add label/front/back/product images">📝 Edit</button>'
         +'<button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+rec.id+'\')" title="Delete this record entirely">🗑</button>'
       +'</td>'
-      +'</tr>').join('');
+      +'</tr>').join(''));
   scrollTableToBottom('eos-linked-body');
 }
 

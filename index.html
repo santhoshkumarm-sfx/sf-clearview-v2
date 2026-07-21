@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.22 - 2026-07-20 - FIX: LKO Type1→Type2 switch caused "#null" seq_num on End of Shift — clearSession() wasn't clearing the cached 'cv_locs_v2' locations list, so a same-tab logout/login kept reading the stale machine_type and new scans saved with seq_num=null. Now cleared on every logout. Also made renderT2's seq_num display fall back gracefully (~N) instead of literally printing "#null" if this ever recurs for any other reason. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
+<!-- SF ClearView v2.23 - 2026-07-21 - ADD: admin-only Delete button in X-Ray Reference Library modal (removes row from Sheet + trashes Drive file via new GAS action deleteXrayLibraryItem). Code.gs also: 2PM sync trigger removal (run removeAfternoonTrigger() once manually), Supabase cleanup re-enabled at 96h cutoff gated to start 2026-07-22 (see CleanupLog tab). GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -237,7 +237,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-20</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-21</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -618,7 +618,10 @@ video{width:100%;height:100%;object-fit:cover;}
       <div id="lib-modal-name" style="font-size:13px;font-weight:600;color:var(--text);"></div>
       <div id="lib-modal-awb" style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:2px;"></div>
     </div>
-    <a id="lib-modal-download" href="#" target="_blank" class="btn btn-t1 btn-sm" style="text-decoration:none;">⬇ Open / Download</a>
+    <div style="display:flex;gap:8px;">
+      <a id="lib-modal-download" href="#" target="_blank" class="btn btn-t1 btn-sm" style="text-decoration:none;">⬇ Open / Download</a>
+      <button id="lib-modal-delete" class="btn btn-danger btn-sm" style="display:none;" onclick="deleteLibItem()">🗑 Delete from Library</button>
+    </div>
   </div>
 </div>
 
@@ -1387,6 +1390,7 @@ async function loadAwbToday(){
 // ══════════════════════════════════════════════════════════════
 DB.xrayLib = [];
 let libActiveCat = '';
+let libCurrentIdx = null;
 
 async function loadXrayLibrary(forceRefresh){
   const cacheKey='cv_xraylib_v1';
@@ -1462,6 +1466,7 @@ function libThumbUrl(url){
 function openLibItem(idx){
   const it=DB.xrayLib[idx];
   if(!it) return;
+  libCurrentIdx=idx;
   const id=libFileId(it.image_url);
   const imgEl=document.getElementById('lib-img-direct');
   const iframe=document.getElementById('lib-iframe');
@@ -1478,7 +1483,39 @@ function openLibItem(idx){
   document.getElementById('lib-modal-name').textContent=it.product_name||'Unnamed product';
   document.getElementById('lib-modal-awb').textContent=it.awb+'  ·  '+it.category;
   document.getElementById('lib-modal-download').href=it.image_url;
+  // Delete is ADMIN ONLY (not POC, not supervisor) — matches the request
+  // exactly. The library tab itself stays pure read-only for every
+  // other role; this button only ever appears for isAdmin.
+  const delBtn=document.getElementById('lib-modal-delete');
+  if(delBtn) delBtn.style.display=isAdmin?'inline-flex':'none';
   document.getElementById('modal-libview').style.display='flex';
+}
+
+// Admin-only: permanently removes an item from the reference library —
+// deletes the row from that Sheet AND trashes the image in Drive, so
+// nothing orphaned is left behind. See deleteXrayLibraryItem() in
+// Code.gs for the important limitations (auth model, Drive ownership).
+async function deleteLibItem(){
+  const it=DB.xrayLib[libCurrentIdx];
+  if(!it) return;
+  if(!confirm('Permanently delete "'+(it.product_name||it.awb)+'" ('+it.awb+') from the reference library?\n\nThis removes the row from the Sheet AND trashes the image in Drive. This cannot be undone from here.')) return;
+  showLoad('Deleting '+it.awb+' from reference library...');
+  try{
+    const res=await gsPost({action:'deleteXrayLibraryItem', awb:it.awb, requesterRole: isAdmin?'admin':'none'});
+    hideLoad();
+    if(res?.ok){
+      DB.xrayLib=DB.xrayLib.filter(x=>x.awb!==it.awb);
+      try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){}
+      document.getElementById('modal-libview').style.display='none';
+      renderXrayLibCategories(); renderXrayLibGrid();
+      toast('Removed '+it.awb+' from the reference library'+(res.drive&&res.drive!=='trashed'?' — note: '+res.drive:''),'ok');
+    } else {
+      toast('Delete failed: '+(res?.error||'unknown error'),'err');
+    }
+  }catch(e){
+    hideLoad();
+    toast('Delete failed: '+e.message,'err');
+  }
 }
 
 // ══════════════════════════════════════════════════════════════

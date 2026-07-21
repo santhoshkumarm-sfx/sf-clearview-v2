@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.24 - 2026-07-21 - ADD: Volumetric result option, now visible on the operator Scan AWB screen and Edit Record modal. Exempt from Label/Front/Back capture; requires a Product photo instead (goes to product_image_url, never xray_image_url — a Volumetric AWB will always show as image-pending, since it can never get a real X-ray photo). resultPill() now renders it correctly instead of defaulting to the Empty pill. Result filters (My Records/All Records) include it too. No Code.gs changes. -->
+<!-- SF ClearView v2.25 - 2026-07-21 - ADD: Image Compare tool inside the Reference section — upload/paste up to 5 images, compares against library_embeddings (new isolated Supabase table) using CLIP (Xenova/clip-vit-base-patch32 via Transformers.js, lazy-loaded only when this tab opens), shows ORIGINAL/NO CLOSE MATCH verdict + top-5 closest library matches per image. Admin-only "Build/Update Index" + adjustable match threshold. Code.gs: new getImagesAsB64 action — CORS-safe server-side Drive image fetch (Drive links don't reliably send CORS headers, so browser-side pixel reads would silently fail for many images). Nothing in scans/EOS/sync/records touched; model never loads outside this tab. GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. Also requires running 09_library_embeddings_table.sql once in Supabase first. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -165,6 +165,22 @@ video{width:100%;height:100%;object-fit:cover;}
 .lib-card-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:32px;}
 .lib-card-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10px;color:var(--text3);font-family:var(--mono);}
 .lib-card-meta span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* ── Image Compare — same theme vars, additive only ── */
+.libcmp-qitem{position:relative;width:90px;height:70px;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:#0f1117;}
+.libcmp-qitem img{width:100%;height:100%;object-fit:cover;display:block;}
+.libcmp-qitem .rm{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:2px;font-size:10px;width:16px;height:16px;cursor:pointer;line-height:1;}
+.libcmp-result-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:14px;}
+.libcmp-result-head{display:flex;gap:14px;align-items:center;margin-bottom:12px;}
+.libcmp-result-img{width:90px;height:70px;border-radius:var(--r);overflow:hidden;background:#0f1117;flex-shrink:0;}
+.libcmp-result-img img{width:100%;height:100%;object-fit:cover;display:block;}
+.libcmp-verdict-ok{background:rgba(0,229,160,.12);color:var(--success);border:1px solid rgba(0,229,160,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
+.libcmp-verdict-warn{background:rgba(255,51,85,.12);color:var(--danger);border:1px solid rgba(255,51,85,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
+.libcmp-match-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+.libcmp-match-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;}
+.libcmp-match-card img{width:100%;height:90px;object-fit:cover;display:block;}
+.libcmp-match-body{padding:8px;}
+.libcmp-match-pct{font-family:var(--mono);font-weight:700;font-size:12px;}
+.libcmp-match-name{font-size:10px;color:var(--text2);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 </style>
 </head>
 <body>
@@ -236,6 +252,7 @@ video{width:100%;height:100%;object-fit:cover;}
     <div class="nav-sec" id="nav-lib">
       <div class="nav-sec-lbl">Reference</div>
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
+      <div class="nav-item" id="ni-libcompare" onclick="show('v-libcompare')"><span class="nav-icon">🔍</span>Image Compare</div>
     </div>
     <div class="sb-foot">
       <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-21</div>
@@ -586,6 +603,49 @@ video{width:100%;height:100%;object-fit:cover;}
           <div class="lib-sidebar" id="lib-cat-list"></div>
           <div class="lib-main"><div class="lib-grid" id="lib-grid"></div></div>
         </div>
+      </div>
+
+      <!-- ── IMAGE COMPARE (every role — build/manage index is admin-only) ── -->
+      <div class="view" id="v-libcompare">
+
+        <div class="card" id="libcmp-admin-card" style="display:none;">
+          <div class="card-head"><span class="card-head-icon">🧠</span><span class="card-head-title">SEARCH INDEX (ADMIN)</span></div>
+          <div class="card-body">
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
+              <span id="libcmp-index-status" style="font-family:var(--mono);font-size:12px;color:var(--text2);">—</span>
+              <button class="btn btn-t1 btn-sm" onclick="buildLibraryIndex()" id="libcmp-build-btn">🔄 Build / Update Index</button>
+              <span id="libcmp-index-progress" style="font-family:var(--mono);font-size:11px;color:var(--t2);display:none;"></span>
+            </div>
+            <div class="prog-wrap" id="libcmp-index-prog" style="display:none;"><div class="prog-bar" id="libcmp-index-prog-bar" style="width:0%;"></div></div>
+            <div class="fg" style="margin-top:14px;margin-bottom:0;max-width:340px;">
+              <label class="lbl">Match threshold (%) — how close counts as "Original"</label>
+              <input id="libcmp-threshold" type="number" min="50" max="99" value="85" onchange="saveLibCmpThreshold()">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">🔍</span><span class="card-head-title">COMPARE IMAGES</span><span style="margin-left:auto;font-size:10px;color:var(--text3);font-family:var(--mono);">up to 5 at once</span></div>
+          <div class="card-body">
+            <div class="dropzone" id="libcmp-drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="libCmpDrop(event)" onclick="document.getElementById('libcmp-file').click()">
+              <input type="file" id="libcmp-file" multiple accept="image/*" style="display:none;" onchange="libCmpUpload(this)">
+              <div class="dz-icon">🖼</div><div class="dz-text">CLICK OR DRAG UP TO 5 IMAGES</div><div class="dz-sub">.jpg · .png · .webp</div>
+            </div>
+            <div class="g2" style="margin-top:10px;align-items:end;">
+              <div class="fg" style="margin-bottom:0;"><label class="lbl">...or paste image link(s), one per line</label><textarea id="libcmp-links" placeholder="https://..." style="min-height:44px;"></textarea></div>
+              <button class="btn btn-ghost" onclick="libCmpUseLinks()">Use Link(s)</button>
+            </div>
+            <div id="libcmp-queue" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;"></div>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+              <button class="btn btn-t1" onclick="runLibCompare()" id="libcmp-run-btn">▶ COMPARE</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearLibCmpQueue()">CLEAR</button>
+            </div>
+            <div id="libcmp-model-status" style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;"></div>
+          </div>
+        </div>
+
+        <div id="libcmp-results"></div>
+
       </div>
 
     </div>
@@ -1085,11 +1145,11 @@ function show(id){
   const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec',
             'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
             'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts',
-            'v-xraylib':'ni-xraylib'};
+            'v-xraylib':'ni-xraylib','v-libcompare':'ni-libcompare'};
   const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS',
             'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
             'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS',
-            'v-xraylib':'X-RAY REFERENCE'};
+            'v-xraylib':'X-RAY REFERENCE','v-libcompare':'IMAGE COMPARE'};
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
   if(id==='v-scan'){
@@ -1121,6 +1181,13 @@ function show(id){
   if(id==='v-xraylib'){
     if(!DB.xrayLib.length) loadXrayLibrary(false);
     else { renderXrayLibCategories(); renderXrayLibGrid(); }
+  }
+  if(id==='v-libcompare'){
+    const adminCard=document.getElementById('libcmp-admin-card');
+    if(adminCard) adminCard.style.display=isAdmin?'block':'none';
+    const th=document.getElementById('libcmp-threshold');
+    if(th) th.value=localStorage.getItem('cv_libcmp_threshold')||85;
+    if(isAdmin) refreshLibIndexStatus();
   }
 }
 
@@ -1510,6 +1577,10 @@ async function deleteLibItem(){
     if(res?.ok){
       DB.xrayLib=DB.xrayLib.filter(x=>x.awb!==it.awb);
       try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){}
+      // Also drop its embedding, if the Image Compare index has one —
+      // an orphaned embedding would keep showing a deleted item as a
+      // "closest match" forever otherwise.
+      try{ await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(it.awb)); libLibraryEmbeddings=null; }catch(e){}
       document.getElementById('modal-libview').style.display='none';
       renderXrayLibCategories(); renderXrayLibGrid();
       toast('Removed '+it.awb+' from the reference library'+(res.drive&&res.drive!=='trashed'?' — note: '+res.drive:''),'ok');
@@ -1520,6 +1591,274 @@ async function deleteLibItem(){
     hideLoad();
     toast('Delete failed: '+e.message,'err');
   }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  IMAGE COMPARE — upload/paste up to 5 images, compare each against
+//  every embedding in library_embeddings, show a verdict + closest
+//  matches. Runs entirely client-side (CLIP model via Transformers.js,
+//  loaded lazily via dynamic import ONLY when this tab is opened — it
+//  never loads on login/Scan AWB/anywhere else, so it can't slow down
+//  or affect the actual scanning workflow in any way). The only
+//  server-side piece is getImagesAsB64 in Code.gs, which exists solely
+//  to sidestep a browser CORS restriction on reading Drive images —
+//  see the comment there for why.
+//
+//  IMPORTANT — read this before judging results:
+//  This is image-similarity search, not a certified fraud detector.
+//  The reference library only contains genuine/original images, so
+//  there's nothing to train a real/fake classifier on. "ORIGINAL"
+//  means "closely matches something already confirmed genuine";
+//  "NO CLOSE MATCH" means "nothing in the library looks like this" —
+//  which is a strong, honest signal, but always shown next to the
+//  actual closest matches so a human can see exactly why.
+// ══════════════════════════════════════════════════════════════
+let libCmpQueue = [];           // [{name, dataUrl}]
+let libCmpExtractor = null;     // {processor, model}, loaded once, cached for the tab's lifetime
+let libLibraryEmbeddings = null; // fetched once per session, cached in memory only (never sessionStorage — 1600+ vectors is too large for that quota)
+
+async function ensureLibCmpModel(){
+  if(libCmpExtractor) return libCmpExtractor;
+  const statusEl=document.getElementById('libcmp-model-status');
+  if(statusEl) statusEl.textContent='Loading comparison model (first time only, ~90MB, cached by the browser after)...';
+  const { AutoProcessor, CLIPVisionModelWithProjection, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  env.allowLocalModels=false;
+  const processor=await AutoProcessor.from_pretrained('Xenova/clip-vit-base-patch32');
+  const model=await CLIPVisionModelWithProjection.from_pretrained('Xenova/clip-vit-base-patch32', {quantized:true});
+  libCmpExtractor={processor, model};
+  if(statusEl) statusEl.textContent='Model ready.';
+  return libCmpExtractor;
+}
+
+function l2normalize(vec){
+  let sum=0; for(let i=0;i<vec.length;i++) sum+=vec[i]*vec[i];
+  const norm=Math.sqrt(sum)||1;
+  return vec.map(v=>v/norm);
+}
+function cosineSim(a,b){
+  // Both vectors are L2-normalized at storage/compute time, so a plain
+  // dot product IS the cosine similarity — no extra division needed.
+  let dot=0; for(let i=0;i<a.length;i++) dot+=a[i]*(b[i]||0);
+  return dot;
+}
+
+async function computeImageEmbedding(dataUrl){
+  const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  const { processor, model } = await ensureLibCmpModel();
+  const image = await RawImage.fromURL(dataUrl);
+  const inputs = await processor(image);
+  const { image_embeds } = await model(inputs);
+  return l2normalize(Array.from(image_embeds.data));
+}
+
+async function ensureLibraryEmbeddingsLoaded(){
+  if(libLibraryEmbeddings) return libLibraryEmbeddings;
+  const data=await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,category,image_url,embedding');
+  libLibraryEmbeddings=Array.isArray(data)?data:[];
+  return libLibraryEmbeddings;
+}
+
+// ── ADMIN: build/update the search index ──────────────────────
+async function buildLibraryIndex(){
+  if(!isAdmin){ toast('Admin only','err'); return; }
+  const btn=document.getElementById('libcmp-build-btn');
+  const statusEl=document.getElementById('libcmp-index-status');
+  const progEl=document.getElementById('libcmp-index-progress');
+  const progWrap=document.getElementById('libcmp-index-prog');
+  const progBar=document.getElementById('libcmp-index-prog-bar');
+  btn.disabled=true;
+  try{ await ensureLibCmpModel(); }
+  catch(e){ toast('Failed to load comparison model: '+e.message,'err'); btn.disabled=false; return; }
+
+  if(!DB.xrayLib.length) await loadXrayLibrary(false);
+
+  let existing=[];
+  try{ existing=await sbGetAll('/rest/v1/library_embeddings?select=awb'); }catch(e){}
+  const existingSet=new Set(existing.map(r=>r.awb));
+  const todo=DB.xrayLib.filter(it=>!existingSet.has(it.awb));
+
+  if(!todo.length){
+    statusEl.textContent='Index up to date — '+DB.xrayLib.length+' item(s) indexed.';
+    btn.disabled=false; return;
+  }
+
+  progWrap.style.display='block'; progEl.style.display='inline';
+  let done=0, failed=0;
+  const BATCH=6; // keeps each Apps Script response modest in size/time
+  for(let i=0;i<todo.length;i+=BATCH){
+    const batch=todo.slice(i,i+BATCH);
+    progEl.textContent=done+'/'+todo.length+' indexed'+(failed?(' · '+failed+' failed'):'');
+    try{
+      const res=await gsPost({action:'getImagesAsB64', refs:batch.map(it=>it.image_url)});
+      const imagesMap=res?.images||{};
+      for(const it of batch){
+        const dataUrl=imagesMap[it.image_url];
+        if(!dataUrl){ failed++; continue; }
+        try{
+          const embedding=await computeImageEmbedding(dataUrl);
+          await sbPost('library_embeddings', {
+            awb:it.awb, product_name:it.product_name, category:it.category,
+            image_url:it.image_url, embedding:embedding
+          });
+          done++;
+        }catch(embErr){ failed++; console.warn('embed failed for',it.awb,embErr.message); }
+        progBar.style.width=Math.round(((done+failed)/todo.length)*100)+'%';
+      }
+    }catch(batchErr){
+      failed+=batch.length;
+      console.warn('batch fetch failed:',batchErr.message);
+    }
+  }
+  progEl.textContent=done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
+  statusEl.textContent='Index build complete — '+(existingSet.size+done)+' of '+DB.xrayLib.length+' total item(s) indexed.';
+  libLibraryEmbeddings=null; // force a fresh fetch on the next Compare run
+  btn.disabled=false;
+}
+
+async function refreshLibIndexStatus(){
+  const statusEl=document.getElementById('libcmp-index-status');
+  if(!statusEl) return;
+  statusEl.textContent='Checking index status...';
+  try{
+    if(!DB.xrayLib.length) await loadXrayLibrary(false);
+    const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb');
+    statusEl.textContent=existing.length+' of '+DB.xrayLib.length+' library item(s) indexed.';
+  }catch(e){
+    statusEl.textContent='Could not check index status: '+e.message;
+  }
+}
+
+function saveLibCmpThreshold(){
+  const v=document.getElementById('libcmp-threshold').value;
+  localStorage.setItem('cv_libcmp_threshold', v);
+  toast('Threshold set to '+v+'%','ok');
+}
+
+// ── Upload / paste queue (max 5) ───────────────────────────────
+function libCmpDrop(e){
+  e.preventDefault(); document.getElementById('libcmp-drop').classList.remove('drag');
+  const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
+  addFilesToLibCmpQueue(files);
+}
+function libCmpUpload(input){
+  const files=Array.from(input.files).filter(f=>f.type.startsWith('image/'));
+  addFilesToLibCmpQueue(files);
+  input.value='';
+}
+async function addFilesToLibCmpQueue(files){
+  for(const f of files){
+    if(libCmpQueue.length>=5){ toast('Max 5 images at a time','err'); break; }
+    const dataUrl=await readFile(f); // reuses the existing helper — handles BMP conversion too
+    libCmpQueue.push({name:f.name, dataUrl});
+  }
+  renderLibCmpQueue();
+}
+async function libCmpUseLinks(){
+  const raw=document.getElementById('libcmp-links').value.trim();
+  if(!raw) return;
+  const links=raw.split('\n').map(s=>s.trim()).filter(Boolean).slice(0, Math.max(0,5-libCmpQueue.length));
+  if(!links.length){ toast('Queue is full (max 5)','err'); return; }
+  showLoad('Fetching linked image(s)...');
+  try{
+    const res=await gsPost({action:'getImagesAsB64', refs:links});
+    const imagesMap=res?.images||{};
+    for(const link of links){
+      const dataUrl=imagesMap[link];
+      if(dataUrl){ libCmpQueue.push({name:link.slice(0,40), dataUrl}); continue; }
+      // Not a Drive link (or no access) — try a direct client-side fetch,
+      // which works fine for any host that sends normal CORS headers.
+      try{
+        const r=await fetch(link);
+        const blob=await r.blob();
+        const dUrl=await new Promise((res2,rej2)=>{const fr=new FileReader();fr.onload=e=>res2(e.target.result);fr.onerror=rej2;fr.readAsDataURL(blob);});
+        libCmpQueue.push({name:link.slice(0,40), dataUrl:dUrl});
+      }catch(fetchErr){
+        toast('Could not load image from: '+link.slice(0,50),'err');
+      }
+    }
+  }catch(e){
+    toast('Failed to fetch link(s): '+e.message,'err');
+  }
+  hideLoad();
+  document.getElementById('libcmp-links').value='';
+  renderLibCmpQueue();
+}
+function renderLibCmpQueue(){
+  const wrap=document.getElementById('libcmp-queue');
+  if(!wrap) return;
+  wrap.innerHTML=libCmpQueue.map((q,i)=>
+    '<div class="libcmp-qitem"><img src="'+q.dataUrl+'"><button class="rm" onclick="removeLibCmpItem('+i+')">✕</button></div>'
+  ).join('');
+}
+function removeLibCmpItem(i){ libCmpQueue.splice(i,1); renderLibCmpQueue(); }
+function clearLibCmpQueue(){
+  libCmpQueue=[];
+  renderLibCmpQueue();
+  const r=document.getElementById('libcmp-results'); if(r) r.innerHTML='';
+}
+
+// ── Run the actual comparison ───────────────────────────────────
+async function runLibCompare(){
+  if(!libCmpQueue.length){ toast('Add at least one image first','err'); return; }
+  const btn=document.getElementById('libcmp-run-btn');
+  const statusEl=document.getElementById('libcmp-model-status');
+  btn.disabled=true; btn.textContent='COMPARING...';
+  try{
+    await ensureLibCmpModel();
+    statusEl.textContent='Loading reference library index...';
+    const lib=await ensureLibraryEmbeddingsLoaded();
+    if(!lib.length){
+      toast('Search index is empty — ask an admin to Build/Update Index first','err');
+      btn.disabled=false; btn.textContent='▶ COMPARE';
+      return;
+    }
+    const threshold=(parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
+    statusEl.textContent='Comparing '+libCmpQueue.length+' image(s) against '+lib.length+' library entries...';
+    const results=[];
+    for(const q of libCmpQueue){
+      const embedding=await computeImageEmbedding(q.dataUrl);
+      const scored=lib.map(item=>({item, score:cosineSim(embedding, item.embedding)}))
+                       .sort((a,b)=>b.score-a.score)
+                       .slice(0,5);
+      results.push({query:q, matches:scored, verdict:(scored[0] && scored[0].score>=threshold)?'ORIGINAL':'NOMATCH'});
+    }
+    renderLibCmpResults(results);
+    statusEl.textContent='Done.';
+  }catch(e){
+    toast('Compare failed: '+e.message,'err');
+    statusEl.textContent='Error: '+e.message;
+  }
+  btn.disabled=false; btn.textContent='▶ COMPARE';
+}
+
+function renderLibCmpResults(results){
+  const wrap=document.getElementById('libcmp-results');
+  if(!wrap) return;
+  wrap.innerHTML=results.map(r=>{
+    const pct=r.matches[0]?Math.round(r.matches[0].score*100):0;
+    const verdictHtml=r.verdict==='ORIGINAL'
+      ?'<span class="libcmp-verdict-ok">✅ ORIGINAL — MATCHES LIBRARY ('+pct+'%)</span>'
+      :'<span class="libcmp-verdict-warn">⚠️ NO CLOSE MATCH — REVIEW MANUALLY ('+pct+'% best)</span>';
+    return '<div class="libcmp-result-card">'
+      +'<div class="libcmp-result-head">'
+        +'<div class="libcmp-result-img"><img src="'+r.query.dataUrl+'"></div>'
+        +'<div><div style="font-size:12px;color:var(--text2);margin-bottom:6px;">'+r.query.name+'</div>'+verdictHtml+'</div>'
+      +'</div>'
+      +'<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;">CLOSEST MATCHES</div>'
+      +'<div class="libcmp-match-row">'
+        +r.matches.map(m=>{
+          const thumb=libThumbUrl(m.item.image_url);
+          const pctColor=m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
+          return '<div class="libcmp-match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
+            +(thumb?'<img src="'+thumb+'">':'')
+            +'<div class="libcmp-match-body">'
+              +'<div class="libcmp-match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'
+              +'<div class="libcmp-match-name">'+(m.item.product_name||m.item.awb)+'</div>'
+              +'<div style="font-size:9px;color:var(--text3);font-family:var(--mono);">'+m.item.awb+'</div>'
+            +'</div></div>';
+        }).join('')
+      +'</div></div>';
+  }).join('');
 }
 
 // ══════════════════════════════════════════════════════════════

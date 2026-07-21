@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.25 - 2026-07-21 - ADD: Image Compare tool inside the Reference section — upload/paste up to 5 images, compares against library_embeddings (new isolated Supabase table) using CLIP (Xenova/clip-vit-base-patch32 via Transformers.js, lazy-loaded only when this tab opens), shows ORIGINAL/NO CLOSE MATCH verdict + top-5 closest library matches per image. Admin-only "Build/Update Index" + adjustable match threshold. Code.gs: new getImagesAsB64 action — CORS-safe server-side Drive image fetch (Drive links don't reliably send CORS headers, so browser-side pixel reads would silently fail for many images). Nothing in scans/EOS/sync/records touched; model never loads outside this tab. GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. Also requires running 09_library_embeddings_table.sql once in Supabase first. -->
+<!-- SF ClearView v2.26 - 2026-07-21 - FIX: End of Shift folder-matching, affecting every Type 2 DC (LKO/HYD/BLR/etc), not just one. (1) The two-pass AWB-priority matching fix from earlier this project had never actually landed in what's been shipping — reapplied: AWB-named files now always get first claim on their record before any timestamp-only file can steal it. (2) File reading during a folder selection was fully sequential (one FileReader await at a time) — now parallelized in batches of 8, the main cause of matching feeling stuck/needing repeated re-runs on large folders. (3) The widened 14-day unlinked-pool fetch now retries once before silently degrading to today-only, and shows a visible banner if that fallback ever actually happens, instead of a silent console.warn. (4) That same fetch now requests only the 4 columns matching actually needs (select=id,awb,scanned_at,xray_image_url) instead of every column on every row — real payload savings for busy DCs where a 14-day window can be several thousand rows. (5) The old ambiguous "AWB not found / already linked — left unmatched" message is now three distinct messages (not found in the last 14 days / already linked / claimed by another file in this same batch). (6) Added a search box above the EOS match list to jump straight to a specific AWB/filename instead of using the browser's own Find. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -408,6 +408,8 @@ video{width:100%;height:100%;object-fit:cover;}
               </div>
               <div class="prog-wrap" id="fd-prog" style="display:none;"><div class="prog-bar" id="fd-prog-bar" style="width:0%;background:var(--t2);"></div></div>
               <div id="fd-result" style="display:none;margin-top:12px;">
+                <div id="fd-fallback-warn" style="display:none;background:rgba(255,51,85,.1);border:1px solid rgba(255,51,85,.35);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--danger);margin-bottom:10px;">⚠️ Could not load the full unlinked-record history from Supabase — matching against TODAY's scans only. Some genuinely valid older AWBs may show as "not found" below. Try again in a minute, or contact admin if this keeps happening.</div>
+                <div class="search-wrap" style="margin-bottom:10px;"><span class="search-icon">🔍</span><input id="fd-match-search" placeholder="Search filename or AWB..." oninput="renderFdMatchList()"></div>
                 <div id="fd-match-list"></div>
                 <div style="display:flex;gap:8px;margin-top:10px;">
                   <button class="btn btn-t2" onclick="applyFolder()">APPLY MATCHES</button>
@@ -2683,73 +2685,120 @@ function fdUpload(input){const files=Array.from(input.files).filter(f=>f.type.st
 let fdUnlinkedPool=[]; // tracks which unlinked records are still available to manually assign
 async function processFd(files){
   document.getElementById('fd-prog').style.display='block';
+  const fallbackWarn=document.getElementById('fd-fallback-warn');
+  if(fallbackWarn) fallbackWarn.style.display='none';
   files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
-  // FIX: this used to only look at TODAY's scans — but the X-ray
-  // machine's output folder isn't cleared daily, so a folder selection
-  // routinely mixes files from several different days (confirmed:
-  // filenames from yesterday and today both appearing in the same
-  // batch). Anything from a day other than today would show "AWB not
-  // found" even though it was a completely valid, still-unmatched
-  // record — and since nothing ever looked further back, that backlog
-  // just kept silently piling up day after day. Now this pulls every
-  // still-unmatched record from the last 14 days directly from
-  // Supabase, not just today's in-memory list, so leftover files from
-  // recent days can still find their match.
-  document.getElementById('loadingMsg') && (document.getElementById('fd-prog-bar').style.width='5%');
-  let unlinked;
-  try{
-    const windowStartDate=new Date(todayStr()+'T12:00:00Z');
-    windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
-    const windowStartStr=windowStartDate.toISOString().split('T')[0];
-    // FIX: "xray_image_url=is.null" only matches actual database NULL —
-    // any row where it's an empty string instead would be silently
-    // excluded by that filter even though it's genuinely missing its
-    // photo. Fetching everything in the window and filtering client-
-    // side (which treats null/undefined/'' all as "missing") is safer.
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&order=scanned_at.asc');
-    unlinked=(Array.isArray(data)?data:[]).filter(r=>!r.xray_image_url);
-  }catch(e){
-    console.warn('Widened unlinked-pool fetch failed, falling back to today only:',e.message);
-    unlinked=myToday().filter(r=>!r.xray_image_url);
+
+  // Pulls every still-unmatched record from the last 14 days (not just
+  // today) directly from Supabase — the X-ray machine's output folder
+  // isn't cleared daily, so a folder selection routinely mixes files
+  // from several different days. Retries once before ever falling back
+  // to today-only, and — unlike before — that fallback is now a visible
+  // banner, not just a silent console.warn, since silently degrading
+  // match quality without telling the operator is exactly what made
+  // "AWB not found" so hard to diagnose.
+  document.getElementById('fd-prog-bar').style.width='5%';
+  let allInWindow=[], usedFallback=false;
+  for(let attempt=0; attempt<2; attempt++){
+    try{
+      const windowStartDate=new Date(todayStr()+'T12:00:00Z');
+      windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
+      const windowStartStr=windowStartDate.toISOString().split('T')[0];
+      // Only these 4 columns are ever actually used for matching — every
+      // other column (remarks, product info, all the other image URLs,
+      // etc.) was previously coming along for free on every one of these
+      // rows, across every paginated page. For a busy DC doing 700-900+
+      // scans/day, a 14-day window can be several thousand rows — trimming
+      // the payload down to just what's needed here cuts real transfer
+      // time without changing which rows come back at all.
+      allInWindow=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&select=id,awb,scanned_at,xray_image_url&order=scanned_at.asc');
+      if(!Array.isArray(allInWindow)) allInWindow=[];
+      break;
+    }catch(e){
+      console.warn('Unlinked-pool fetch attempt '+(attempt+1)+' failed:',e.message);
+      if(attempt===0){ await new Promise(r=>setTimeout(r,1500)); continue; }
+      usedFallback=true;
+      allInWindow=myToday();
+    }
   }
+  if(usedFallback && fallbackWarn) fallbackWarn.style.display='block';
+  // xray_image_url=is.null via Postgrest only matches actual database
+  // NULL — a row with an empty string instead would be silently
+  // excluded by that filter even though it's genuinely missing its
+  // photo. Filtering client-side treats null/undefined/'' all as
+  // "missing", which is what we actually want.
+  const unlinked=allInWindow.filter(r=>!r.xray_image_url);
+
   const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
-  const used=new Set(), matches=[];
+  const used=new Set();
+
+  // PASS 0 — read + parse every file up front, in parallel batches
+  // instead of one at a time. Sequential FileReader reads across a
+  // few hundred images was the main reason this screen felt like it
+  // "hung" or only processed a handful before needing to be re-run —
+  // same "parallel beats sequential" principle already proven for
+  // uploads elsewhere in this app, applied here to reading instead.
+  const READ_BATCH=8;
+  const parsedFiles=new Array(files.length);
+  for(let i=0;i<files.length;i+=READ_BATCH){
+    const batch=files.slice(i,i+READ_BATCH);
+    const results=await Promise.all(batch.map(file=>readFile(file).then(d=>({file,d,parsed:parseImageFilename(file.name)}))));
+    results.forEach((r,j)=>{
+      const idx=i+j;
+      parsedFiles[idx]={seq:idx+1,name:r.file.name,file:r.file,data:r.d,parsed:r.parsed,rec:null,method:'',diffSec:null};
+    });
+    document.getElementById('fd-prog-bar').style.width=Math.round(((i+batch.length)/files.length)*70)+'%';
+  }
+
   // ── MATCHING RULES (only two ways a file may ever be AUTO-matched) ────
-  // 1. AWB found in the filename → must match a record with that EXACT
-  //    AWB, or the file stays unmatched. Never falls through to anything
-  //    else — an AWB claim is the strongest signal there is, and if it
-  //    doesn't resolve cleanly it should never be silently reassigned.
-  // 2. No AWB in the filename, but a timestamp is → matched only if
-  //    within the configured tolerance window. Outside that window, or
-  //    with no timestamp at all, the file stays unmatched.
-  // Anything that doesn't auto-match stays unmatched and visible — the
-  // operator can manually assign it to a specific AWB right here (see
-  // renderFdMatchList/manualAssignFd below), never silently guessed.
-  for(let i=0;i<files.length;i++){
-    document.getElementById('fd-prog-bar').style.width=Math.round(((i+1)/files.length)*80)+'%';
-    const file=files[i], d=await readFile(file), parsed=parseImageFilename(file.name);
-    let rec=null, method='', diffSec=null;
-    if(parsed.awb){
-      const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===parsed.awb.trim().toUpperCase());
-      if(f){
-        rec=f; method='AWB in name'; diffSec=0;
-      } else {
-        method = 'AWB not found / already linked — left unmatched';
-      }
-    } else if(parsed.timestamp){
-      let best=Infinity;
+  // PASS 1 — AWB-in-filename matches, for ALL files, before any timestamp
+  // matching happens. An AWB claim is the strongest signal there is, and
+  // it must never be beaten to a record by a weaker timestamp match just
+  // because that other file happened to sort earlier alphabetically —
+  // that contention was the actual cause of a lot of the unexplained
+  // "AWB not found" results: a timestamp-only file grabbing a record
+  // first, leaving the correctly AWB-named file for that same record
+  // with nothing left to claim.
+  document.getElementById('fd-prog-bar').style.width='75%';
+  for(const m of parsedFiles){
+    if(!m.parsed.awb) continue;
+    const awbUpper=m.parsed.awb.trim().toUpperCase();
+    const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===awbUpper);
+    if(f){
+      m.rec=f; m.method='AWB in name'; m.diffSec=0; used.add(f.id);
+    } else {
+      // Three genuinely different reasons a file can fail here — shown
+      // separately now instead of one ambiguous combined message, so
+      // it's obvious at a glance which case any given row actually is.
+      const alreadyLinked=allInWindow.find(r=>(r.awb||'').toString().trim().toUpperCase()===awbUpper && r.xray_image_url);
+      const claimedInThisBatch=unlinked.find(r=>(r.awb||'').toString().trim().toUpperCase()===awbUpper && used.has(r.id));
+      if(alreadyLinked) m.method='Already linked — this AWB already has its X-ray photo';
+      else if(claimedInThisBatch) m.method='Already matched to another file in this same folder selection';
+      else m.method='AWB not found — no scan record in the last 14 days'+(usedFallback?' (today-only fallback active — see warning above)':'');
+    }
+  }
+
+  // PASS 2 — timestamp matching, only for files with NO AWB in the name,
+  // only against whatever records PASS 1 didn't already claim. AWB-named
+  // files that failed in PASS 1 never fall through to this.
+  for(const m of parsedFiles){
+    if(m.parsed.awb) continue; // handled (matched or failed) in PASS 1 already
+    if(m.parsed.timestamp){
+      let best=Infinity, rec=null;
       for(const r of unlinked){
         if(used.has(r.id))continue;
-        const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000);
-        if(diff<best&&diff<=tolerance){ best=diff; rec=r; method='Time match'; diffSec=Math.round(diff); }
+        const diff=Math.abs((m.parsed.timestamp-new Date(r.scanned_at))/1000);
+        if(diff<best&&diff<=tolerance){ best=diff; rec=r; }
       }
-      if(!rec) method = 'No AWB, no timestamp match within tolerance — left unmatched';
+      if(rec){ m.rec=rec; m.method='Time match'; m.diffSec=Math.round(best); used.add(rec.id); }
+      else { m.method='No AWB, no timestamp match within tolerance — left unmatched'; }
     } else {
-      method = 'No AWB or readable timestamp in filename — left unmatched';
+      m.method='No AWB or readable timestamp in filename — left unmatched';
     }
-    if(rec) used.add(rec.id);
-    matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed,manual:false});
   }
+
+  const matches=parsedFiles.map(m=>({seq:m.seq,name:m.name,file:m.file,data:m.data,rec:m.rec,ok:!!m.rec,method:m.method,diffSec:m.diffSec,parsed:m.parsed,manual:false}));
+  document.getElementById('fd-prog-bar').style.width='100%';
   pendingFd=matches;
   fdUnlinkedPool=unlinked.filter(r=>!used.has(r.id)); // whatever's left, available for manual assignment
 
@@ -2772,6 +2821,7 @@ async function processFd(files){
     });
   }catch(e){ console.warn('MatchLog send failed (non-fatal):', e.message); }
 
+  document.getElementById('fd-match-search').value='';
   renderFdMatchList();
   document.getElementById('fd-result').style.display='block';
   document.getElementById('fd-prog').style.display='none';
@@ -2799,6 +2849,15 @@ function renderFdMatchList(){
   const unmatchedCount=matches.length-ok;
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
   const byTime=matches.filter(m=>m.method==='Time match').length;
+
+  // Search filters which ROWS are shown, but every row still carries its
+  // real index into pendingFd (not its position in the filtered list) —
+  // otherwise manualAssignFd would silently assign the wrong file.
+  const q=(document.getElementById('fd-match-search')?.value||'').trim().toLowerCase();
+  const visible=matches
+    .map((m,idx)=>({m,idx}))
+    .filter(({m})=>!q || m.name.toLowerCase().includes(q) || (m.parsed?.awb||'').toLowerCase().includes(q) || (m.ok?m.rec.awb.toLowerCase():'').includes(q));
+
   document.getElementById('fd-match-list').innerHTML=
     '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
     +'<span class="pill pill-ok">✅ '+ok+'/'+matches.length+'</span>'
@@ -2806,8 +2865,11 @@ function renderFdMatchList(){
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
     +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
     +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
+    +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+matches.length+'</span>':'')
     +'</div>'
-    +matches.map((m,idx)=>{
+    +(visible.length===0
+      ?'<div style="text-align:center;color:var(--text3);padding:16px;font-size:11px;">No files match "'+q+'"</div>'
+      :visible.map(({m,idx})=>{
       const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.manual?'var(--warn)':'var(--text3)';
       const assignPicker = (!m.ok && fdUnlinkedPool.length)
         ? '<select onchange="if(this.value)manualAssignFd('+idx+',this.value)" style="width:auto;padding:2px 6px;font-size:10px;margin-left:6px;" onclick="event.stopPropagation()">'
@@ -2824,7 +2886,7 @@ function renderFdMatchList(){
         +'<span style="font-family:var(--mono);font-size:9px;color:'+(m.ok?tc:'var(--danger)')+';">'+(m.method||'')+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>'
         +assignPicker
         +'</div>';
-    }).join('');
+    }).join(''));
 }
 
 

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.23 - 2026-07-21 - ADD: admin-only Delete button in X-Ray Reference Library modal (removes row from Sheet + trashes Drive file via new GAS action deleteXrayLibraryItem). Code.gs also: 2PM sync trigger removal (run removeAfternoonTrigger() once manually), Supabase cleanup re-enabled at 96h cutoff gated to start 2026-07-22 (see CleanupLog tab). GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. -->
+<!-- SF ClearView v2.24 - 2026-07-21 - ADD: Volumetric result option, now visible on the operator Scan AWB screen and Edit Record modal. Exempt from Label/Front/Back capture; requires a Product photo instead (goes to product_image_url, never xray_image_url — a Volumetric AWB will always show as image-pending, since it can never get a real X-ray photo). resultPill() now renders it correctly instead of defaulting to the Empty pill. Result filters (My Records/All Records) include it too. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -127,6 +127,7 @@ tr:hover td{background:rgba(0,207,255,.03);}
 .rchip.r-ok:has(input:checked){background:rgba(0,229,160,.12);border-color:var(--success);color:var(--success);}
 .rchip.r-danger:has(input:checked){background:rgba(255,51,85,.12);border-color:var(--danger);color:var(--danger);}
 .rchip.r-warn:has(input:checked){background:rgba(255,187,0,.12);border-color:var(--warn);color:var(--warn);}
+.rchip.r-vol:has(input:checked){background:rgba(0,207,255,.12);border-color:var(--t1);color:var(--t1);}
 .radio-row{display:flex;gap:8px;flex-wrap:wrap;}
 .cam-box{background:var(--bg);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;margin-bottom:12px;}
 video{width:100%;height:100%;object-fit:cover;}
@@ -280,6 +281,7 @@ video{width:100%;height:100%;object-fit:cover;}
                   <label class="rchip r-ok"><input type="radio" name="xr" value="ORIGINAL" onchange="updateCameraReq()" checked><span>✅ Original</span></label>
                   <label class="rchip r-danger"><input type="radio" name="xr" value="FAKE" onchange="updateCameraReq()"><span>🚫 Fake</span></label>
                   <label class="rchip r-warn"><input type="radio" name="xr" value="EMPTY" onchange="updateCameraReq()"><span>📦 Empty</span></label>
+                  <label class="rchip r-vol"><input type="radio" name="xr" value="VOLUMETRIC" onchange="updateCameraReq()"><span>📏 Volumetric</span></label>
                 </div>
               </div>
               <div class="fg"><label class="lbl">Tamper Status</label>
@@ -412,7 +414,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="view" id="v-rec">
         <div class="fbar">
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="rec-search" placeholder="Search AWB..." oninput="renderRec()"></div>
-          <select id="rec-res" onchange="renderRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <select id="rec-res" onchange="renderRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option><option>VOLUMETRIC</option></select>
           <input type="date" id="rec-date" onchange="onRecDateChange()">
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('rec-date').value=todayStr();onRecDateChange();">📅 Today</button>
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('op')">CSV</button>
@@ -524,7 +526,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="fbar">
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="arec-search" placeholder="Search AWB..." oninput="renderAllRec()"></div>
           <select id="arec-loc" onchange="renderAllRec()"><option value="">All Locations</option></select>
-          <select id="arec-res" onchange="renderAllRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <select id="arec-res" onchange="renderAllRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option><option>VOLUMETRIC</option></select>
           <input type="date" id="arec-date" onchange="renderAllRec()">
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('adm')">CSV</button>
         </div>
@@ -725,6 +727,7 @@ video{width:100%;height:100%;object-fit:cover;}
           <label class="rchip r-ok"><input type="radio" name="er-xr" value="ORIGINAL" onchange="toggleErProductVisibility()"><span>✅ Original</span></label>
           <label class="rchip r-danger"><input type="radio" name="er-xr" value="FAKE" onchange="toggleErProductVisibility()"><span>🚫 Fake</span></label>
           <label class="rchip r-warn"><input type="radio" name="er-xr" value="EMPTY" onchange="toggleErProductVisibility()"><span>📦 Empty</span></label>
+          <label class="rchip r-vol"><input type="radio" name="er-xr" value="VOLUMETRIC" onchange="toggleErProductVisibility()"><span>📏 Volumetric</span></label>
         </div>
       </div>
       <div class="fg"><label class="lbl">Tamper Status</label>
@@ -1013,8 +1016,9 @@ function computeImageLinked(r){
 }
 
 function resultPill(r){
-  if(r==='ORIGINAL') return '<span class="pill pill-ok">✅ Original</span>';
-  if(r==='FAKE')     return '<span class="pill pill-err">🚫 Fake</span>';
+  if(r==='ORIGINAL')   return '<span class="pill pill-ok">✅ Original</span>';
+  if(r==='FAKE')       return '<span class="pill pill-err">🚫 Fake</span>';
+  if(r==='VOLUMETRIC') return '<span class="pill pill-t1">📏 Volumetric</span>';
   return '<span class="pill pill-warn">📦 Empty</span>';
 }
 
@@ -1591,15 +1595,29 @@ function clearAwbAutoSave(){
 function updateCameraReq(){
   const result=document.querySelector('input[name="xr"]:checked')?.value||'';
   const tamper=document.querySelector('input[name="tr"]:checked')?.value||'';
-  const need=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
-  document.getElementById('cam-notice').style.display=need?'block':'none';
-  document.getElementById('cam-badge').innerHTML=need?'<span class="pill pill-err">IMAGES REQUIRED</span>':'';
-  // Product photo is only relevant for Fake/Empty declarations (not
-  // Tampered, not Original) — hidden otherwise so it can't be mistakenly
-  // used outside that context.
-  const productApplicable=result==='FAKE'||result==='EMPTY';
+  const isVol=result==='VOLUMETRIC';
+  // Volumetric = shipment physically too big for the X-ray machine.
+  // Label/Front/Back are photos captured for a normal Fake/Empty/
+  // Tampered inspection — they don't apply here, so this is exempt from
+  // that requirement entirely, replaced by a required Product photo
+  // instead (see productApplicable/needProduct below).
+  const need=(result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED') && !isVol;
+  document.getElementById('cam-notice').style.display=(need||isVol)?'block':'none';
+  document.getElementById('cam-notice').textContent=isVol
+    ?'PRODUCT IMAGE REQUIRED — X-RAY MACHINE CANNOT SCAN THIS SHIPMENT'
+    :'IMAGES REQUIRED — CAPTURE LABEL · FRONT · BACK';
+  document.getElementById('cam-badge').innerHTML=need
+    ?'<span class="pill pill-err">IMAGES REQUIRED</span>'
+    :(isVol?'<span class="pill pill-t1">PRODUCT IMAGE REQUIRED</span>':'');
+  // Product photo applies to Fake/Empty (evidence of the opened
+  // shipment) AND Volumetric (the substitute for a genuine X-ray image,
+  // since one can never exist for this AWB) — hidden otherwise.
+  const productApplicable=result==='FAKE'||result==='EMPTY'||isVol;
   document.getElementById('th3-wrap').style.display=productApplicable?'block':'none';
   document.getElementById('product-hint').style.display=productApplicable?'block':'none';
+  document.getElementById('product-hint').textContent=isVol
+    ?'PRODUCT = required photo of this shipment — substitutes for the X-ray image, which can never exist for a Volumetric AWB'
+    :'PRODUCT = optional photo of the opened shipment/item — only relevant for Fake/Empty, not required to save';
   document.getElementById('product-filepicker').style.display=productApplicable?'flex':'none';
   if(!productApplicable && captured[3]){
     captured[3]=null;
@@ -1618,10 +1636,14 @@ async function submitScan(){
     return;
   }
   if(!result){ toast('Select X-Ray result','err'); return; }
-  const needImg=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
+  const isVol=result==='VOLUMETRIC';
+  const needImg=(result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED') && !isVol;
   const requiredCaptured=captured.slice(0,3).filter(Boolean).length; // label/front/back only — product is optional
   if(needImg&&requiredCaptured<3){
     toast('Capture all 3 images ('+requiredCaptured+'/3)','err'); return;
+  }
+  if(isVol&&!captured[3]){
+    toast('Capture a product photo — required for Volumetric (no X-ray image will ever exist for this AWB)','err'); return;
   }
   const remarks=document.getElementById('remarks').value.trim();
   const product=DB.awbMaster[awb]||null;
@@ -2084,7 +2106,7 @@ function openEditRecord(recId){
 function toggleErProductVisibility(){
   const result=document.querySelector('input[name="er-xr"]:checked')?.value||'';
   const wrap=document.getElementById('er-product-wrap');
-  if(wrap) wrap.style.display=(result==='FAKE'||result==='EMPTY')?'block':'none';
+  if(wrap) wrap.style.display=(result==='FAKE'||result==='EMPTY'||result==='VOLUMETRIC')?'block':'none';
 }
 
 function erPickImage(input,slot){
@@ -2108,7 +2130,10 @@ async function saveEditRecord(){
   if(!newAwb){ toast('AWB cannot be blank','err'); return; }
 
   // If switching to FAKE/EMPTY, all 3 x-ray images must end up present (existing or newly picked)
-  const needsImages = newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED';
+  const isVolEdit = newResult==='VOLUMETRIC';
+  // Volumetric is exempt from Label/Front/Back — it's the same waiver as
+  // Scan AWB, replaced by a required Product photo instead.
+  const needsImages = (newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED') && !isVolEdit;
   if(needsImages){
     const willHave = {
       label: erPickedImages.label || r.label_image_url,
@@ -2119,6 +2144,10 @@ async function saveEditRecord(){
       toast('This result requires all 3 images (label, front, back) — add whichever are missing','err');
       return;
     }
+  }
+  if(isVolEdit && !(erPickedImages.product || r.product_image_url)){
+    toast('Volumetric requires a product photo — add one before saving','err');
+    return;
   }
 
   const changes=[];

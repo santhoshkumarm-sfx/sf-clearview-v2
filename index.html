@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.28 - 2026-07-21 - REBUILT the AWB matching engine (parseImageFilename + processFd), root-causing the "images not linking despite having AWB in the name" failures at BLR/MDC/other DCs. OLD approach: guess the AWB's position/shape based on 2-3 known machine formats — any DC whose machine encoded filenames differently (confirmed at BLR, previously also MDC/ST/JAI) matched 0% of the time, silently, with no format branch to catch it. NEW approach: still tries the known formats first (unchanged, no regression — verified against all previously-working filename patterns), but ALSO extracts every plausible AWB-shaped token from the filename (any separator: underscore/hyphen/dot/space) and checks each one against the real pending-scan database via O(1) Map lookup — the database decides which token is real, not a guessed regex. This is both more correct (works for any DC's naming convention without new format branches) and faster (Map lookups replace per-file linear scans through the whole unlinked pool). No data touched, no Code.gs changes. -->
+<!-- SF ClearView v2.29 - 2026-07-21 - ADD: admin-only "Force Refresh" on X-Ray Reference — clears the client cache AND the server-side (Code.gs) 10-min cache, forcing a genuinely fresh read from the reference Sheet, then removes any Image Compare search-index entries for AWBs no longer present (handles rows deleted/renamed in the Sheet, e.g. after running the new recategorizeLibrary script). Code.gs: getXrayLibrary now takes a forceRefresh param, wired through a new ?refresh=true query param. Also delivered 10_recategorize_library.gs — a separate script for the OTHER Apps Script project (bound to the reference Sheet itself, alongside fillImageLinks) that consolidates categories into Electronics/Apparels/Apple/Gadgets per rule, safely re-runnable. GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -598,6 +598,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="fbar">
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="lib-search" placeholder="Search AWB or product name..." oninput="renderXrayLibGrid()"></div>
           <button class="btn btn-ghost btn-sm" onclick="loadXrayLibrary(true)">↻ Refresh</button>
+          <button class="btn btn-danger btn-sm" id="lib-force-refresh-btn" style="display:none;" onclick="forceRefreshLibrary()" title="Admin only — clears every cache layer (this browser + the server) and re-syncs exactly what's in the Sheet right now, including cleaning up any stale search-index entries for rows that no longer exist">🔄 Force Refresh (admin)</button>
           <span id="lib-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
           <span id="lib-count" style="font-family:var(--mono);font-size:11px;color:var(--t1);"></span>
         </div>
@@ -1181,6 +1182,8 @@ function show(id){
     renderShifts();
   }
   if(id==='v-xraylib'){
+    const forceBtn=document.getElementById('lib-force-refresh-btn');
+    if(forceBtn) forceBtn.style.display=isAdmin?'inline-flex':'none';
     if(!DB.xrayLib.length) loadXrayLibrary(false);
     else { renderXrayLibCategories(); renderXrayLibGrid(); }
   }
@@ -1485,6 +1488,47 @@ async function loadXrayLibrary(forceRefresh){
   if(loadingEl) loadingEl.style.display='none';
   renderXrayLibCategories();
   renderXrayLibGrid();
+}
+
+// Admin-only. The plain "↻ Refresh" button above only clears THIS
+// browser's cache — the request still hits Code.gs, which has its own
+// 10-minute server-side cache and could still hand back stale data
+// right after a Sheet edit (e.g. right after running the
+// recategorizeLibrary script). This clears every layer and forces a
+// genuinely fresh read straight from the Sheet, then reconciles the
+// Image Compare search index against it — any embedding whose AWB no
+// longer appears in the fresh list (row deleted/renamed) gets removed,
+// so a stale "closest match" can never point at something that no
+// longer exists as described. Nothing here touches scans/records.
+async function forceRefreshLibrary(){
+  if(!isAdmin){ toast('Admin only','err'); return; }
+  showLoad('Force refreshing reference library from the Sheet...');
+  try{
+    try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){}
+    const data=await gsGet({action:'xrayLibrary', refresh:'true'});
+    DB.xrayLib=Array.isArray(data)?data:[];
+    try{ sessionStorage.setItem('cv_xraylib_v1', JSON.stringify(DB.xrayLib)); }catch(e){}
+
+    let orphansRemoved=0;
+    try{
+      const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb');
+      const currentAwbs=new Set(DB.xrayLib.map(it=>it.awb));
+      const orphans=(existing||[]).filter(e=>!currentAwbs.has(e.awb));
+      for(const o of orphans){
+        await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(o.awb));
+        orphansRemoved++;
+      }
+      if(orphansRemoved) libLibraryEmbeddings=null; // force a fresh fetch next Compare run
+    }catch(e){ console.warn('Embedding reconciliation skipped:',e.message); }
+
+    renderXrayLibCategories(); renderXrayLibGrid();
+    if(document.getElementById('libcmp-index-status')) refreshLibIndexStatus();
+    hideLoad();
+    toast('Refreshed — '+DB.xrayLib.length+' item(s) direct from the Sheet'+(orphansRemoved?', removed '+orphansRemoved+' stale search entr'+(orphansRemoved===1?'y':'ies'):''),'ok');
+  }catch(e){
+    hideLoad();
+    toast('Force refresh failed: '+e.message,'err');
+  }
 }
 
 function renderXrayLibCategories(){

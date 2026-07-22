@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.22 - 2026-07-20 - FIX: LKO Type1→Type2 switch caused "#null" seq_num on End of Shift — clearSession() wasn't clearing the cached 'cv_locs_v2' locations list, so a same-tab logout/login kept reading the stale machine_type and new scans saved with seq_num=null. Now cleared on every logout. Also made renderT2's seq_num display fall back gracefully (~N) instead of literally printing "#null" if this ever recurs for any other reason. GS_URL unchanged from v2.17 (...eaeLo7sM), no Code.gs changes. -->
+<!-- SF ClearView v2.28 - 2026-07-21 - REBUILT the AWB matching engine (parseImageFilename + processFd), root-causing the "images not linking despite having AWB in the name" failures at BLR/MDC/other DCs. OLD approach: guess the AWB's position/shape based on 2-3 known machine formats — any DC whose machine encoded filenames differently (confirmed at BLR, previously also MDC/ST/JAI) matched 0% of the time, silently, with no format branch to catch it. NEW approach: still tries the known formats first (unchanged, no regression — verified against all previously-working filename patterns), but ALSO extracts every plausible AWB-shaped token from the filename (any separator: underscore/hyphen/dot/space) and checks each one against the real pending-scan database via O(1) Map lookup — the database decides which token is real, not a guessed regex. This is both more correct (works for any DC's naming convention without new format branches) and faster (Map lookups replace per-file linear scans through the whole unlinked pool). No data touched, no Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -127,6 +127,7 @@ tr:hover td{background:rgba(0,207,255,.03);}
 .rchip.r-ok:has(input:checked){background:rgba(0,229,160,.12);border-color:var(--success);color:var(--success);}
 .rchip.r-danger:has(input:checked){background:rgba(255,51,85,.12);border-color:var(--danger);color:var(--danger);}
 .rchip.r-warn:has(input:checked){background:rgba(255,187,0,.12);border-color:var(--warn);color:var(--warn);}
+.rchip.r-vol:has(input:checked){background:rgba(0,207,255,.12);border-color:var(--t1);color:var(--t1);}
 .radio-row{display:flex;gap:8px;flex-wrap:wrap;}
 .cam-box{background:var(--bg);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;margin-bottom:12px;}
 video{width:100%;height:100%;object-fit:cover;}
@@ -164,6 +165,22 @@ video{width:100%;height:100%;object-fit:cover;}
 .lib-card-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:32px;}
 .lib-card-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10px;color:var(--text3);font-family:var(--mono);}
 .lib-card-meta span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* ── Image Compare — same theme vars, additive only ── */
+.libcmp-qitem{position:relative;width:90px;height:70px;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:#0f1117;}
+.libcmp-qitem img{width:100%;height:100%;object-fit:cover;display:block;}
+.libcmp-qitem .rm{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:2px;font-size:10px;width:16px;height:16px;cursor:pointer;line-height:1;}
+.libcmp-result-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:14px;}
+.libcmp-result-head{display:flex;gap:14px;align-items:center;margin-bottom:12px;}
+.libcmp-result-img{width:90px;height:70px;border-radius:var(--r);overflow:hidden;background:#0f1117;flex-shrink:0;}
+.libcmp-result-img img{width:100%;height:100%;object-fit:cover;display:block;}
+.libcmp-verdict-ok{background:rgba(0,229,160,.12);color:var(--success);border:1px solid rgba(0,229,160,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
+.libcmp-verdict-warn{background:rgba(255,51,85,.12);color:var(--danger);border:1px solid rgba(255,51,85,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
+.libcmp-match-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+.libcmp-match-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;}
+.libcmp-match-card img{width:100%;height:90px;object-fit:cover;display:block;}
+.libcmp-match-body{padding:8px;}
+.libcmp-match-pct{font-family:var(--mono);font-weight:700;font-size:12px;}
+.libcmp-match-name{font-size:10px;color:var(--text2);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 </style>
 </head>
 <body>
@@ -235,9 +252,10 @@ video{width:100%;height:100%;object-fit:cover;}
     <div class="nav-sec" id="nav-lib">
       <div class="nav-sec-lbl">Reference</div>
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
+      <div class="nav-item" id="ni-libcompare" onclick="show('v-libcompare')"><span class="nav-icon">🔍</span>Image Compare</div>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-20</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-21</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -280,6 +298,7 @@ video{width:100%;height:100%;object-fit:cover;}
                   <label class="rchip r-ok"><input type="radio" name="xr" value="ORIGINAL" onchange="updateCameraReq()" checked><span>✅ Original</span></label>
                   <label class="rchip r-danger"><input type="radio" name="xr" value="FAKE" onchange="updateCameraReq()"><span>🚫 Fake</span></label>
                   <label class="rchip r-warn"><input type="radio" name="xr" value="EMPTY" onchange="updateCameraReq()"><span>📦 Empty</span></label>
+                  <label class="rchip r-vol"><input type="radio" name="xr" value="VOLUMETRIC" onchange="updateCameraReq()"><span>📏 Volumetric</span></label>
                 </div>
               </div>
               <div class="fg"><label class="lbl">Tamper Status</label>
@@ -389,6 +408,8 @@ video{width:100%;height:100%;object-fit:cover;}
               </div>
               <div class="prog-wrap" id="fd-prog" style="display:none;"><div class="prog-bar" id="fd-prog-bar" style="width:0%;background:var(--t2);"></div></div>
               <div id="fd-result" style="display:none;margin-top:12px;">
+                <div id="fd-fallback-warn" style="display:none;background:rgba(255,51,85,.1);border:1px solid rgba(255,51,85,.35);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--danger);margin-bottom:10px;">⚠️ Could not load the full unlinked-record history from Supabase — matching against TODAY's scans only. Some genuinely valid older AWBs may show as "not found" below. Try again in a minute, or contact admin if this keeps happening.</div>
+                <div class="search-wrap" style="margin-bottom:10px;"><span class="search-icon">🔍</span><input id="fd-match-search" placeholder="Search filename or AWB..." oninput="renderFdMatchList()"></div>
                 <div id="fd-match-list"></div>
                 <div style="display:flex;gap:8px;margin-top:10px;">
                   <button class="btn btn-t2" onclick="applyFolder()">APPLY MATCHES</button>
@@ -412,7 +433,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="view" id="v-rec">
         <div class="fbar">
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="rec-search" placeholder="Search AWB..." oninput="renderRec()"></div>
-          <select id="rec-res" onchange="renderRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <select id="rec-res" onchange="renderRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option><option>VOLUMETRIC</option></select>
           <input type="date" id="rec-date" onchange="onRecDateChange()">
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('rec-date').value=todayStr();onRecDateChange();">📅 Today</button>
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('op')">CSV</button>
@@ -524,7 +545,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="fbar">
           <div class="search-wrap" style="flex:1;"><span class="search-icon">🔍</span><input id="arec-search" placeholder="Search AWB..." oninput="renderAllRec()"></div>
           <select id="arec-loc" onchange="renderAllRec()"><option value="">All Locations</option></select>
-          <select id="arec-res" onchange="renderAllRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option></select>
+          <select id="arec-res" onchange="renderAllRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option><option>VOLUMETRIC</option></select>
           <input type="date" id="arec-date" onchange="renderAllRec()">
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('adm')">CSV</button>
         </div>
@@ -586,6 +607,49 @@ video{width:100%;height:100%;object-fit:cover;}
         </div>
       </div>
 
+      <!-- ── IMAGE COMPARE (every role — build/manage index is admin-only) ── -->
+      <div class="view" id="v-libcompare">
+
+        <div class="card" id="libcmp-admin-card" style="display:none;">
+          <div class="card-head"><span class="card-head-icon">🧠</span><span class="card-head-title">SEARCH INDEX (ADMIN)</span></div>
+          <div class="card-body">
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
+              <span id="libcmp-index-status" style="font-family:var(--mono);font-size:12px;color:var(--text2);">—</span>
+              <button class="btn btn-t1 btn-sm" onclick="buildLibraryIndex()" id="libcmp-build-btn">🔄 Build / Update Index</button>
+              <span id="libcmp-index-progress" style="font-family:var(--mono);font-size:11px;color:var(--t2);display:none;"></span>
+            </div>
+            <div class="prog-wrap" id="libcmp-index-prog" style="display:none;"><div class="prog-bar" id="libcmp-index-prog-bar" style="width:0%;"></div></div>
+            <div class="fg" style="margin-top:14px;margin-bottom:0;max-width:340px;">
+              <label class="lbl">Match threshold (%) — how close counts as "Original"</label>
+              <input id="libcmp-threshold" type="number" min="50" max="99" value="85" onchange="saveLibCmpThreshold()">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">🔍</span><span class="card-head-title">COMPARE IMAGES</span><span style="margin-left:auto;font-size:10px;color:var(--text3);font-family:var(--mono);">up to 5 at once</span></div>
+          <div class="card-body">
+            <div class="dropzone" id="libcmp-drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="libCmpDrop(event)" onclick="document.getElementById('libcmp-file').click()">
+              <input type="file" id="libcmp-file" multiple accept="image/*" style="display:none;" onchange="libCmpUpload(this)">
+              <div class="dz-icon">🖼</div><div class="dz-text">CLICK OR DRAG UP TO 5 IMAGES</div><div class="dz-sub">.jpg · .png · .webp</div>
+            </div>
+            <div class="g2" style="margin-top:10px;align-items:end;">
+              <div class="fg" style="margin-bottom:0;"><label class="lbl">...or paste image link(s), one per line</label><textarea id="libcmp-links" placeholder="https://..." style="min-height:44px;"></textarea></div>
+              <button class="btn btn-ghost" onclick="libCmpUseLinks()">Use Link(s)</button>
+            </div>
+            <div id="libcmp-queue" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;"></div>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+              <button class="btn btn-t1" onclick="runLibCompare()" id="libcmp-run-btn">▶ COMPARE</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearLibCmpQueue()">CLEAR</button>
+            </div>
+            <div id="libcmp-model-status" style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;"></div>
+          </div>
+        </div>
+
+        <div id="libcmp-results"></div>
+
+      </div>
+
     </div>
   </div>
 </div>
@@ -618,7 +682,10 @@ video{width:100%;height:100%;object-fit:cover;}
       <div id="lib-modal-name" style="font-size:13px;font-weight:600;color:var(--text);"></div>
       <div id="lib-modal-awb" style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:2px;"></div>
     </div>
-    <a id="lib-modal-download" href="#" target="_blank" class="btn btn-t1 btn-sm" style="text-decoration:none;">⬇ Open / Download</a>
+    <div style="display:flex;gap:8px;">
+      <a id="lib-modal-download" href="#" target="_blank" class="btn btn-t1 btn-sm" style="text-decoration:none;">⬇ Open / Download</a>
+      <button id="lib-modal-delete" class="btn btn-danger btn-sm" style="display:none;" onclick="deleteLibItem()">🗑 Delete from Library</button>
+    </div>
   </div>
 </div>
 
@@ -722,6 +789,7 @@ video{width:100%;height:100%;object-fit:cover;}
           <label class="rchip r-ok"><input type="radio" name="er-xr" value="ORIGINAL" onchange="toggleErProductVisibility()"><span>✅ Original</span></label>
           <label class="rchip r-danger"><input type="radio" name="er-xr" value="FAKE" onchange="toggleErProductVisibility()"><span>🚫 Fake</span></label>
           <label class="rchip r-warn"><input type="radio" name="er-xr" value="EMPTY" onchange="toggleErProductVisibility()"><span>📦 Empty</span></label>
+          <label class="rchip r-vol"><input type="radio" name="er-xr" value="VOLUMETRIC" onchange="toggleErProductVisibility()"><span>📏 Volumetric</span></label>
         </div>
       </div>
       <div class="fg"><label class="lbl">Tamper Status</label>
@@ -1010,8 +1078,9 @@ function computeImageLinked(r){
 }
 
 function resultPill(r){
-  if(r==='ORIGINAL') return '<span class="pill pill-ok">✅ Original</span>';
-  if(r==='FAKE')     return '<span class="pill pill-err">🚫 Fake</span>';
+  if(r==='ORIGINAL')   return '<span class="pill pill-ok">✅ Original</span>';
+  if(r==='FAKE')       return '<span class="pill pill-err">🚫 Fake</span>';
+  if(r==='VOLUMETRIC') return '<span class="pill pill-t1">📏 Volumetric</span>';
   return '<span class="pill pill-warn">📦 Empty</span>';
 }
 
@@ -1078,11 +1147,11 @@ function show(id){
   const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec',
             'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
             'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts',
-            'v-xraylib':'ni-xraylib'};
+            'v-xraylib':'ni-xraylib','v-libcompare':'ni-libcompare'};
   const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS',
             'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
             'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS',
-            'v-xraylib':'X-RAY REFERENCE'};
+            'v-xraylib':'X-RAY REFERENCE','v-libcompare':'IMAGE COMPARE'};
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
   if(id==='v-scan'){
@@ -1114,6 +1183,13 @@ function show(id){
   if(id==='v-xraylib'){
     if(!DB.xrayLib.length) loadXrayLibrary(false);
     else { renderXrayLibCategories(); renderXrayLibGrid(); }
+  }
+  if(id==='v-libcompare'){
+    const adminCard=document.getElementById('libcmp-admin-card');
+    if(adminCard) adminCard.style.display=isAdmin?'block':'none';
+    const th=document.getElementById('libcmp-threshold');
+    if(th) th.value=localStorage.getItem('cv_libcmp_threshold')||85;
+    if(isAdmin) refreshLibIndexStatus();
   }
 }
 
@@ -1387,6 +1463,7 @@ async function loadAwbToday(){
 // ══════════════════════════════════════════════════════════════
 DB.xrayLib = [];
 let libActiveCat = '';
+let libCurrentIdx = null;
 
 async function loadXrayLibrary(forceRefresh){
   const cacheKey='cv_xraylib_v1';
@@ -1462,6 +1539,7 @@ function libThumbUrl(url){
 function openLibItem(idx){
   const it=DB.xrayLib[idx];
   if(!it) return;
+  libCurrentIdx=idx;
   const id=libFileId(it.image_url);
   const imgEl=document.getElementById('lib-img-direct');
   const iframe=document.getElementById('lib-iframe');
@@ -1478,7 +1556,311 @@ function openLibItem(idx){
   document.getElementById('lib-modal-name').textContent=it.product_name||'Unnamed product';
   document.getElementById('lib-modal-awb').textContent=it.awb+'  ·  '+it.category;
   document.getElementById('lib-modal-download').href=it.image_url;
+  // Delete is ADMIN ONLY (not POC, not supervisor) — matches the request
+  // exactly. The library tab itself stays pure read-only for every
+  // other role; this button only ever appears for isAdmin.
+  const delBtn=document.getElementById('lib-modal-delete');
+  if(delBtn) delBtn.style.display=isAdmin?'inline-flex':'none';
   document.getElementById('modal-libview').style.display='flex';
+}
+
+// Admin-only: permanently removes an item from the reference library —
+// deletes the row from that Sheet AND trashes the image in Drive, so
+// nothing orphaned is left behind. See deleteXrayLibraryItem() in
+// Code.gs for the important limitations (auth model, Drive ownership).
+async function deleteLibItem(){
+  const it=DB.xrayLib[libCurrentIdx];
+  if(!it) return;
+  if(!confirm('Permanently delete "'+(it.product_name||it.awb)+'" ('+it.awb+') from the reference library?\n\nThis removes the row from the Sheet AND trashes the image in Drive. This cannot be undone from here.')) return;
+  showLoad('Deleting '+it.awb+' from reference library...');
+  try{
+    const res=await gsPost({action:'deleteXrayLibraryItem', awb:it.awb, requesterRole: isAdmin?'admin':'none'});
+    hideLoad();
+    if(res?.ok){
+      DB.xrayLib=DB.xrayLib.filter(x=>x.awb!==it.awb);
+      try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){}
+      // Also drop its embedding, if the Image Compare index has one —
+      // an orphaned embedding would keep showing a deleted item as a
+      // "closest match" forever otherwise.
+      try{ await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(it.awb)); libLibraryEmbeddings=null; }catch(e){}
+      document.getElementById('modal-libview').style.display='none';
+      renderXrayLibCategories(); renderXrayLibGrid();
+      toast('Removed '+it.awb+' from the reference library'+(res.drive&&res.drive!=='trashed'?' — note: '+res.drive:''),'ok');
+    } else {
+      toast('Delete failed: '+(res?.error||'unknown error'),'err');
+    }
+  }catch(e){
+    hideLoad();
+    toast('Delete failed: '+e.message,'err');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  IMAGE COMPARE — upload/paste up to 5 images, compare each against
+//  every embedding in library_embeddings, show a verdict + closest
+//  matches. Runs entirely client-side (CLIP model via Transformers.js,
+//  loaded lazily via dynamic import ONLY when this tab is opened — it
+//  never loads on login/Scan AWB/anywhere else, so it can't slow down
+//  or affect the actual scanning workflow in any way). The only
+//  server-side piece is getImagesAsB64 in Code.gs, which exists solely
+//  to sidestep a browser CORS restriction on reading Drive images —
+//  see the comment there for why.
+//
+//  IMPORTANT — read this before judging results:
+//  This is image-similarity search, not a certified fraud detector.
+//  The reference library only contains genuine/original images, so
+//  there's nothing to train a real/fake classifier on. "ORIGINAL"
+//  means "closely matches something already confirmed genuine";
+//  "NO CLOSE MATCH" means "nothing in the library looks like this" —
+//  which is a strong, honest signal, but always shown next to the
+//  actual closest matches so a human can see exactly why.
+// ══════════════════════════════════════════════════════════════
+let libCmpQueue = [];           // [{name, dataUrl}]
+let libCmpExtractor = null;     // {processor, model}, loaded once, cached for the tab's lifetime
+let libLibraryEmbeddings = null; // fetched once per session, cached in memory only (never sessionStorage — 1600+ vectors is too large for that quota)
+
+async function ensureLibCmpModel(){
+  if(libCmpExtractor) return libCmpExtractor;
+  const statusEl=document.getElementById('libcmp-model-status');
+  if(statusEl) statusEl.textContent='Loading comparison model (first time only, ~90MB, cached by the browser after)...';
+  const { AutoProcessor, CLIPVisionModelWithProjection, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  env.allowLocalModels=false;
+  const processor=await AutoProcessor.from_pretrained('Xenova/clip-vit-base-patch32');
+  const model=await CLIPVisionModelWithProjection.from_pretrained('Xenova/clip-vit-base-patch32', {quantized:true});
+  libCmpExtractor={processor, model};
+  if(statusEl) statusEl.textContent='Model ready.';
+  return libCmpExtractor;
+}
+
+function l2normalize(vec){
+  let sum=0; for(let i=0;i<vec.length;i++) sum+=vec[i]*vec[i];
+  const norm=Math.sqrt(sum)||1;
+  return vec.map(v=>v/norm);
+}
+function cosineSim(a,b){
+  // Both vectors are L2-normalized at storage/compute time, so a plain
+  // dot product IS the cosine similarity — no extra division needed.
+  let dot=0; for(let i=0;i<a.length;i++) dot+=a[i]*(b[i]||0);
+  return dot;
+}
+
+async function computeImageEmbedding(dataUrl){
+  const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  const { processor, model } = await ensureLibCmpModel();
+  const image = await RawImage.fromURL(dataUrl);
+  const inputs = await processor(image);
+  const { image_embeds } = await model(inputs);
+  return l2normalize(Array.from(image_embeds.data));
+}
+
+async function ensureLibraryEmbeddingsLoaded(){
+  if(libLibraryEmbeddings) return libLibraryEmbeddings;
+  const data=await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,category,image_url,embedding');
+  libLibraryEmbeddings=Array.isArray(data)?data:[];
+  return libLibraryEmbeddings;
+}
+
+// ── ADMIN: build/update the search index ──────────────────────
+async function buildLibraryIndex(){
+  if(!isAdmin){ toast('Admin only','err'); return; }
+  const btn=document.getElementById('libcmp-build-btn');
+  const statusEl=document.getElementById('libcmp-index-status');
+  const progEl=document.getElementById('libcmp-index-progress');
+  const progWrap=document.getElementById('libcmp-index-prog');
+  const progBar=document.getElementById('libcmp-index-prog-bar');
+  btn.disabled=true;
+  try{ await ensureLibCmpModel(); }
+  catch(e){ toast('Failed to load comparison model: '+e.message,'err'); btn.disabled=false; return; }
+
+  if(!DB.xrayLib.length) await loadXrayLibrary(false);
+
+  let existing=[];
+  try{ existing=await sbGetAll('/rest/v1/library_embeddings?select=awb'); }catch(e){}
+  const existingSet=new Set(existing.map(r=>r.awb));
+  const todo=DB.xrayLib.filter(it=>!existingSet.has(it.awb));
+
+  if(!todo.length){
+    statusEl.textContent='Index up to date — '+DB.xrayLib.length+' item(s) indexed.';
+    btn.disabled=false; return;
+  }
+
+  progWrap.style.display='block'; progEl.style.display='inline';
+  let done=0, failed=0;
+  const BATCH=6; // keeps each Apps Script response modest in size/time
+  for(let i=0;i<todo.length;i+=BATCH){
+    const batch=todo.slice(i,i+BATCH);
+    progEl.textContent=done+'/'+todo.length+' indexed'+(failed?(' · '+failed+' failed'):'');
+    try{
+      const res=await gsPost({action:'getImagesAsB64', refs:batch.map(it=>it.image_url)});
+      const imagesMap=res?.images||{};
+      for(const it of batch){
+        const dataUrl=imagesMap[it.image_url];
+        if(!dataUrl){ failed++; continue; }
+        try{
+          const embedding=await computeImageEmbedding(dataUrl);
+          await sbPost('library_embeddings', {
+            awb:it.awb, product_name:it.product_name, category:it.category,
+            image_url:it.image_url, embedding:embedding
+          });
+          done++;
+        }catch(embErr){ failed++; console.warn('embed failed for',it.awb,embErr.message); }
+        progBar.style.width=Math.round(((done+failed)/todo.length)*100)+'%';
+      }
+    }catch(batchErr){
+      failed+=batch.length;
+      console.warn('batch fetch failed:',batchErr.message);
+    }
+  }
+  progEl.textContent=done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
+  statusEl.textContent='Index build complete — '+(existingSet.size+done)+' of '+DB.xrayLib.length+' total item(s) indexed.';
+  libLibraryEmbeddings=null; // force a fresh fetch on the next Compare run
+  btn.disabled=false;
+}
+
+async function refreshLibIndexStatus(){
+  const statusEl=document.getElementById('libcmp-index-status');
+  if(!statusEl) return;
+  statusEl.textContent='Checking index status...';
+  try{
+    if(!DB.xrayLib.length) await loadXrayLibrary(false);
+    const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb');
+    statusEl.textContent=existing.length+' of '+DB.xrayLib.length+' library item(s) indexed.';
+  }catch(e){
+    statusEl.textContent='Could not check index status: '+e.message;
+  }
+}
+
+function saveLibCmpThreshold(){
+  const v=document.getElementById('libcmp-threshold').value;
+  localStorage.setItem('cv_libcmp_threshold', v);
+  toast('Threshold set to '+v+'%','ok');
+}
+
+// ── Upload / paste queue (max 5) ───────────────────────────────
+function libCmpDrop(e){
+  e.preventDefault(); document.getElementById('libcmp-drop').classList.remove('drag');
+  const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
+  addFilesToLibCmpQueue(files);
+}
+function libCmpUpload(input){
+  const files=Array.from(input.files).filter(f=>f.type.startsWith('image/'));
+  addFilesToLibCmpQueue(files);
+  input.value='';
+}
+async function addFilesToLibCmpQueue(files){
+  for(const f of files){
+    if(libCmpQueue.length>=5){ toast('Max 5 images at a time','err'); break; }
+    const dataUrl=await readFile(f); // reuses the existing helper — handles BMP conversion too
+    libCmpQueue.push({name:f.name, dataUrl});
+  }
+  renderLibCmpQueue();
+}
+async function libCmpUseLinks(){
+  const raw=document.getElementById('libcmp-links').value.trim();
+  if(!raw) return;
+  const links=raw.split('\n').map(s=>s.trim()).filter(Boolean).slice(0, Math.max(0,5-libCmpQueue.length));
+  if(!links.length){ toast('Queue is full (max 5)','err'); return; }
+  showLoad('Fetching linked image(s)...');
+  try{
+    const res=await gsPost({action:'getImagesAsB64', refs:links});
+    const imagesMap=res?.images||{};
+    for(const link of links){
+      const dataUrl=imagesMap[link];
+      if(dataUrl){ libCmpQueue.push({name:link.slice(0,40), dataUrl}); continue; }
+      // Not a Drive link (or no access) — try a direct client-side fetch,
+      // which works fine for any host that sends normal CORS headers.
+      try{
+        const r=await fetch(link);
+        const blob=await r.blob();
+        const dUrl=await new Promise((res2,rej2)=>{const fr=new FileReader();fr.onload=e=>res2(e.target.result);fr.onerror=rej2;fr.readAsDataURL(blob);});
+        libCmpQueue.push({name:link.slice(0,40), dataUrl:dUrl});
+      }catch(fetchErr){
+        toast('Could not load image from: '+link.slice(0,50),'err');
+      }
+    }
+  }catch(e){
+    toast('Failed to fetch link(s): '+e.message,'err');
+  }
+  hideLoad();
+  document.getElementById('libcmp-links').value='';
+  renderLibCmpQueue();
+}
+function renderLibCmpQueue(){
+  const wrap=document.getElementById('libcmp-queue');
+  if(!wrap) return;
+  wrap.innerHTML=libCmpQueue.map((q,i)=>
+    '<div class="libcmp-qitem"><img src="'+q.dataUrl+'"><button class="rm" onclick="removeLibCmpItem('+i+')">✕</button></div>'
+  ).join('');
+}
+function removeLibCmpItem(i){ libCmpQueue.splice(i,1); renderLibCmpQueue(); }
+function clearLibCmpQueue(){
+  libCmpQueue=[];
+  renderLibCmpQueue();
+  const r=document.getElementById('libcmp-results'); if(r) r.innerHTML='';
+}
+
+// ── Run the actual comparison ───────────────────────────────────
+async function runLibCompare(){
+  if(!libCmpQueue.length){ toast('Add at least one image first','err'); return; }
+  const btn=document.getElementById('libcmp-run-btn');
+  const statusEl=document.getElementById('libcmp-model-status');
+  btn.disabled=true; btn.textContent='COMPARING...';
+  try{
+    await ensureLibCmpModel();
+    statusEl.textContent='Loading reference library index...';
+    const lib=await ensureLibraryEmbeddingsLoaded();
+    if(!lib.length){
+      toast('Search index is empty — ask an admin to Build/Update Index first','err');
+      btn.disabled=false; btn.textContent='▶ COMPARE';
+      return;
+    }
+    const threshold=(parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
+    statusEl.textContent='Comparing '+libCmpQueue.length+' image(s) against '+lib.length+' library entries...';
+    const results=[];
+    for(const q of libCmpQueue){
+      const embedding=await computeImageEmbedding(q.dataUrl);
+      const scored=lib.map(item=>({item, score:cosineSim(embedding, item.embedding)}))
+                       .sort((a,b)=>b.score-a.score)
+                       .slice(0,5);
+      results.push({query:q, matches:scored, verdict:(scored[0] && scored[0].score>=threshold)?'ORIGINAL':'NOMATCH'});
+    }
+    renderLibCmpResults(results);
+    statusEl.textContent='Done.';
+  }catch(e){
+    toast('Compare failed: '+e.message,'err');
+    statusEl.textContent='Error: '+e.message;
+  }
+  btn.disabled=false; btn.textContent='▶ COMPARE';
+}
+
+function renderLibCmpResults(results){
+  const wrap=document.getElementById('libcmp-results');
+  if(!wrap) return;
+  wrap.innerHTML=results.map(r=>{
+    const pct=r.matches[0]?Math.round(r.matches[0].score*100):0;
+    const verdictHtml=r.verdict==='ORIGINAL'
+      ?'<span class="libcmp-verdict-ok">✅ ORIGINAL — MATCHES LIBRARY ('+pct+'%)</span>'
+      :'<span class="libcmp-verdict-warn">⚠️ NO CLOSE MATCH — REVIEW MANUALLY ('+pct+'% best)</span>';
+    return '<div class="libcmp-result-card">'
+      +'<div class="libcmp-result-head">'
+        +'<div class="libcmp-result-img"><img src="'+r.query.dataUrl+'"></div>'
+        +'<div><div style="font-size:12px;color:var(--text2);margin-bottom:6px;">'+r.query.name+'</div>'+verdictHtml+'</div>'
+      +'</div>'
+      +'<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;">CLOSEST MATCHES</div>'
+      +'<div class="libcmp-match-row">'
+        +r.matches.map(m=>{
+          const thumb=libThumbUrl(m.item.image_url);
+          const pctColor=m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
+          return '<div class="libcmp-match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
+            +(thumb?'<img src="'+thumb+'">':'')
+            +'<div class="libcmp-match-body">'
+              +'<div class="libcmp-match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'
+              +'<div class="libcmp-match-name">'+(m.item.product_name||m.item.awb)+'</div>'
+              +'<div style="font-size:9px;color:var(--text3);font-family:var(--mono);">'+m.item.awb+'</div>'
+            +'</div></div>';
+        }).join('')
+      +'</div></div>';
+  }).join('');
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1554,15 +1936,29 @@ function clearAwbAutoSave(){
 function updateCameraReq(){
   const result=document.querySelector('input[name="xr"]:checked')?.value||'';
   const tamper=document.querySelector('input[name="tr"]:checked')?.value||'';
-  const need=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
-  document.getElementById('cam-notice').style.display=need?'block':'none';
-  document.getElementById('cam-badge').innerHTML=need?'<span class="pill pill-err">IMAGES REQUIRED</span>':'';
-  // Product photo is only relevant for Fake/Empty declarations (not
-  // Tampered, not Original) — hidden otherwise so it can't be mistakenly
-  // used outside that context.
-  const productApplicable=result==='FAKE'||result==='EMPTY';
+  const isVol=result==='VOLUMETRIC';
+  // Volumetric = shipment physically too big for the X-ray machine.
+  // Label/Front/Back are photos captured for a normal Fake/Empty/
+  // Tampered inspection — they don't apply here, so this is exempt from
+  // that requirement entirely, replaced by a required Product photo
+  // instead (see productApplicable/needProduct below).
+  const need=(result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED') && !isVol;
+  document.getElementById('cam-notice').style.display=(need||isVol)?'block':'none';
+  document.getElementById('cam-notice').textContent=isVol
+    ?'PRODUCT IMAGE REQUIRED — X-RAY MACHINE CANNOT SCAN THIS SHIPMENT'
+    :'IMAGES REQUIRED — CAPTURE LABEL · FRONT · BACK';
+  document.getElementById('cam-badge').innerHTML=need
+    ?'<span class="pill pill-err">IMAGES REQUIRED</span>'
+    :(isVol?'<span class="pill pill-t1">PRODUCT IMAGE REQUIRED</span>':'');
+  // Product photo applies to Fake/Empty (evidence of the opened
+  // shipment) AND Volumetric (the substitute for a genuine X-ray image,
+  // since one can never exist for this AWB) — hidden otherwise.
+  const productApplicable=result==='FAKE'||result==='EMPTY'||isVol;
   document.getElementById('th3-wrap').style.display=productApplicable?'block':'none';
   document.getElementById('product-hint').style.display=productApplicable?'block':'none';
+  document.getElementById('product-hint').textContent=isVol
+    ?'PRODUCT = required photo of this shipment — substitutes for the X-ray image, which can never exist for a Volumetric AWB'
+    :'PRODUCT = optional photo of the opened shipment/item — only relevant for Fake/Empty, not required to save';
   document.getElementById('product-filepicker').style.display=productApplicable?'flex':'none';
   if(!productApplicable && captured[3]){
     captured[3]=null;
@@ -1581,10 +1977,14 @@ async function submitScan(){
     return;
   }
   if(!result){ toast('Select X-Ray result','err'); return; }
-  const needImg=result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED';
+  const isVol=result==='VOLUMETRIC';
+  const needImg=(result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED') && !isVol;
   const requiredCaptured=captured.slice(0,3).filter(Boolean).length; // label/front/back only — product is optional
   if(needImg&&requiredCaptured<3){
     toast('Capture all 3 images ('+requiredCaptured+'/3)','err'); return;
+  }
+  if(isVol&&!captured[3]){
+    toast('Capture a product photo — required for Volumetric (no X-ray image will ever exist for this AWB)','err'); return;
   }
   const remarks=document.getElementById('remarks').value.trim();
   const product=DB.awbMaster[awb]||null;
@@ -1910,12 +2310,31 @@ function renderT2(){
       +'<td><span class="pill pill-warn">⏳</span></td></tr>').join('');
   scrollTableToBottom('t2-body');
 }
+let eosLinkedShowAll=false; // capped by default — see renderEosLinked
 function renderEosLinked(){
-  const r=myToday().filter(x=>x.image_linked||x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
-  document.getElementById('eos-linked-body').innerHTML=r.length===0
+  const all=myToday().filter(x=>x.image_linked||x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  // FIX: this used to rebuild EVERY linked record of the whole shift as
+  // one giant HTML block on every single render — on a busy day with
+  // 200-900+ scans, that's several thousand DOM nodes torn down and
+  // rebuilt from scratch every time this tab opens or refreshes, and it
+  // only gets heavier as the shift goes on. Capping to the most recent
+  // 50 by default keeps this fast all day; nothing is hidden, just
+  // collapsed behind one click, and full history is always still
+  // available in My Records / All Records regardless.
+  const CAP=50;
+  const capped=!eosLinkedShowAll && all.length>CAP;
+  const r=capped?all.slice(-CAP):all;
+  const banner=all.length>CAP
+    ?'<tr><td colspan="8" style="text-align:center;padding:8px;background:var(--bg2);font-size:11px;font-family:var(--mono);color:var(--text3);">'
+      +(capped
+        ?'Showing last '+CAP+' of '+all.length+' linked today — <button class="btn btn-ghost btn-xs" onclick="eosLinkedShowAll=true;renderEosLinked();">Show All</button>'
+        :'Showing all '+all.length+' — <button class="btn btn-ghost btn-xs" onclick="eosLinkedShowAll=false;renderEosLinked();">Collapse to last '+CAP+'</button>')
+      +'</td></tr>'
+    :'';
+  document.getElementById('eos-linked-body').innerHTML=banner+(r.length===0
     ?'<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:12px;">No linked records yet</td></tr>'
     :r.map((rec,i)=>'<tr>'
-      +'<td style="color:var(--text3);">'+(i+1)+'</td>'
+      +'<td style="color:var(--text3);">'+(all.length-r.length+i+1)+'</td>'
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
@@ -1929,7 +2348,7 @@ function renderEosLinked(){
         +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+rec.id+'\')" title="Edit result/tamper or add label/front/back/product images">📝 Edit</button>'
         +'<button class="btn btn-danger btn-xs" onclick="deleteRecord(\''+rec.id+'\')" title="Delete this record entirely">🗑</button>'
       +'</td>'
-      +'</tr>').join('');
+      +'</tr>').join(''));
   scrollTableToBottom('eos-linked-body');
 }
 
@@ -2047,7 +2466,7 @@ function openEditRecord(recId){
 function toggleErProductVisibility(){
   const result=document.querySelector('input[name="er-xr"]:checked')?.value||'';
   const wrap=document.getElementById('er-product-wrap');
-  if(wrap) wrap.style.display=(result==='FAKE'||result==='EMPTY')?'block':'none';
+  if(wrap) wrap.style.display=(result==='FAKE'||result==='EMPTY'||result==='VOLUMETRIC')?'block':'none';
 }
 
 function erPickImage(input,slot){
@@ -2071,7 +2490,10 @@ async function saveEditRecord(){
   if(!newAwb){ toast('AWB cannot be blank','err'); return; }
 
   // If switching to FAKE/EMPTY, all 3 x-ray images must end up present (existing or newly picked)
-  const needsImages = newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED';
+  const isVolEdit = newResult==='VOLUMETRIC';
+  // Volumetric is exempt from Label/Front/Back — it's the same waiver as
+  // Scan AWB, replaced by a required Product photo instead.
+  const needsImages = (newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED') && !isVolEdit;
   if(needsImages){
     const willHave = {
       label: erPickedImages.label || r.label_image_url,
@@ -2082,6 +2504,10 @@ async function saveEditRecord(){
       toast('This result requires all 3 images (label, front, back) — add whichever are missing','err');
       return;
     }
+  }
+  if(isVolEdit && !(erPickedImages.product || r.product_image_url)){
+    toast('Volumetric requires a product photo — add one before saving','err');
+    return;
   }
 
   const changes=[];
@@ -2220,39 +2646,81 @@ async function applyExcel(){
 }
 
 // T2 Folder matching
+// ══════════════════════════════════════════════════════════════
+//  REBUILT (2026-07-21) — this used to work by guessing "the AWB is at
+//  THIS position, in THIS shape" based on 2-3 known machine formats.
+//  Any DC whose machine encodes filenames even slightly differently
+//  (confirmed: BLR and others) simply never matched, silently, 0% of
+//  the time — no format branch existed for them, so nothing ever
+//  looked in the right place, even with the AWB plainly visible in
+//  the name to a human.
+//
+//  Now: the known-format detection below still runs first (kept,
+//  unchanged, since it's proven correct for the formats already
+//  confirmed) and produces a PRIMARY guess. But instead of stopping
+//  there, every alphanumeric token in the filename (split on ANY
+//  non-alphanumeric separator — underscore, hyphen, dot, space, not
+//  just underscore/hyphen) that looks AWB-shaped gets collected as a
+//  candidate too. The actual decision of which candidate is real
+//  happens later in processFd(), by checking each one against the
+//  real database of pending scans — the database decides, not a
+//  regex guess. This means a DC whose machine uses a completely
+//  different naming convention still matches correctly, as long as
+//  the AWB appears as a clearly separated token somewhere in the
+//  name — no new format branch needs to be hand-coded for it.
+// ══════════════════════════════════════════════════════════════
 function parseImageFilename(filename){
   const name=filename.replace(/\.[^.]+$/,'').trim();
-  let awb=null, timestamp=null;
+  let primaryAwb=null, timestamp=null;
   const parts=name.split(/[_\-]/);
 
   // FORMAT 1: SF ClearView v2 saved file: YYYYMMDD_{AWB}_xray.jpg
   // middle segment is AWB e.g. 20260627_SF3468876360AJI_xray
   if(parts.length>=3&&/^\d{8}$/.test(parts[0])&&parts[parts.length-1].toLowerCase()==='xray'){
     const mid=parts.slice(1,parts.length-1).join('_');
-    if(mid.length>=6) awb=mid.toUpperCase();
+    if(mid.length>=6) primaryAwb=mid.toUpperCase();
   }
 
   // FORMAT 2: Type A machines — AWB is FIRST segment before underscore
   // e.g. SF2968439623F_2605040005437500.jpg  OR  R1674082812F_2606121344587600.jpg
-  if(!awb&&parts.length>=2){
+  if(!primaryAwb&&parts.length>=2){
     const first=parts[0];
     if(/^[A-Z]{1,4}\d{7,15}[A-Z]{0,4}$/i.test(first)&&first.length>=8&&!/^\d{8}$/.test(first)){
-      awb=first.toUpperCase();
+      primaryAwb=first.toUpperCase();
     }
   }
 
-  if(!awb){
+  if(!primaryAwb){
     for(const part of parts){
       // Standard AWB: optional letters, then digits, optional letters (BLR/GWT/NCRT)
       if(/^[A-Z]{0,4}\d{7,15}[A-Z]{0,3}$/i.test(part)&&part.length>=8&&!/^\d{8}$/.test(part)&&!/^\d{6}$/.test(part)){
-        awb=part.toUpperCase(); break;
+        primaryAwb=part.toUpperCase(); break;
       }
       // KOT format: digits followed by letters e.g. 0200000A, 0100000A
       if(/^\d{5,15}[A-Z]{1,4}$/i.test(part)&&part.length>=6&&!/^\d{8}$/.test(part)){
-        awb=part.toUpperCase(); break;
+        primaryAwb=part.toUpperCase(); break;
       }
     }
   }
+
+  // GENERAL SAFETY NET — every plausible AWB-shaped token in the name,
+  // regardless of which machine format produced it. Matches
+  // isValidAwbFormat()'s own bounds (6-20 chars, alphanumeric) plus one
+  // extra rule: a genuine AWB in this fleet always has BOTH a letter
+  // and a digit (SF..., R..., KOT's ...A suffix — every real example
+  // seen has both). A purely-numeric token is always a date, time, or
+  // sequence number, never a real AWB — this single rule correctly
+  // excludes YYYYMMDD, HHMMSS, and even 16-digit encoded timestamps,
+  // without needing to special-case each specific digit-length.
+  const candidateSet=new Set();
+  if(primaryAwb) candidateSet.add(primaryAwb);
+  name.split(/[^A-Za-z0-9]+/).filter(Boolean).forEach(tok=>{
+    if(tok.length<6||tok.length>20) return;
+    if(!/[A-Za-z]/.test(tok)||!/\d/.test(tok)) return; // needs both a letter and a digit
+    candidateSet.add(tok.toUpperCase());
+  });
+  const candidates=Array.from(candidateSet);
+  const awb=candidates[0]||null; // kept for display/logging — the single best guess
 
   // TIMESTAMP from filename
   let m=name.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
@@ -2269,7 +2737,7 @@ function parseImageFilename(filename){
     }
   }
   if(!timestamp){m=name.match(/(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);if(m){const[,yy,mo,dd,hh,mi,ss]=m;if(+mo<=12&&+dd<=31&&+hh<=23){timestamp=new Date(2000+(+yy),+mo-1,+dd,+hh,+mi,+ss);}}}
-  return {awb,timestamp};
+  return {awb,candidates,timestamp};
 }
 
 function fdDrop(e){e.preventDefault();document.getElementById('fd-drop').classList.remove('drag');const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));if(files.length)processFd(files);}
@@ -2278,73 +2746,141 @@ function fdUpload(input){const files=Array.from(input.files).filter(f=>f.type.st
 let fdUnlinkedPool=[]; // tracks which unlinked records are still available to manually assign
 async function processFd(files){
   document.getElementById('fd-prog').style.display='block';
+  const fallbackWarn=document.getElementById('fd-fallback-warn');
+  if(fallbackWarn) fallbackWarn.style.display='none';
   files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
-  // FIX: this used to only look at TODAY's scans — but the X-ray
-  // machine's output folder isn't cleared daily, so a folder selection
-  // routinely mixes files from several different days (confirmed:
-  // filenames from yesterday and today both appearing in the same
-  // batch). Anything from a day other than today would show "AWB not
-  // found" even though it was a completely valid, still-unmatched
-  // record — and since nothing ever looked further back, that backlog
-  // just kept silently piling up day after day. Now this pulls every
-  // still-unmatched record from the last 14 days directly from
-  // Supabase, not just today's in-memory list, so leftover files from
-  // recent days can still find their match.
-  document.getElementById('loadingMsg') && (document.getElementById('fd-prog-bar').style.width='5%');
-  let unlinked;
-  try{
-    const windowStartDate=new Date(todayStr()+'T12:00:00Z');
-    windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
-    const windowStartStr=windowStartDate.toISOString().split('T')[0];
-    // FIX: "xray_image_url=is.null" only matches actual database NULL —
-    // any row where it's an empty string instead would be silently
-    // excluded by that filter even though it's genuinely missing its
-    // photo. Fetching everything in the window and filtering client-
-    // side (which treats null/undefined/'' all as "missing") is safer.
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&order=scanned_at.asc');
-    unlinked=(Array.isArray(data)?data:[]).filter(r=>!r.xray_image_url);
-  }catch(e){
-    console.warn('Widened unlinked-pool fetch failed, falling back to today only:',e.message);
-    unlinked=myToday().filter(r=>!r.xray_image_url);
+
+  // Pulls every still-unmatched record from the last 14 days (not just
+  // today) directly from Supabase — the X-ray machine's output folder
+  // isn't cleared daily, so a folder selection routinely mixes files
+  // from several different days. Retries once before ever falling back
+  // to today-only, and — unlike before — that fallback is now a visible
+  // banner, not just a silent console.warn, since silently degrading
+  // match quality without telling the operator is exactly what made
+  // "AWB not found" so hard to diagnose.
+  document.getElementById('fd-prog-bar').style.width='5%';
+  let allInWindow=[], usedFallback=false;
+  for(let attempt=0; attempt<2; attempt++){
+    try{
+      const windowStartDate=new Date(todayStr()+'T12:00:00Z');
+      windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
+      const windowStartStr=windowStartDate.toISOString().split('T')[0];
+      // Only these 4 columns are ever actually used for matching — every
+      // other column (remarks, product info, all the other image URLs,
+      // etc.) was previously coming along for free on every one of these
+      // rows, across every paginated page. For a busy DC doing 700-900+
+      // scans/day, a 14-day window can be several thousand rows — trimming
+      // the payload down to just what's needed here cuts real transfer
+      // time without changing which rows come back at all.
+      allInWindow=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&select=id,awb,scanned_at,xray_image_url&order=scanned_at.asc');
+      if(!Array.isArray(allInWindow)) allInWindow=[];
+      break;
+    }catch(e){
+      console.warn('Unlinked-pool fetch attempt '+(attempt+1)+' failed:',e.message);
+      if(attempt===0){ await new Promise(r=>setTimeout(r,1500)); continue; }
+      usedFallback=true;
+      allInWindow=myToday();
+    }
   }
+  if(usedFallback && fallbackWarn) fallbackWarn.style.display='block';
+  // xray_image_url=is.null via Postgrest only matches actual database
+  // NULL — a row with an empty string instead would be silently
+  // excluded by that filter even though it's genuinely missing its
+  // photo. Filtering client-side treats null/undefined/'' all as
+  // "missing", which is what we actually want.
+  const unlinked=allInWindow.filter(r=>!r.xray_image_url);
+
   const tolerance=parseInt(document.getElementById('fd-tolerance').value)||300;
-  const used=new Set(), matches=[];
-  // ── MATCHING RULES (only two ways a file may ever be AUTO-matched) ────
-  // 1. AWB found in the filename → must match a record with that EXACT
-  //    AWB, or the file stays unmatched. Never falls through to anything
-  //    else — an AWB claim is the strongest signal there is, and if it
-  //    doesn't resolve cleanly it should never be silently reassigned.
-  // 2. No AWB in the filename, but a timestamp is → matched only if
-  //    within the configured tolerance window. Outside that window, or
-  //    with no timestamp at all, the file stays unmatched.
-  // Anything that doesn't auto-match stays unmatched and visible — the
-  // operator can manually assign it to a specific AWB right here (see
-  // renderFdMatchList/manualAssignFd below), never silently guessed.
-  for(let i=0;i<files.length;i++){
-    document.getElementById('fd-prog-bar').style.width=Math.round(((i+1)/files.length)*80)+'%';
-    const file=files[i], d=await readFile(file), parsed=parseImageFilename(file.name);
-    let rec=null, method='', diffSec=null;
-    if(parsed.awb){
-      const f=unlinked.find(r=>!used.has(r.id)&&(r.awb||'').toString().trim().toUpperCase()===parsed.awb.trim().toUpperCase());
-      if(f){
-        rec=f; method='AWB in name'; diffSec=0;
-      } else {
-        method = 'AWB not found / already linked — left unmatched';
+  const used=new Set();
+
+  // PASS 0 — read + parse every file up front, in parallel batches
+  // instead of one at a time. Sequential FileReader reads across a
+  // few hundred images was the main reason this screen felt like it
+  // "hung" or only processed a handful before needing to be re-run —
+  // same "parallel beats sequential" principle already proven for
+  // uploads elsewhere in this app, applied here to reading instead.
+  const READ_BATCH=8;
+  const parsedFiles=new Array(files.length);
+  for(let i=0;i<files.length;i+=READ_BATCH){
+    const batch=files.slice(i,i+READ_BATCH);
+    const results=await Promise.all(batch.map(file=>readFile(file).then(d=>({file,d,parsed:parseImageFilename(file.name)}))));
+    results.forEach((r,j)=>{
+      const idx=i+j;
+      parsedFiles[idx]={seq:idx+1,name:r.file.name,file:r.file,data:r.d,parsed:r.parsed,rec:null,method:'',diffSec:null};
+    });
+    document.getElementById('fd-prog-bar').style.width=Math.round(((i+batch.length)/files.length)*70)+'%';
+  }
+
+  // REBUILT (2026-07-21) — lookup tables instead of repeated linear
+  // scans. With hundreds of files against thousands of candidate
+  // records, the old unlinked.find(...) per-file/per-candidate check
+  // was doing real O(files × records) work — these two maps make every
+  // check O(1) instead, which matters a lot once BLR/MDC-scale batches
+  // start actually finding matches (previously they mostly didn't, so
+  // this cost was hidden).
+  const unlinkedByAwb=new Map();
+  unlinked.forEach(r=>{ const a=(r.awb||'').toString().trim().toUpperCase(); if(a) unlinkedByAwb.set(a,r); });
+  const linkedAwbSet=new Set();
+  allInWindow.forEach(r=>{ if(r.xray_image_url){ const a=(r.awb||'').toString().trim().toUpperCase(); if(a) linkedAwbSet.add(a); } });
+
+  // ── MATCHING RULES ──────────────────────────────────────────────
+  // PASS 1 — every AWB-shaped candidate token in the filename (not
+  // just one guessed format) gets checked against the real pending-
+  // scan pool, for ALL files, before any timestamp matching happens.
+  // A real AWB match is the strongest signal there is, and must never
+  // be beaten to a record by a weaker timestamp match just because
+  // that other file happened to sort earlier alphabetically.
+  document.getElementById('fd-prog-bar').style.width='75%';
+  for(const m of parsedFiles){
+    if(!m.parsed.candidates.length) continue;
+    let claimedInThisBatch=false, alreadyLinked=false;
+    for(const cand of m.parsed.candidates){
+      const rec=unlinkedByAwb.get(cand);
+      if(rec){
+        if(!used.has(rec.id)){
+          m.rec=rec; m.method='AWB in name'; m.diffSec=0; used.add(rec.id);
+          break;
+        } else {
+          claimedInThisBatch=true;
+        }
+      } else if(linkedAwbSet.has(cand)){
+        alreadyLinked=true;
       }
-    } else if(parsed.timestamp){
-      let best=Infinity;
+    }
+    if(!m.rec){
+      // Three genuinely different reasons a file can fail here — shown
+      // separately so it's obvious at a glance which case any given
+      // row actually is, instead of one ambiguous combined message.
+      if(alreadyLinked) m.method='Already linked — this AWB already has its X-ray photo';
+      else if(claimedInThisBatch) m.method='Already matched to another file in this same folder selection';
+      else m.method='AWB not found — no scan record in the last 14 days'+(usedFallback?' (today-only fallback active — see warning above)':'');
+    }
+  }
+
+  // PASS 2 — timestamp matching, only for files where NOT ONE AWB-
+  // shaped token was found anywhere in the name, only against whatever
+  // records PASS 1 didn't already claim. Any file that had at least
+  // one candidate token never falls through to this, even if none of
+  // its candidates matched — a near-miss AWB guess should never
+  // silently get reassigned by proximity in time instead.
+  for(const m of parsedFiles){
+    if(m.parsed.candidates.length) continue; // handled (matched or failed) in PASS 1 already
+    if(m.parsed.timestamp){
+      let best=Infinity, rec=null;
       for(const r of unlinked){
         if(used.has(r.id))continue;
-        const diff=Math.abs((parsed.timestamp-new Date(r.scanned_at))/1000);
-        if(diff<best&&diff<=tolerance){ best=diff; rec=r; method='Time match'; diffSec=Math.round(diff); }
+        const diff=Math.abs((m.parsed.timestamp-new Date(r.scanned_at))/1000);
+        if(diff<best&&diff<=tolerance){ best=diff; rec=r; }
       }
-      if(!rec) method = 'No AWB, no timestamp match within tolerance — left unmatched';
+      if(rec){ m.rec=rec; m.method='Time match'; m.diffSec=Math.round(best); used.add(rec.id); }
+      else { m.method='No AWB, no timestamp match within tolerance — left unmatched'; }
     } else {
-      method = 'No AWB or readable timestamp in filename — left unmatched';
+      m.method='No AWB or readable timestamp in filename — left unmatched';
     }
-    if(rec) used.add(rec.id);
-    matches.push({seq:i+1,name:file.name,file,data:d,rec,ok:!!rec,method,diffSec,parsed,manual:false});
   }
+
+  const matches=parsedFiles.map(m=>({seq:m.seq,name:m.name,file:m.file,data:m.data,rec:m.rec,ok:!!m.rec,method:m.method,diffSec:m.diffSec,parsed:m.parsed,manual:false}));
+  document.getElementById('fd-prog-bar').style.width='100%';
   pendingFd=matches;
   fdUnlinkedPool=unlinked.filter(r=>!used.has(r.id)); // whatever's left, available for manual assignment
 
@@ -2367,6 +2903,7 @@ async function processFd(files){
     });
   }catch(e){ console.warn('MatchLog send failed (non-fatal):', e.message); }
 
+  document.getElementById('fd-match-search').value='';
   renderFdMatchList();
   document.getElementById('fd-result').style.display='block';
   document.getElementById('fd-prog').style.display='none';
@@ -2394,6 +2931,15 @@ function renderFdMatchList(){
   const unmatchedCount=matches.length-ok;
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
   const byTime=matches.filter(m=>m.method==='Time match').length;
+
+  // Search filters which ROWS are shown, but every row still carries its
+  // real index into pendingFd (not its position in the filtered list) —
+  // otherwise manualAssignFd would silently assign the wrong file.
+  const q=(document.getElementById('fd-match-search')?.value||'').trim().toLowerCase();
+  const visible=matches
+    .map((m,idx)=>({m,idx}))
+    .filter(({m})=>!q || m.name.toLowerCase().includes(q) || (m.parsed?.awb||'').toLowerCase().includes(q) || (m.ok?m.rec.awb.toLowerCase():'').includes(q));
+
   document.getElementById('fd-match-list').innerHTML=
     '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
     +'<span class="pill pill-ok">✅ '+ok+'/'+matches.length+'</span>'
@@ -2401,8 +2947,11 @@ function renderFdMatchList(){
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
     +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
     +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
+    +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+matches.length+'</span>':'')
     +'</div>'
-    +matches.map((m,idx)=>{
+    +(visible.length===0
+      ?'<div style="text-align:center;color:var(--text3);padding:16px;font-size:11px;">No files match "'+q+'"</div>'
+      :visible.map(({m,idx})=>{
       const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.manual?'var(--warn)':'var(--text3)';
       const assignPicker = (!m.ok && fdUnlinkedPool.length)
         ? '<select onchange="if(this.value)manualAssignFd('+idx+',this.value)" style="width:auto;padding:2px 6px;font-size:10px;margin-left:6px;" onclick="event.stopPropagation()">'
@@ -2419,7 +2968,7 @@ function renderFdMatchList(){
         +'<span style="font-family:var(--mono);font-size:9px;color:'+(m.ok?tc:'var(--danger)')+';">'+(m.method||'')+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>'
         +assignPicker
         +'</div>';
-    }).join('');
+    }).join(''));
 }
 
 

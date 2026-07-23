@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.30 - 2026-07-21 - (1) REMOVED Image Compare from nav for now (code/data untouched, just unreachable — one line to bring back). (2) FIX: End of Shift folder-select taking 2-3 min for 300-600 files — the match-list preview was embedding full-resolution photos (1-3MB each as base64) just to shrink-display them at 28x22px; now generates genuinely small canvas-resized thumbnails (makeThumb()), full-res file still re-read fresh at actual upload time. (3) FIX: match quality degrading across repeated attempts (30%->3%->0%) — added an overlap guard (fdProcessing) so a retry can't fire a second widened-pool fetch while one's still in flight, and hardened the retry from 1 quick retry to 3 attempts with real backoff (1s/3s/6s), since overlapping/rapid-repeat large paginated fetches hitting Supabase is the most likely explanation for degrading (not improving-with-more-data) results on unchanged inputs. (4) REBUILT timestamp matching (PASS 2) from greedy per-file-in-array-order to a global-optimal assignment — every valid (file,record) pair within tolerance is sorted by closeness and assigned in that order, so an early-sorted file can no longer lock in a mediocre match and starve a later file of the record that was actually correct for it (verified against a constructed conflict case). (5) Tightened default match tolerance 300s->45s given the real-world timing skew is ~1-5s, reducing ambiguous clustering. Code.gs: Drive filename now AWB-first (AWB_YYYYMMDD_type.jpg instead of YYYYMMDD_AWB_type.jpg) for easier manual browsing — cosmetic only, matching is unaffected since it already finds the AWB regardless of position. Code.gs changed — MUST redeploy as New Version. -->
+<!-- SF ClearView v2.31 - 2026-07-23 - REVERTED the v2.30 tolerance cut (300s->45s) — real test data (513-file pure-timestamp batch, image_YYMMDD_HHMMSS_SEQ_ViewN.jpg format with zero AWB info in the name) showed only 57/513 matching at 45s, confirming real operational gaps between a scan being entered and the shipment reaching the machine's camera run well past a minute — the ~1-5s figure only covered the software save delay, not physical handling time. Back to 300s. The v2.30 global-optimal PASS 2 rewrite already handles the ambiguity a wider window creates correctly, so this doesn't reopen the problem the cut was trying to solve. Verified timestamp parsing itself is correct for this new filename format (image_ prefix, YYMMDD_HHMMSS_SEQ_ViewN — zero AWB, timestamp-only) — the low match rate was purely the tolerance, not a parsing bug. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -260,7 +260,7 @@ video{width:100%;height:100%;object-fit:cover;}
       -->
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-21</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-23</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -393,22 +393,25 @@ video{width:100%;height:100%;object-fit:cover;}
             <div class="card-head"><span class="card-head-icon">📁</span><span class="card-head-title">TYPE 2 — IMAGE FOLDER</span></div>
             <div class="card-body">
               <!-- Time tolerance — visible readonly, change requires admin approval -->
-              <!-- FIX (2026-07-21): 300s (5 min) was far more generous than
-                   the real-world timing skew ever is (~1-5s between the app
-                   save and the machine's own capture) — a 5-minute window
-                   means many scans from a busy shift can all fall within
-                   tolerance of the same photo, which is exactly the kind of
-                   ambiguity that let timestamp matching lock in wrong pairs.
-                   45s comfortably covers the real skew with much less room
-                   for that kind of collision. Still admin-adjustable via the
-                   same request/approve flow if a location genuinely needs
-                   more. -->
-              <input id="fd-tolerance" type="hidden" value="45">
+              <!-- REVERTED (2026-07-23): cutting this to 45s was a mistake —
+                   based on the ~1-5s SOFTWARE save-delay you described, but
+                   that's not the same as the real gap between a scan being
+                   entered and the shipment actually reaching the X-ray
+                   machine's camera (conveyor movement, batch scanning,
+                   physical handling). Real test data showed only 57/513
+                   matching at 45s — confirming actual gaps run well past a
+                   minute in normal operation. Back to 300s, which is what
+                   was actually working before. The global-optimal PASS 2
+                   rewrite (same update that reverted this) already handles
+                   the ambiguity a wider window creates correctly, so this
+                   doesn't reopen the clustering problem I was trying to
+                   avoid — it was the wrong tool for that problem anyway. -->
+              <input id="fd-tolerance" type="hidden" value="300">
               <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                 <div>
                   <div style="font-size:10px;color:var(--text3);font-family:var(--mono);letter-spacing:1px;margin-bottom:4px;">TIME TOLERANCE</div>
                   <div style="font-family:var(--mono);font-size:14px;color:var(--text);">
-                    <span id="tol-display">45</span> seconds
+                    <span id="tol-display">300</span> seconds
                   </div>
                 </div>
                 <button class="btn btn-ghost btn-sm" onclick="openTolRequest()" style="font-size:10px;letter-spacing:1px;">📧 REQUEST CHANGE</button>
@@ -712,7 +715,7 @@ video{width:100%;height:100%;object-fit:cover;}
     <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:16px;">Current: <span id="tol-current-display">300</span>s · Admin approval required</div>
     <div class="fg" style="margin-bottom:14px;">
       <label class="lbl">Requested Value (seconds)</label>
-      <input id="tol-req-value" type="number" min="15" max="900" value="45" placeholder="e.g. 60">
+      <input id="tol-req-value" type="number" min="30" max="900" value="300" placeholder="e.g. 450">
     </div>
     <div class="fg" style="margin-bottom:18px;">
       <label class="lbl">Reason</label>

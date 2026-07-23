@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<!-- SF ClearView — Image Compare (standalone)
+     Deliberately a SEPARATE page from index.html, opened in a new tab.
+     The ~90MB CLIP model and its WASM runtime only ever load here, on
+     user action — this file being completely separate is what
+     guarantees Scan AWB / End of Shift can never be slowed down by any
+     of this, since their code never even sees this file exists. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SF ClearView — Image Compare</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#1a1f2e; --bg2:#222840; --bg3:#2a3150;
+  --panel:#242b3d; --panel2:#2d3652;
+  --border:#3a4468; --border2:#4a5580;
+  --t1:#00c853; --t2:#ffd600;
+  --success:#00e676; --warn:#ffab00; --danger:#ff5252;
+  --text:#e8edf8; --text2:#9aa8cc; --text3:#5a6a8a;
+  --mono:'JetBrains Mono',monospace; --head:'Barlow Condensed',sans-serif; --body:'Barlow',sans-serif;
+  --r:4px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--body);min-height:100vh;padding:20px;}
+h1{font-family:var(--head);font-weight:800;letter-spacing:1px;font-size:22px;color:var(--t1);}
+.sub{color:var(--text3);font-size:12px;font-family:var(--mono);margin-top:2px;}
+.wrap{max-width:900px;margin:0 auto;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px;margin-top:16px;}
+.card-head{font-family:var(--head);font-weight:700;letter-spacing:.5px;font-size:14px;color:var(--text2);margin-bottom:12px;display:flex;align-items:center;gap:8px;}
+.mode-row{display:flex;gap:8px;margin-bottom:14px;}
+.mode-btn{flex:1;padding:10px;border:1px solid var(--border);border-radius:var(--r);background:var(--bg2);color:var(--text2);font-family:var(--head);font-weight:600;letter-spacing:.5px;cursor:pointer;text-align:center;font-size:13px;}
+.mode-btn.on{border-color:var(--t1);background:rgba(0,200,83,.1);color:var(--t1);}
+select,input[type=text],textarea{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);color:var(--text);padding:9px 12px;font-family:var(--body);font-size:13px;}
+select:focus,input:focus,textarea:focus{outline:none;border-color:var(--t1);}
+.btn{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);color:var(--text2);padding:9px 16px;font-family:var(--head);font-weight:600;letter-spacing:.5px;cursor:pointer;font-size:13px;}
+.btn:hover{border-color:var(--border2);}
+.btn-t1{background:rgba(0,200,83,.12);border-color:var(--t1);color:var(--t1);}
+.btn-danger{background:rgba(255,82,82,.12);border-color:var(--danger);color:var(--danger);}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn-sm{padding:6px 12px;font-size:11px;}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.dropzone{border:2px dashed var(--border);border-radius:var(--r);padding:28px;text-align:center;cursor:pointer;margin-top:12px;}
+.dropzone:hover,.dropzone.drag{border-color:var(--t1);background:rgba(0,200,83,.05);}
+.dz-icon{font-size:28px;}
+.dz-text{font-family:var(--head);font-weight:700;letter-spacing:1px;color:var(--text2);margin-top:6px;font-size:13px;}
+.dz-sub{color:var(--text3);font-size:11px;font-family:var(--mono);margin-top:4px;}
+.queue{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;}
+.qitem{position:relative;width:80px;height:64px;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:#0f1117;}
+.qitem img{width:100%;height:100%;object-fit:cover;}
+.qitem .rm{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:2px;font-size:10px;width:16px;height:16px;cursor:pointer;}
+.status{font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:10px;}
+.result-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-top:14px;}
+.result-head{display:flex;gap:14px;align-items:center;margin-bottom:12px;}
+.result-img{width:80px;height:64px;border-radius:var(--r);overflow:hidden;background:#0f1117;flex-shrink:0;}
+.result-img img{width:100%;height:100%;object-fit:cover;}
+.verdict-ok{background:rgba(0,230,118,.12);color:var(--success);border:1px solid rgba(0,230,118,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
+.verdict-warn{background:rgba(255,82,82,.12);color:var(--danger);border:1px solid rgba(255,82,82,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
+.match-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;}
+.match-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;}
+.match-card img{width:100%;height:80px;object-fit:cover;display:block;}
+.match-body{padding:7px;}
+.match-pct{font-family:var(--mono);font-weight:700;font-size:12px;}
+.match-name{font-size:10px;color:var(--text2);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.cam-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:999;align-items:center;justify-content:center;flex-direction:column;gap:12px;}
+.cam-modal video{max-width:90vw;max-height:60vh;border-radius:var(--r);background:#000;}
+.progbar-wrap{background:var(--bg2);border-radius:3px;height:6px;overflow:hidden;margin-top:8px;}
+.progbar{background:var(--t1);height:100%;width:0%;transition:width .2s;}
+.pill{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:3px;background:var(--bg2);color:var(--text3);}
+label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:5px;}
+.fg{margin-bottom:12px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>🔍 SF ClearView — Image Compare</h1>
+  <div class="sub">Standalone page — keeps the comparison model completely separate from the main scanning app</div>
+
+  <!-- ADMIN ONLY — index management. Gated by a flag the main app
+       mirrors into localStorage on login (localStorage is shared
+       across tabs of the same origin; sessionStorage is NOT, which is
+       why this can't just read the main app's session directly). -->
+  <div class="card" id="admin-card" style="display:none;">
+    <div class="card-head">🧠 SEARCH INDEX (ADMIN)</div>
+    <div class="row" style="margin-bottom:10px;">
+      <span id="index-status" class="pill">—</span>
+      <button class="btn btn-t1 btn-sm" onclick="buildIndex()" id="build-btn">🔄 Build / Update Index</button>
+      <span id="index-progress" class="status" style="display:none;"></span>
+    </div>
+    <div class="progbar-wrap" id="index-prog" style="display:none;"><div class="progbar" id="index-prog-bar"></div></div>
+    <div class="fg" style="margin-top:14px;margin-bottom:0;max-width:320px;">
+      <label class="lbl">Match threshold (%) — how close counts as "Original"</label>
+      <input type="number" id="threshold" min="50" max="99" value="85" onchange="saveThreshold()">
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">COMPARE MODE</div>
+    <div class="mode-row">
+      <div class="mode-btn on" id="mode-cat-btn" onclick="setMode('category')">🗂 Compare within a category</div>
+      <div class="mode-btn" id="mode-all-btn" onclick="setMode('all')">🔀 Compare against everything</div>
+    </div>
+    <div id="cat-select-wrap" class="fg" style="margin-bottom:0;">
+      <label class="lbl">Category</label>
+      <select id="cat-select"><option value="">Loading categories...</option></select>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">🖼 IMAGES <span style="margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text3);">up to 5 at once</span></div>
+
+    <div class="dropzone" id="drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="onDrop(event)" onclick="document.getElementById('file-input').click()">
+      <input type="file" id="file-input" multiple accept="image/*" style="display:none;" onchange="onFileInput(this)">
+      <div class="dz-icon">🖼</div>
+      <div class="dz-text">CLICK OR DRAG UP TO 5 IMAGES</div>
+      <div class="dz-sub">.jpg · .png · .webp</div>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <div style="flex:1;"><input type="text" id="link-input" placeholder="...or paste an image link (Drive or any direct URL)"></div>
+      <button class="btn" onclick="useLink()">Use Link</button>
+      <button class="btn" onclick="openCamera()">📷 Camera</button>
+      <input type="file" id="mobile-cam-input" accept="image/*" capture="environment" style="display:none;" onchange="onFileInput(this)">
+      <button class="btn btn-sm" onclick="document.getElementById('mobile-cam-input').click()" title="On a phone this opens your camera app directly">📱 Phone camera</button>
+    </div>
+
+    <div class="queue" id="queue"></div>
+
+    <div class="row" style="margin-top:14px;">
+      <button class="btn btn-t1" onclick="runCompare()" id="run-btn">▶ COMPARE</button>
+      <button class="btn btn-sm" onclick="clearQueue()">CLEAR</button>
+    </div>
+    <div class="status" id="model-status"></div>
+  </div>
+
+  <div id="results"></div>
+
+</div>
+
+<!-- Live webcam capture modal -->
+<div class="cam-modal" id="cam-modal">
+  <video id="cam-video" autoplay playsinline></video>
+  <div class="row">
+    <button class="btn btn-t1" onclick="captureFromCam()">📸 Capture</button>
+    <button class="btn" onclick="closeCamera()">Close</button>
+  </div>
+</div>
+
+<script>
+// ── Shared connection constants (same project as SF ClearView) ──
+const GS_URL = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5J7O38dK27-dytbAsU56wgLvKxJKskkxNiKNeaeLo7sM/exec';
+const SB_URL = 'https://ckmfixhyuklzqkggzudb.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
+
+const isAdmin = localStorage.getItem('cv_shared_isAdmin') === 'true';
+
+// ── Minimal fetch helpers (standalone — no dependency on index.html) ──
+async function sbGet(path){
+  const r = await fetch(SB_URL+path, { headers: { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY } });
+  if(!r.ok) throw new Error('Supabase GET failed: '+r.status);
+  return r.json();
+}
+async function sbGetAll(path, pageSize){
+  pageSize = pageSize || 1000;
+  const sep = path.includes('?') ? '&' : '?';
+  let all = [], offset = 0;
+  while(true){
+    const page = await sbGet(path + sep + 'limit='+pageSize+'&offset='+offset);
+    if(!Array.isArray(page) || !page.length) break;
+    all = all.concat(page);
+    if(page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+async function sbPost(table, body){
+  const r = await fetch(SB_URL+'/rest/v1/'+table, {
+    method:'POST',
+    headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json', Prefer:'return=minimal' },
+    body: JSON.stringify(body)
+  });
+  if(!r.ok) throw new Error('Supabase POST failed: '+r.status);
+}
+async function sbDelete(table, query){
+  const r = await fetch(SB_URL+'/rest/v1/'+table+'?'+query, {
+    method:'DELETE',
+    headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY }
+  });
+  return r.ok;
+}
+async function gsGet(params){
+  const q = new URLSearchParams(params).toString();
+  const r = await fetch(GS_URL+'?'+q);
+  return r.json();
+}
+async function gsPost(body){
+  const r = await fetch(GS_URL, { method:'POST', body: JSON.stringify(body) });
+  return r.json();
+}
+
+// ── State ──
+let mode = 'category';
+let queue = []; // [{name, dataUrl}]
+let extractor = null;
+let libraryEmbeddings = null; // cached in memory only, per session
+let currentIdx = null;
+
+function setMode(m){
+  mode = m;
+  document.getElementById('mode-cat-btn').classList.toggle('on', m==='category');
+  document.getElementById('mode-all-btn').classList.toggle('on', m==='all');
+  document.getElementById('cat-select-wrap').style.display = m==='category' ? 'block' : 'none';
+}
+
+function saveThreshold(){
+  localStorage.setItem('cv_libcmp_threshold', document.getElementById('threshold').value);
+}
+
+// ── Model loading (lazy — only on first Compare/Build Index click) ──
+async function ensureModel(){
+  if(extractor) return extractor;
+  const statusEl = document.getElementById('model-status');
+  if(statusEl) statusEl.textContent = 'Loading comparison model (first time only, ~90MB, cached by the browser after)...';
+  const { AutoProcessor, CLIPVisionModelWithProjection, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  env.allowLocalModels = false;
+  const processor = await AutoProcessor.from_pretrained('Xenova/clip-vit-base-patch32');
+  const model = await CLIPVisionModelWithProjection.from_pretrained('Xenova/clip-vit-base-patch32', { quantized:true });
+  extractor = { processor, model };
+  if(statusEl) statusEl.textContent = 'Model ready.';
+  return extractor;
+}
+
+// Grayscale + contrast-normalize BEFORE embedding — both when building
+// the reference index AND when comparing a live capture. This matters
+// specifically because reference images are clean digital exports from
+// the X-ray machine, while a photo taken of the machine's monitor
+// (phone or webcam) picks up screen glare, white-balance shifts, and
+// contrast differences that have nothing to do with the actual shape
+// of what's inside the shipment — which is the only thing that should
+// actually matter for a match. Flattening both sides to the same
+// grayscale/contrast treatment makes the comparison judge shape and
+// structure, not color, which is exactly what was asked for.
+function preprocessToDataUrl(img, maxDim){
+  maxDim = maxDim || 224;
+  const scale = Math.min(1, maxDim / Math.max(img.naturalWidth||img.width, img.naturalHeight||img.height));
+  const w = Math.max(1, Math.round((img.naturalWidth||img.width)*scale));
+  const h = Math.max(1, Math.round((img.naturalHeight||img.height)*scale));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
+  ctx.drawImage(img, 0, 0, w, h);
+  const imgData = ctx.getImageData(0,0,w,h);
+  const d = imgData.data;
+  // Desaturate (standard luminance weights) + a mild contrast stretch
+  for(let i=0;i<d.length;i+=4){
+    const gray = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    const contrasted = Math.max(0, Math.min(255, (gray-128)*1.25 + 128));
+    d[i]=d[i+1]=d[i+2]=contrasted;
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+
+function loadImageFromDataUrl(dataUrl){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+function l2normalize(vec){
+  let sum=0; for(let i=0;i<vec.length;i++) sum+=vec[i]*vec[i];
+  const norm=Math.sqrt(sum)||1;
+  return vec.map(v=>v/norm);
+}
+function cosineSim(a,b){
+  let dot=0; for(let i=0;i<a.length;i++) dot+=a[i]*(b[i]||0);
+  return dot;
+}
+
+async function computeEmbeddingFromDataUrl(dataUrl){
+  const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
+  const img = await loadImageFromDataUrl(dataUrl);
+  const preppedUrl = preprocessToDataUrl(img);
+  const { processor, model } = await ensureModel();
+  const image = await RawImage.fromURL(preppedUrl);
+  const inputs = await processor(image);
+  const { image_embeds } = await model(inputs);
+  return l2normalize(Array.from(image_embeds.data));
+}
+
+// ── Categories (from already-indexed embeddings — no need to hit the
+//    Sheet again just to list categories) ──
+async function loadCategories(){
+  const sel = document.getElementById('cat-select');
+  try{
+    const rows = await sbGetAll('/rest/v1/library_embeddings?select=category');
+    const cats = Array.from(new Set(rows.map(r=>r.category).filter(Boolean))).sort();
+    sel.innerHTML = cats.length
+      ? cats.map(c=>'<option value="'+c+'">'+c+'</option>').join('')
+      : '<option value="">No categories indexed yet</option>';
+  }catch(e){
+    sel.innerHTML = '<option value="">Could not load categories</option>';
+  }
+}
+
+async function ensureEmbeddingsLoaded(){
+  if(libraryEmbeddings) return libraryEmbeddings;
+  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding');
+  libraryEmbeddings = Array.isArray(data) ? data : [];
+  return libraryEmbeddings;
+}
+
+// ── Admin: build/update index ──
+async function buildIndex(){
+  if(!isAdmin){ alert('Admin only'); return; }
+  const btn = document.getElementById('build-btn');
+  const statusEl = document.getElementById('index-status');
+  const progEl = document.getElementById('index-progress');
+  const progWrap = document.getElementById('index-prog');
+  const progBar = document.getElementById('index-prog-bar');
+  btn.disabled = true;
+  try{ await ensureModel(); }
+  catch(e){ alert('Failed to load model: '+e.message); btn.disabled=false; return; }
+
+  let library;
+  try{ library = await gsGet({action:'xrayLibrary'}); }
+  catch(e){ alert('Failed to load reference library: '+e.message); btn.disabled=false; return; }
+  if(!Array.isArray(library)) library = [];
+
+  let existing = [];
+  try{ existing = await sbGetAll('/rest/v1/library_embeddings?select=awb'); }catch(e){}
+  const existingSet = new Set(existing.map(r=>r.awb));
+  const todo = library.filter(it=>!existingSet.has(it.awb));
+
+  if(!todo.length){
+    statusEl.textContent = 'Index up to date — '+library.length+' item(s) indexed.';
+    btn.disabled = false; return;
+  }
+
+  progWrap.style.display='block'; progEl.style.display='inline';
+  let done=0, failed=0;
+  const BATCH=6;
+  for(let i=0;i<todo.length;i+=BATCH){
+    const batch = todo.slice(i,i+BATCH);
+    progEl.textContent = done+'/'+todo.length+' indexed'+(failed?(' · '+failed+' failed'):'');
+    try{
+      const res = await gsPost({action:'getImagesAsB64', refs: batch.map(it=>it.image_url)});
+      const imagesMap = res?.images || {};
+      for(const it of batch){
+        const dataUrl = imagesMap[it.image_url];
+        if(!dataUrl){ failed++; continue; }
+        try{
+          const embedding = await computeEmbeddingFromDataUrl(dataUrl);
+          await sbPost('library_embeddings', {
+            awb: it.awb, product_name: it.product_name, clean_name: it.clean_name||'',
+            category: it.category, image_url: it.image_url, embedding: embedding
+          });
+          done++;
+        }catch(e){ failed++; console.warn('embed failed for', it.awb, e.message); }
+        progBar.style.width = Math.round(((done+failed)/todo.length)*100)+'%';
+      }
+    }catch(e){ failed += batch.length; console.warn('batch fetch failed:', e.message); }
+  }
+  progEl.textContent = done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
+  statusEl.textContent = 'Index build complete — '+(existingSet.size+done)+' of '+library.length+' total item(s) indexed.';
+  libraryEmbeddings = null;
+  await loadCategories();
+  btn.disabled = false;
+}
+
+async function refreshIndexStatus(){
+  const statusEl = document.getElementById('index-status');
+  try{
+    const library = await gsGet({action:'xrayLibrary'});
+    const existing = await sbGetAll('/rest/v1/library_embeddings?select=awb');
+    statusEl.textContent = existing.length+' of '+(Array.isArray(library)?library.length:0)+' library item(s) indexed.';
+  }catch(e){ statusEl.textContent = 'Could not check index status.'; }
+}
+
+// ── Upload / paste / camera queue ──
+function fileToDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const fr = new FileReader();
+    fr.onload = e=>resolve(e.target.result);
+    fr.onerror = reject;
+    fr.readAsDataURL(file);
+  });
+}
+async function addFilesToQueue(files){
+  for(const f of files){
+    if(queue.length>=5){ alert('Max 5 images at a time'); break; }
+    const dataUrl = await fileToDataUrl(f);
+    queue.push({name:f.name, dataUrl});
+  }
+  renderQueue();
+}
+function onDrop(e){
+  e.preventDefault(); document.getElementById('drop').classList.remove('drag');
+  const files = Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
+  addFilesToQueue(files);
+}
+function onFileInput(input){
+  const files = Array.from(input.files).filter(f=>f.type.startsWith('image/'));
+  addFilesToQueue(files);
+  input.value='';
+}
+async function useLink(){
+  const raw = document.getElementById('link-input').value.trim();
+  if(!raw) return;
+  if(queue.length>=5){ alert('Max 5 images at a time'); return; }
+  try{
+    const res = await gsPost({action:'getImagesAsB64', refs:[raw]});
+    const dataUrl = res?.images?.[raw];
+    if(dataUrl){ queue.push({name:raw.slice(0,40), dataUrl}); }
+    else{
+      const r = await fetch(raw);
+      const blob = await r.blob();
+      const dUrl = await new Promise((res2,rej2)=>{ const fr=new FileReader(); fr.onload=e=>res2(e.target.result); fr.onerror=rej2; fr.readAsDataURL(blob); });
+      queue.push({name:raw.slice(0,40), dataUrl:dUrl});
+    }
+  }catch(e){
+    alert('Could not load image from that link: '+e.message);
+  }
+  document.getElementById('link-input').value='';
+  renderQueue();
+}
+
+// Live webcam capture
+let camStream = null;
+async function openCamera(){
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
+    document.getElementById('cam-video').srcObject = camStream;
+    document.getElementById('cam-modal').style.display = 'flex';
+  }catch(e){
+    alert('Could not access camera: '+e.message+'\n\nTry the "Phone camera" button instead, which uses your device\'s native camera app.');
+  }
+}
+function closeCamera(){
+  if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
+  document.getElementById('cam-modal').style.display='none';
+}
+function captureFromCam(){
+  if(queue.length>=5){ alert('Max 5 images at a time'); return; }
+  const video = document.getElementById('cam-video');
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video,0,0);
+  queue.push({name:'webcam-capture-'+Date.now()+'.jpg', dataUrl:c.toDataURL('image/jpeg',0.9)});
+  renderQueue();
+  closeCamera();
+}
+
+function renderQueue(){
+  document.getElementById('queue').innerHTML = queue.map((q,i)=>
+    '<div class="qitem"><img src="'+q.dataUrl+'"><button class="rm" onclick="removeQueueItem('+i+')">✕</button></div>'
+  ).join('');
+}
+function removeQueueItem(i){ queue.splice(i,1); renderQueue(); }
+function clearQueue(){ queue=[]; renderQueue(); document.getElementById('results').innerHTML=''; }
+
+function fileId(url){
+  let m=(url||'').match(/\/file\/d\/([^\/\?&]+)/);
+  if(m) return m[1];
+  m=(url||'').match(/[?&]id=([^&]+)/);
+  return m?m[1]:'';
+}
+function thumbUrl(url){
+  const id=fileId(url);
+  return id ? ('https://drive.google.com/thumbnail?id='+id+'&sz=w300') : '';
+}
+
+// ── Run comparison ──
+async function runCompare(){
+  if(!queue.length){ alert('Add at least one image first'); return; }
+  const btn = document.getElementById('run-btn');
+  const statusEl = document.getElementById('model-status');
+  btn.disabled = true; btn.textContent = 'COMPARING...';
+  try{
+    await ensureModel();
+    statusEl.textContent = 'Loading reference index...';
+    let lib = await ensureEmbeddingsLoaded();
+    if(mode==='category'){
+      const cat = document.getElementById('cat-select').value;
+      if(cat) lib = lib.filter(item=>item.category===cat);
+    }
+    if(!lib.length){
+      alert('No indexed items to compare against'+(mode==='category'?' in this category':'')+' — ask an admin to Build/Update Index first.');
+      btn.disabled=false; btn.textContent='▶ COMPARE'; return;
+    }
+    const threshold = (parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
+    statusEl.textContent = 'Comparing '+queue.length+' image(s) against '+lib.length+' reference item(s)...';
+    const results = [];
+    for(const q of queue){
+      const embedding = await computeEmbeddingFromDataUrl(q.dataUrl);
+      const scored = lib.map(item=>({item, score:cosineSim(embedding, item.embedding)}))
+                         .sort((a,b)=>b.score-a.score)
+                         .slice(0,5);
+      results.push({query:q, matches:scored, verdict:(scored[0] && scored[0].score>=threshold)?'ORIGINAL':'NOMATCH'});
+    }
+    renderResults(results);
+    statusEl.textContent = 'Done.';
+  }catch(e){
+    alert('Compare failed: '+e.message);
+    statusEl.textContent = 'Error: '+e.message;
+  }
+  btn.disabled=false; btn.textContent='▶ COMPARE';
+}
+
+function renderResults(results){
+  document.getElementById('results').innerHTML = results.map(r=>{
+    const pct = r.matches[0] ? Math.round(r.matches[0].score*100) : 0;
+    const verdictHtml = r.verdict==='ORIGINAL'
+      ? '<span class="verdict-ok">✅ ORIGINAL — MATCHES REFERENCE ('+pct+'%)</span>'
+      : '<span class="verdict-warn">⚠️ NO CLOSE MATCH — REVIEW MANUALLY ('+pct+'% best)</span>';
+    return '<div class="result-card">'
+      +'<div class="result-head">'
+        +'<div class="result-img"><img src="'+r.query.dataUrl+'"></div>'
+        +'<div><div style="font-size:12px;color:var(--text2);margin-bottom:6px;">'+r.query.name+'</div>'+verdictHtml+'</div>'
+      +'</div>'
+      +'<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;">CLOSEST MATCHES</div>'
+      +'<div class="match-row">'
+        +r.matches.map(m=>{
+          const thumb = thumbUrl(m.item.image_url);
+          const pctColor = m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
+          const label = m.item.clean_name || m.item.product_name || m.item.awb;
+          return '<div class="match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
+            +(thumb?'<img src="'+thumb+'">':'')
+            +'<div class="match-body">'
+              +'<div class="match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'
+              +'<div class="match-name">'+label+'</div>'
+              +'<div style="font-size:9px;color:var(--text3);font-family:var(--mono);">'+m.item.awb+'</div>'
+            +'</div></div>';
+        }).join('')
+      +'</div></div>';
+  }).join('');
+}
+
+// ── Init ──
+(async function init(){
+  if(isAdmin){
+    document.getElementById('admin-card').style.display='block';
+    refreshIndexStatus();
+  }
+  document.getElementById('threshold').value = localStorage.getItem('cv_libcmp_threshold') || 85;
+  await loadCategories();
+})();
+</script>
+</body>
+</html>

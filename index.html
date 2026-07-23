@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.31 - 2026-07-23 - REVERTED the v2.30 tolerance cut (300s->45s) — real test data (513-file pure-timestamp batch, image_YYMMDD_HHMMSS_SEQ_ViewN.jpg format with zero AWB info in the name) showed only 57/513 matching at 45s, confirming real operational gaps between a scan being entered and the shipment reaching the machine's camera run well past a minute — the ~1-5s figure only covered the software save delay, not physical handling time. Back to 300s. The v2.30 global-optimal PASS 2 rewrite already handles the ambiguity a wider window creates correctly, so this doesn't reopen the problem the cut was trying to solve. Verified timestamp parsing itself is correct for this new filename format (image_ prefix, YYMMDD_HHMMSS_SEQ_ViewN — zero AWB, timestamp-only) — the low match rate was purely the tolerance, not a parsing bug. No Code.gs changes. -->
+<!-- SF ClearView v2.32 - 2026-07-23 - ADD: X-Ray Reference Library now shows/filters by Sub Category (e.g. Mobile/Samsung, Apparel/Shirt), reading a new column E written by the updated recategorizeLibrary script (full 15-category taxonomy, Apple still pulled out as its own category regardless of product type). Sub-category chip row appears above the grid once a main category is picked and has more than one sub-category; search also matches sub-category text. Code.gs: getXrayLibrary now reads 5 columns instead of 4 and returns sub_category (blank/harmless for older rows without it). GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. Also delivered 10_recategorize_library_v2.gs — replaces the BODY of the existing recategorizeLibrary function (same script project as fillImageLinks, don't add as a new function). -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -622,7 +622,7 @@ video{width:100%;height:100%;object-fit:cover;}
         </div>
         <div class="lib-shell">
           <div class="lib-sidebar" id="lib-cat-list"></div>
-          <div class="lib-main"><div class="lib-grid" id="lib-grid"></div></div>
+          <div class="lib-main"><div id="lib-subcat-row" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div><div class="lib-grid" id="lib-grid"></div></div>
         </div>
       </div>
 
@@ -1522,6 +1522,7 @@ async function loadAwbToday(){
 // ══════════════════════════════════════════════════════════════
 DB.xrayLib = [];
 let libActiveCat = '';
+let libActiveSubcat = '';
 let libCurrentIdx = null;
 
 async function loadXrayLibrary(forceRefresh){
@@ -1598,13 +1599,35 @@ function renderXrayLibCategories(){
   wrap.innerHTML=html;
 }
 
-function setLibCat(cat){ libActiveCat=cat; renderXrayLibCategories(); renderXrayLibGrid(); }
+function setLibCat(cat){ libActiveCat=cat; libActiveSubcat=''; renderXrayLibCategories(); renderXrayLibGrid(); }
+function setLibSubcat(sub){ libActiveSubcat=(libActiveSubcat===sub)?'':sub; renderXrayLibGrid(); }
 
 function renderXrayLibGrid(){
   const s=(document.getElementById('lib-search')?.value||'').toLowerCase();
   let items=DB.xrayLib;
   if(libActiveCat) items=items.filter(it=>it.category===libActiveCat);
-  if(s) items=items.filter(it=>(it.awb||'').toLowerCase().includes(s)||(it.product_name||'').toLowerCase().includes(s));
+
+  // Sub-category chip row — only shown once a main category is picked
+  // and it actually has more than one sub-category worth splitting out.
+  const subWrap=document.getElementById('lib-subcat-row');
+  if(subWrap){
+    const subCounts={};
+    items.forEach(it=>{ const sc=it.sub_category||''; if(sc) subCounts[sc]=(subCounts[sc]||0)+1; });
+    const subs=Object.keys(subCounts).sort();
+    if(libActiveCat && subs.length>1){
+      subWrap.style.display='flex';
+      subWrap.innerHTML=subs.map(sc=>
+        '<span class="pill '+(libActiveSubcat===sc?'pill-t1':'pill-dim')+'" style="cursor:pointer;" onclick="setLibSubcat(\''+sc.replace(/'/g,"\\'")+'\')">'+sc+' ('+subCounts[sc]+')</span>'
+      ).join('');
+    } else {
+      subWrap.style.display='none';
+      subWrap.innerHTML='';
+      if(!libActiveCat) libActiveSubcat='';
+    }
+  }
+  if(libActiveSubcat) items=items.filter(it=>(it.sub_category||'')===libActiveSubcat);
+
+  if(s) items=items.filter(it=>(it.awb||'').toLowerCase().includes(s)||(it.product_name||'').toLowerCase().includes(s)||(it.sub_category||'').toLowerCase().includes(s));
   const countEl=document.getElementById('lib-count');
   if(countEl) countEl.textContent=items.length+' item'+(items.length===1?'':'s');
   const grid=document.getElementById('lib-grid');
@@ -1620,7 +1643,7 @@ function renderXrayLibGrid(){
       +'<div class="lib-card-img">'+(thumb?'<img src="'+thumb+'" loading="lazy">':'<span style="color:var(--text3);font-size:11px;">No preview</span>')+'</div>'
       +'<div class="lib-card-body">'
         +'<div class="lib-card-name">'+(it.product_name||'Unnamed product')+'</div>'
-        +'<div class="lib-card-meta"><span class="pill pill-dim" style="font-size:9px;">'+it.category+'</span><span>'+it.awb+'</span></div>'
+        +'<div class="lib-card-meta"><span class="pill pill-dim" style="font-size:9px;">'+it.category+(it.sub_category?' · '+it.sub_category:'')+'</span><span>'+it.awb+'</span></div>'
       +'</div></div>';
   }).join('');
 }
@@ -1654,7 +1677,7 @@ function openLibItem(idx){
     imgEl.style.display='none'; iframe.style.display='block'; iframe.src=it.image_url;
   }
   document.getElementById('lib-modal-name').textContent=it.product_name||'Unnamed product';
-  document.getElementById('lib-modal-awb').textContent=it.awb+'  ·  '+it.category;
+  document.getElementById('lib-modal-awb').textContent=it.awb+'  ·  '+it.category+(it.sub_category?' / '+it.sub_category:'');
   document.getElementById('lib-modal-download').href=it.image_url;
   // Delete is ADMIN ONLY (not POC, not supervisor) — matches the request
   // exactly. The library tab itself stays pure read-only for every

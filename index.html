@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.29 - 2026-07-21 - ADD: admin-only "Force Refresh" on X-Ray Reference — clears the client cache AND the server-side (Code.gs) 10-min cache, forcing a genuinely fresh read from the reference Sheet, then removes any Image Compare search-index entries for AWBs no longer present (handles rows deleted/renamed in the Sheet, e.g. after running the new recategorizeLibrary script). Code.gs: getXrayLibrary now takes a forceRefresh param, wired through a new ?refresh=true query param. Also delivered 10_recategorize_library.gs — a separate script for the OTHER Apps Script project (bound to the reference Sheet itself, alongside fillImageLinks) that consolidates categories into Electronics/Apparels/Apple/Gadgets per rule, safely re-runnable. GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. -->
+<!-- SF ClearView v2.30 - 2026-07-21 - (1) REMOVED Image Compare from nav for now (code/data untouched, just unreachable — one line to bring back). (2) FIX: End of Shift folder-select taking 2-3 min for 300-600 files — the match-list preview was embedding full-resolution photos (1-3MB each as base64) just to shrink-display them at 28x22px; now generates genuinely small canvas-resized thumbnails (makeThumb()), full-res file still re-read fresh at actual upload time. (3) FIX: match quality degrading across repeated attempts (30%->3%->0%) — added an overlap guard (fdProcessing) so a retry can't fire a second widened-pool fetch while one's still in flight, and hardened the retry from 1 quick retry to 3 attempts with real backoff (1s/3s/6s), since overlapping/rapid-repeat large paginated fetches hitting Supabase is the most likely explanation for degrading (not improving-with-more-data) results on unchanged inputs. (4) REBUILT timestamp matching (PASS 2) from greedy per-file-in-array-order to a global-optimal assignment — every valid (file,record) pair within tolerance is sorted by closeness and assigned in that order, so an early-sorted file can no longer lock in a mediocre match and starve a later file of the record that was actually correct for it (verified against a constructed conflict case). (5) Tightened default match tolerance 300s->45s given the real-world timing skew is ~1-5s, reducing ambiguous clustering. Code.gs: Drive filename now AWB-first (AWB_YYYYMMDD_type.jpg instead of YYYYMMDD_AWB_type.jpg) for easier manual browsing — cosmetic only, matching is unaffected since it already finds the AWB regardless of position. Code.gs changed — MUST redeploy as New Version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -252,7 +252,12 @@ video{width:100%;height:100%;object-fit:cover;}
     <div class="nav-sec" id="nav-lib">
       <div class="nav-sec-lbl">Reference</div>
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
+      <!-- Image Compare — removed from nav for now, per request. Nothing
+           deleted: the view, its JS, and the library_embeddings table
+           are all still intact underneath, just unreachable. Re-add
+           this one line to bring it straight back whenever wanted:
       <div class="nav-item" id="ni-libcompare" onclick="show('v-libcompare')"><span class="nav-icon">🔍</span>Image Compare</div>
+      -->
     </div>
     <div class="sb-foot">
       <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-21</div>
@@ -388,12 +393,22 @@ video{width:100%;height:100%;object-fit:cover;}
             <div class="card-head"><span class="card-head-icon">📁</span><span class="card-head-title">TYPE 2 — IMAGE FOLDER</span></div>
             <div class="card-body">
               <!-- Time tolerance — visible readonly, change requires admin approval -->
-              <input id="fd-tolerance" type="hidden" value="300">
+              <!-- FIX (2026-07-21): 300s (5 min) was far more generous than
+                   the real-world timing skew ever is (~1-5s between the app
+                   save and the machine's own capture) — a 5-minute window
+                   means many scans from a busy shift can all fall within
+                   tolerance of the same photo, which is exactly the kind of
+                   ambiguity that let timestamp matching lock in wrong pairs.
+                   45s comfortably covers the real skew with much less room
+                   for that kind of collision. Still admin-adjustable via the
+                   same request/approve flow if a location genuinely needs
+                   more. -->
+              <input id="fd-tolerance" type="hidden" value="45">
               <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
                 <div>
                   <div style="font-size:10px;color:var(--text3);font-family:var(--mono);letter-spacing:1px;margin-bottom:4px;">TIME TOLERANCE</div>
                   <div style="font-family:var(--mono);font-size:14px;color:var(--text);">
-                    <span id="tol-display">300</span> seconds
+                    <span id="tol-display">45</span> seconds
                   </div>
                 </div>
                 <button class="btn btn-ghost btn-sm" onclick="openTolRequest()" style="font-size:10px;letter-spacing:1px;">📧 REQUEST CHANGE</button>
@@ -697,7 +712,7 @@ video{width:100%;height:100%;object-fit:cover;}
     <div style="font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:16px;">Current: <span id="tol-current-display">300</span>s · Admin approval required</div>
     <div class="fg" style="margin-bottom:14px;">
       <label class="lbl">Requested Value (seconds)</label>
-      <input id="tol-req-value" type="number" min="30" max="900" value="300" placeholder="e.g. 450">
+      <input id="tol-req-value" type="number" min="15" max="900" value="45" placeholder="e.g. 60">
     </div>
     <div class="fg" style="margin-bottom:18px;">
       <label class="lbl">Reason</label>
@@ -1104,6 +1119,44 @@ function readFile(file){
         img.src=result;
       } else resolve(result);
     };
+    fr.readAsDataURL(file);
+  });
+}
+
+// FIX (2026-07-21): the folder-match list used to embed the FULL
+// original photo as the <img src> for every row, even though it only
+// ever displays at 28×22px — meaning selecting a 300-600 file folder
+// meant reading, base64-encoding, AND holding hundreds of full-
+// resolution images (often 1-3MB each as base64 text) in memory and in
+// the DOM simultaneously, just to shrink-display them as tiny
+// thumbnails. That's what "taking 2-3 minutes to load" actually was.
+// This generates a genuinely small thumbnail (resized via canvas,
+// ~60px, low-quality JPEG — a few KB instead of a few MB) for display
+// purposes only. The full-resolution file is never discarded — it's
+// still the original File object, re-read fresh at the moment of
+// actual upload (see uploadOne() in applyFolder()) — this only changes
+// what gets held in memory/rendered for the PREVIEW list.
+function makeThumb(file, maxDim){
+  maxDim=maxDim||60;
+  return new Promise(resolve=>{
+    const fr=new FileReader();
+    fr.onload=e=>{
+      const img=new Image();
+      img.onload=()=>{
+        const scale=Math.min(1, maxDim/Math.max(img.naturalWidth,img.naturalHeight));
+        const w=Math.max(1,Math.round(img.naturalWidth*scale));
+        const h=Math.max(1,Math.round(img.naturalHeight*scale));
+        const c=document.createElement('canvas');
+        c.width=w; c.height=h;
+        const ctx=c.getContext('2d');
+        ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+        ctx.drawImage(img,0,0,w,h);
+        resolve(c.toDataURL('image/jpeg',.6));
+      };
+      img.onerror=()=>resolve(''); // no thumbnail — not fatal, row still shows without a preview image
+      img.src=e.target.result;
+    };
+    fr.onerror=()=>resolve('');
     fr.readAsDataURL(file);
   });
 }
@@ -2788,7 +2841,22 @@ function fdDrop(e){e.preventDefault();document.getElementById('fd-drop').classLi
 function fdUpload(input){const files=Array.from(input.files).filter(f=>f.type.startsWith('image/'));if(files.length)processFd(files);input.value='';}
 
 let fdUnlinkedPool=[]; // tracks which unlinked records are still available to manually assign
+let fdProcessing=false; // guards against overlapping runs
 async function processFd(files){
+  // FIX (2026-07-21): repeated rapid attempts on the same folder (e.g. an
+  // operator retrying because a previous run didn't look right) could
+  // fire this whole function again before the first run finished — two
+  // or more overlapping widened-pool fetches hammering Supabase back to
+  // back is exactly the kind of thing that gets transiently rate-limited
+  // or timed out, which is the most likely explanation for match quality
+  // getting WORSE on each successive attempt (30% → 3% → 0%) despite
+  // nothing in the underlying data actually changing between attempts.
+  // This blocks a second run from starting while one is already in
+  // flight, and the retry below is now 3 attempts with real backoff
+  // instead of 1 quick retry, so a single transient failure doesn't
+  // immediately dump everything into the today-only fallback.
+  if(fdProcessing){ toast('Already processing a folder — please wait for it to finish first','err'); return; }
+  fdProcessing=true;
   document.getElementById('fd-prog').style.display='block';
   const fallbackWarn=document.getElementById('fd-fallback-warn');
   if(fallbackWarn) fallbackWarn.style.display='none';
@@ -2797,14 +2865,15 @@ async function processFd(files){
   // Pulls every still-unmatched record from the last 14 days (not just
   // today) directly from Supabase — the X-ray machine's output folder
   // isn't cleared daily, so a folder selection routinely mixes files
-  // from several different days. Retries once before ever falling back
-  // to today-only, and — unlike before — that fallback is now a visible
-  // banner, not just a silent console.warn, since silently degrading
-  // match quality without telling the operator is exactly what made
-  // "AWB not found" so hard to diagnose.
+  // from several different days. Retries up to 3 times with increasing
+  // backoff before ever falling back to today-only, and that fallback
+  // is a visible banner, not just a silent console.warn, since silently
+  // degrading match quality without telling the operator is exactly
+  // what made "AWB not found" so hard to diagnose.
   document.getElementById('fd-prog-bar').style.width='5%';
   let allInWindow=[], usedFallback=false;
-  for(let attempt=0; attempt<2; attempt++){
+  const RETRY_DELAYS=[1000,3000,6000]; // 1s, 3s, 6s — real backoff, not a single quick retry
+  for(let attempt=0; attempt<=RETRY_DELAYS.length; attempt++){
     try{
       const windowStartDate=new Date(todayStr()+'T12:00:00Z');
       windowStartDate.setUTCDate(windowStartDate.getUTCDate()-14);
@@ -2821,7 +2890,7 @@ async function processFd(files){
       break;
     }catch(e){
       console.warn('Unlinked-pool fetch attempt '+(attempt+1)+' failed:',e.message);
-      if(attempt===0){ await new Promise(r=>setTimeout(r,1500)); continue; }
+      if(attempt<RETRY_DELAYS.length){ await new Promise(r=>setTimeout(r,RETRY_DELAYS[attempt])); continue; }
       usedFallback=true;
       allInWindow=myToday();
     }
@@ -2847,10 +2916,13 @@ async function processFd(files){
   const parsedFiles=new Array(files.length);
   for(let i=0;i<files.length;i+=READ_BATCH){
     const batch=files.slice(i,i+READ_BATCH);
-    const results=await Promise.all(batch.map(file=>readFile(file).then(d=>({file,d,parsed:parseImageFilename(file.name)}))));
+    // Only a small thumbnail gets generated/held here now — the full-
+    // resolution file is untouched and re-read fresh at actual upload
+    // time in applyFolder(). See makeThumb() for why this matters.
+    const results=await Promise.all(batch.map(file=>makeThumb(file).then(thumb=>({file,thumb,parsed:parseImageFilename(file.name)}))));
     results.forEach((r,j)=>{
       const idx=i+j;
-      parsedFiles[idx]={seq:idx+1,name:r.file.name,file:r.file,data:r.d,parsed:r.parsed,rec:null,method:'',diffSec:null};
+      parsedFiles[idx]={seq:idx+1,name:r.file.name,file:r.file,thumb:r.thumb,parsed:r.parsed,rec:null,method:'',diffSec:null};
     });
     document.getElementById('fd-prog-bar').style.width=Math.round(((i+batch.length)/files.length)*70)+'%';
   }
@@ -2907,23 +2979,42 @@ async function processFd(files){
   // one candidate token never falls through to this, even if none of
   // its candidates matched — a near-miss AWB guess should never
   // silently get reassigned by proximity in time instead.
-  for(const m of parsedFiles){
-    if(m.parsed.candidates.length) continue; // handled (matched or failed) in PASS 1 already
-    if(m.parsed.timestamp){
-      let best=Infinity, rec=null;
-      for(const r of unlinked){
-        if(used.has(r.id))continue;
-        const diff=Math.abs((m.parsed.timestamp-new Date(r.scanned_at))/1000);
-        if(diff<best&&diff<=tolerance){ best=diff; rec=r; }
-      }
-      if(rec){ m.rec=rec; m.method='Time match'; m.diffSec=Math.round(best); used.add(rec.id); }
-      else { m.method='No AWB, no timestamp match within tolerance — left unmatched'; }
-    } else {
-      m.method='No AWB or readable timestamp in filename — left unmatched';
+  //
+  // REBUILT (2026-07-21): this used to be greedy per-file — walk the
+  // files in array order, and for each one grab whichever unused record
+  // is closest in time RIGHT NOW. On a busy shift, many photos land
+  // within the same few-minute tolerance window of several different
+  // scan records, and that greedy approach can let an early file in the
+  // array lock in a mediocre match, permanently taking that record away
+  // from a LATER file in the array that would have been the genuinely
+  // correct, much closer match for it — a real cause of the "matching
+  // gets worse, not better, on timestamp-based machines" pattern.
+  // Now: every valid (file, record) pair within tolerance is computed
+  // first, sorted by closeness, and assigned in that global order — the
+  // single best pairing across the WHOLE batch always wins first,
+  // regardless of which file happened to sort earlier in the array.
+  const timestampFiles=parsedFiles.filter(m=>!m.parsed.candidates.length && m.parsed.timestamp);
+  const candidatePairs=[];
+  for(const m of timestampFiles){
+    for(const r of unlinked){
+      if(used.has(r.id)) continue;
+      const diff=Math.abs((m.parsed.timestamp-new Date(r.scanned_at))/1000);
+      if(diff<=tolerance) candidatePairs.push({m,r,diff});
     }
   }
+  candidatePairs.sort((a,b)=>a.diff-b.diff);
+  for(const pair of candidatePairs){
+    if(pair.m.rec || used.has(pair.r.id)) continue; // either side already claimed by a closer pair
+    pair.m.rec=pair.r; pair.m.method='Time match'; pair.m.diffSec=Math.round(pair.diff); used.add(pair.r.id);
+  }
+  for(const m of parsedFiles){
+    if(m.rec || m.parsed.candidates.length) continue; // matched above, or handled in PASS 1 already
+    m.method=m.parsed.timestamp
+      ? 'No AWB, no timestamp match within tolerance — left unmatched'
+      : 'No AWB or readable timestamp in filename — left unmatched';
+  }
 
-  const matches=parsedFiles.map(m=>({seq:m.seq,name:m.name,file:m.file,data:m.data,rec:m.rec,ok:!!m.rec,method:m.method,diffSec:m.diffSec,parsed:m.parsed,manual:false}));
+  const matches=parsedFiles.map(m=>({seq:m.seq,name:m.name,file:m.file,thumb:m.thumb,rec:m.rec,ok:!!m.rec,method:m.method,diffSec:m.diffSec,parsed:m.parsed,manual:false}));
   document.getElementById('fd-prog-bar').style.width='100%';
   pendingFd=matches;
   fdUnlinkedPool=unlinked.filter(r=>!used.has(r.id)); // whatever's left, available for manual assignment
@@ -2951,6 +3042,7 @@ async function processFd(files){
   renderFdMatchList();
   document.getElementById('fd-result').style.display='block';
   document.getElementById('fd-prog').style.display='none';
+  fdProcessing=false;
 }
 
 // Manually assign one unmatched image to a specific AWB. This is the
@@ -3006,7 +3098,7 @@ function renderFdMatchList(){
       // Hover highlight on each row — makes it unambiguous which
       // filename lines up with which AWB when scanning down the list.
       return '<div class="fd-match-row" style="display:flex;gap:6px;align-items:center;padding:5px 6px;border-bottom:1px solid rgba(28,58,85,.3);border-radius:3px;font-size:11px;transition:background .1s;">'
-        +'<img src="'+m.data+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;">'
+        +'<img src="'+m.thumb+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;background:#0f1117;">'
         +'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+m.name+'</span>'
         +'<span style="font-family:var(--mono);font-weight:700;color:'+(m.ok?'var(--success)':'var(--danger)')+';">'+(m.ok?m.rec.awb:(m.parsed?.awb||'no match'))+'</span>'
         +'<span style="font-family:var(--mono);font-size:9px;color:'+(m.ok?tc:'var(--danger)')+';">'+(m.method||'')+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>'
@@ -3026,9 +3118,14 @@ async function applyFolder(){
   const BATCH=5;
 
   async function uploadOne(m){
+    // m.file is always present for folder-matched entries (m.thumb is a
+    // small preview-only downscale, never used for the actual upload) —
+    // this always re-reads the ORIGINAL full-resolution file fresh, right
+    // here, at the moment of upload, regardless of what got generated
+    // for the preview list earlier.
     let blob;
     if(m.file){ const d=await readFile(m.file); blob=await(await fetch(d)).blob(); }
-    else blob=await(await fetch(m.data)).blob();
+    else blob=await(await fetch(m.thumb)).blob(); // defensive fallback only — should never be reached
     const b64=await blobToB64(blob);
     const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray'+(m.manual?'_MANUAL':'')+'.jpg';
     return await gsPost({

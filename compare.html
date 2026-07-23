@@ -154,6 +154,20 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
   </div>
 </div>
 
+<!-- Match-result image preview — view/download in place instead of
+     navigating away to a new tab. -->
+<div class="cam-modal" id="preview-modal" onclick="if(event.target===this)closePreview()">
+  <img id="preview-img" src="" style="max-width:90vw;max-height:65vh;border-radius:var(--r);object-fit:contain;background:#0f1117;" onclick="event.stopPropagation()">
+  <div class="card" style="max-width:90vw;width:600px;" onclick="event.stopPropagation()">
+    <div id="preview-name" style="font-size:13px;font-weight:600;color:var(--text);"></div>
+    <div id="preview-awb" style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:2px;"></div>
+  </div>
+  <div class="row">
+    <a class="btn btn-t1" id="preview-download" href="#" target="_blank" style="text-decoration:none;">⬇ Download</a>
+    <button class="btn" onclick="closePreview()">Close</button>
+  </div>
+</div>
+
 <script>
 // ── Shared connection constants (same project as SF ClearView) ──
 const GS_URL = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5J7O38dK27-dytbAsU56wgLvKxJKskkxNiKNeaeLo7sM/exec';
@@ -465,6 +479,22 @@ function closeCamera(){
   if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; }
   document.getElementById('cam-modal').style.display='none';
 }
+
+// View/download a match result in place instead of navigating away to
+// a new tab — keeps the comparison results on screen for side-by-side
+// checking against other matches.
+function openMatchPreview(imageUrl, label, awb){
+  const id = fileId(imageUrl);
+  document.getElementById('preview-img').src = id ? ('https://drive.google.com/thumbnail?id='+id+'&sz=w1200') : imageUrl;
+  document.getElementById('preview-name').textContent = label || awb;
+  document.getElementById('preview-awb').textContent = awb;
+  document.getElementById('preview-download').href = imageUrl;
+  document.getElementById('preview-modal').style.display = 'flex';
+}
+function closePreview(){
+  document.getElementById('preview-modal').style.display = 'none';
+}
+
 function captureFromCam(){
   if(queue.length>=5){ alert('Max 5 images at a time'); return; }
   const video = document.getElementById('cam-video');
@@ -542,7 +572,7 @@ function renderResults(results){
       const thumb = thumbUrl(m.item.image_url);
       const pctColor = m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
       const label = m.item.clean_name || m.item.product_name || m.item.awb;
-      return '<div class="match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
+      return '<div class="match-card" onclick="openMatchPreview(\''+m.item.image_url.replace(/'/g,"\\'")+'\',\''+(label||'').replace(/'/g,"\\'")+'\',\''+m.item.awb+'\')">'
         +(thumb?'<img src="'+thumb+'">':'')
         +'<div class="match-body">'
           +'<div class="match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'

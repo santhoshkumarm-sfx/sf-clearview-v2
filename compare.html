@@ -76,7 +76,7 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
 <div class="wrap">
 
   <h1>🔍 SF ClearView — Image Compare</h1>
-  <div class="sub">Standalone page — keeps the comparison model completely separate from the main scanning app</div>
+  <div class="sub">Compare a suspicious image against the reference library</div>
 
   <!-- ADMIN ONLY — index management. Gated by a flag the main app
        mirrors into localStorage on login (localStorage is shared
@@ -97,18 +97,6 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
   </div>
 
   <div class="card">
-    <div class="card-head">COMPARE MODE</div>
-    <div class="mode-row">
-      <div class="mode-btn on" id="mode-cat-btn" onclick="setMode('category')">🗂 Compare within a category</div>
-      <div class="mode-btn" id="mode-all-btn" onclick="setMode('all')">🔀 Compare against everything</div>
-    </div>
-    <div id="cat-select-wrap" class="fg" style="margin-bottom:0;">
-      <label class="lbl">Category</label>
-      <select id="cat-select"><option value="">Loading categories...</option></select>
-    </div>
-  </div>
-
-  <div class="card">
     <div class="card-head">🖼 IMAGES <span style="margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--text3);">up to 5 at once</span></div>
 
     <div class="dropzone" id="drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="onDrop(event)" onclick="document.getElementById('file-input').click()">
@@ -121,9 +109,15 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
     <div class="row" style="margin-top:10px;">
       <div style="flex:1;"><input type="text" id="link-input" placeholder="...or paste an image link (Drive or any direct URL)"></div>
       <button class="btn" onclick="useLink()">Use Link</button>
-      <button class="btn" onclick="openCamera()">📷 Camera</button>
+      <!-- ONE camera button — tries a live webcam view first (works for
+           both a desktop webcam and most phone browsers, letting the
+           person pick front/back camera right there); if that's not
+           available for any reason, it falls back automatically to the
+           device's native camera picker instead. Either way it's just
+           "take a photo," no need to make the person choose which path
+           up front. -->
       <input type="file" id="mobile-cam-input" accept="image/*" capture="environment" style="display:none;" onchange="onFileInput(this)">
-      <button class="btn btn-sm" onclick="document.getElementById('mobile-cam-input').click()" title="On a phone this opens your camera app directly">📱 Phone camera</button>
+      <button class="btn" onclick="openCamera()">📷 Camera</button>
     </div>
 
     <div class="queue" id="queue"></div>
@@ -133,6 +127,18 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
       <button class="btn btn-sm" onclick="clearQueue()">CLEAR</button>
     </div>
     <div class="status" id="model-status"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">COMPARE MODE</div>
+    <div class="mode-row">
+      <div class="mode-btn on" id="mode-cat-btn" onclick="setMode('category')">🗂 Compare within a category</div>
+      <div class="mode-btn" id="mode-all-btn" onclick="setMode('all')">🔀 Compare against everything</div>
+    </div>
+    <div id="cat-select-wrap" class="fg" style="margin-bottom:0;">
+      <label class="lbl">Category</label>
+      <select id="cat-select"><option value="">Loading categories...</option></select>
+    </div>
   </div>
 
   <div id="results"></div>
@@ -434,12 +440,25 @@ async function useLink(){
 // Live webcam capture
 let camStream = null;
 async function openCamera(){
+  // Single button covers both paths: try a live in-browser camera view
+  // first (works for a desktop webcam and most phone browsers, letting
+  // the person choose front/back camera right there); if that's not
+  // available at all (older browser, permission blocked, no camera
+  // API), fall back automatically to the device's native camera/photo
+  // picker instead — no separate button needed, either way just gets a
+  // photo into the queue.
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    document.getElementById('mobile-cam-input').click();
+    return;
+  }
   try{
     camStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' } });
     document.getElementById('cam-video').srcObject = camStream;
     document.getElementById('cam-modal').style.display = 'flex';
   }catch(e){
-    alert('Could not access camera: '+e.message+'\n\nTry the "Phone camera" button instead, which uses your device\'s native camera app.');
+    // Permission denied or no live camera available — fall back to the
+    // native picker rather than just showing an error.
+    document.getElementById('mobile-cam-input').click();
   }
 }
 function closeCamera(){
@@ -514,32 +533,51 @@ async function runCompare(){
 }
 
 function renderResults(results){
-  document.getElementById('results').innerHTML = results.map(r=>{
+  document.getElementById('results').innerHTML = results.map((r,ri)=>{
     const pct = r.matches[0] ? Math.round(r.matches[0].score*100) : 0;
     const verdictHtml = r.verdict==='ORIGINAL'
       ? '<span class="verdict-ok">✅ ORIGINAL — MATCHES REFERENCE ('+pct+'%)</span>'
       : '<span class="verdict-warn">⚠️ NO CLOSE MATCH — REVIEW MANUALLY ('+pct+'% best)</span>';
+    const matchCard = m=>{
+      const thumb = thumbUrl(m.item.image_url);
+      const pctColor = m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
+      const label = m.item.clean_name || m.item.product_name || m.item.awb;
+      return '<div class="match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
+        +(thumb?'<img src="'+thumb+'">':'')
+        +'<div class="match-body">'
+          +'<div class="match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'
+          +'<div class="match-name">'+label+'</div>'
+          +'<div style="font-size:9px;color:var(--text3);font-family:var(--mono);">'+m.item.awb+'</div>'
+        +'</div></div>';
+    };
+    const top = r.matches[0];
+    const rest = r.matches.slice(1);
     return '<div class="result-card">'
       +'<div class="result-head">'
         +'<div class="result-img"><img src="'+r.query.dataUrl+'"></div>'
         +'<div><div style="font-size:12px;color:var(--text2);margin-bottom:6px;">'+r.query.name+'</div>'+verdictHtml+'</div>'
       +'</div>'
-      +'<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;">CLOSEST MATCHES</div>'
-      +'<div class="match-row">'
-        +r.matches.map(m=>{
-          const thumb = thumbUrl(m.item.image_url);
-          const pctColor = m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
-          const label = m.item.clean_name || m.item.product_name || m.item.awb;
-          return '<div class="match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
-            +(thumb?'<img src="'+thumb+'">':'')
-            +'<div class="match-body">'
-              +'<div class="match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'
-              +'<div class="match-name">'+label+'</div>'
-              +'<div style="font-size:9px;color:var(--text3);font-family:var(--mono);">'+m.item.awb+'</div>'
-            +'</div></div>';
-        }).join('')
-      +'</div></div>';
+      +'<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;">CLOSEST MATCH</div>'
+      // Only the single best match shows by default — the rest stay
+      // one click away instead of cluttering the result immediately.
+      +'<div class="match-row" style="grid-template-columns:repeat(auto-fill,minmax(140px,180px));">'
+        +(top?matchCard(top):'')
+      +'</div>'
+      +(rest.length
+        ? '<button class="btn btn-sm" style="margin-top:10px;" id="more-btn-'+ri+'" onclick="toggleMore('+ri+')">Show '+rest.length+' more</button>'
+          +'<div class="match-row" id="more-'+ri+'" style="display:none;margin-top:10px;">'+rest.map(matchCard).join('')+'</div>'
+        : '')
+      +'</div>';
   }).join('');
+}
+
+function toggleMore(ri){
+  const wrap = document.getElementById('more-'+ri);
+  const btn = document.getElementById('more-btn-'+ri);
+  const showing = wrap.style.display !== 'none';
+  if(!showing && !btn.dataset.label) btn.dataset.label = btn.textContent; // save the original "Show N more" text once, before it ever gets overwritten
+  wrap.style.display = showing ? 'none' : 'grid';
+  btn.textContent = showing ? btn.dataset.label : 'Hide';
 }
 
 // ── Init ──

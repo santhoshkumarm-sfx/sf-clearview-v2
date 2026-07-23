@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.32 - 2026-07-23 - ADD: X-Ray Reference Library now shows/filters by Sub Category (e.g. Mobile/Samsung, Apparel/Shirt), reading a new column E written by the updated recategorizeLibrary script (full 15-category taxonomy, Apple still pulled out as its own category regardless of product type). Sub-category chip row appears above the grid once a main category is picked and has more than one sub-category; search also matches sub-category text. Code.gs: getXrayLibrary now reads 5 columns instead of 4 and returns sub_category (blank/harmless for older rows without it). GS_URL unchanged from v2.17 (...eaeLo7sM) but Code.gs changed — MUST redeploy as New Version. Also delivered 10_recategorize_library_v2.gs — replaces the BODY of the existing recategorizeLibrary function (same script project as fillImageLinks, don't add as a new function). -->
+<!-- SF ClearView v2.33 - 2026-07-23 - (1) Adherence window 10->5 days per request. (2) Removed X-Ray Reference AND Image Compare from nav — both retired, being rebuilt. (3) Added a new "Image Compare" link that opens compare.html (a fully separate standalone page) in a new tab — the ~90MB CLIP model and all comparison code now lives ENTIRELY outside index.html, guaranteeing zero possible impact on Scan AWB/End of Shift performance regardless of what that page does. (4) saveSession()/clearSession() now mirror isAdmin into localStorage (shared across tabs, unlike sessionStorage) so compare.html can gate its admin-only index-build controls. Code.gs: getXrayLibrary/deleteXrayLibraryItem updated for the NEW sheet column layout you restructured by hand (A=AWB, B=Main Category, C=Sub Category, D=Product Name, E=X-ray Image, F=Clean Product Name). Also delivered: compare.html (standalone comparison page — category or all-reference compare modes, upload/paste-link/webcam/phone-camera capture up to 5 images, grayscale+contrast preprocessing to handle color differences between clean digital references and phone/monitor photos), 11_clean_product_names.gs (adds a Clean Product Name column, honest about not being able to reliably decode bare Apple SKU codes), 12_library_embeddings_add_columns.sql (adds clean_name/sub_category columns). Code.gs changed — MUST redeploy as New Version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -251,13 +251,20 @@ video{width:100%;height:100%;object-fit:cover;}
          admin. Purely a read-only reference lookup, no write path at all. -->
     <div class="nav-sec" id="nav-lib">
       <div class="nav-sec-lbl">Reference</div>
+      <!-- X-Ray Reference — removed from nav per request, being rebuilt.
+           Nothing deleted underneath, just unreachable. Re-add this line
+           to bring it back:
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
-      <!-- Image Compare — removed from nav for now, per request. Nothing
-           deleted: the view, its JS, and the library_embeddings table
-           are all still intact underneath, just unreachable. Re-add
-           this one line to bring it straight back whenever wanted:
+      -->
+      <!-- Image Compare — old embedded version removed for the same
+           reason. The NEW version lives in its own separate page
+           (compare.html), opened in a new tab — this keeps the heavy
+           comparison model (and its ~90MB download) completely isolated
+           from the main app; nothing about it can ever slow down Scan
+           AWB or End of Shift, since its code never loads here at all.
       <div class="nav-item" id="ni-libcompare" onclick="show('v-libcompare')"><span class="nav-icon">🔍</span>Image Compare</div>
       -->
+      <a class="nav-item" href="compare.html" target="_blank" rel="noopener" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
       <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-23</div>
@@ -585,7 +592,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="card">
           <div class="card-head">
             <span class="card-head-icon">📊</span>
-            <span class="card-head-title">SCAN ADHERENCE — LAST 10 DAYS</span>
+            <span class="card-head-title">SCAN ADHERENCE — LAST 5 DAYS</span>
             <span id="adhere-total" class="card-head-right"></span>
           </div>
           <div class="tbl-wrap" id="adhere-table-wrap">
@@ -1170,12 +1177,18 @@ function saveSession(){
   sessionStorage.setItem('isAdmin', isAdmin);
   sessionStorage.setItem('isSup', isSupervisor);
   sessionStorage.setItem('isPoc', isPoc);
+  // Bridge for compare.html — that's a separate tab, and sessionStorage
+  // is scoped per-tab (not shared across tabs on the same origin the
+  // way localStorage is), so this is the only way it can know whether
+  // to show its admin-only Build/Update Index controls.
+  try{ localStorage.setItem('cv_shared_isAdmin', isAdmin ? 'true' : 'false'); }catch(e){}
 }
 function clearSession(){
   sessionStorage.removeItem('cu');
   sessionStorage.removeItem('isAdmin');
   sessionStorage.removeItem('isSup');
   sessionStorage.removeItem('isPoc');
+  try{ localStorage.removeItem('cv_shared_isAdmin'); }catch(e){}
   // FIX: this used to leave 'cv_locs_v2' in place, so a location's
   // machine_type change (e.g. Type 1 → Type 2) wouldn't take effect for
   // an operator until they fully closed the tab — logging out and back
@@ -3860,13 +3873,13 @@ async function renderAdherence(){
   const wrap = document.getElementById('adhere-table-wrap');
   wrap.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text3);font-family:var(--mono);">Loading adherence data...</div>';
 
-  // Build last 10 days (today = last column, oldest = first) — anchored
+  // Build last 5 days (today = last column, oldest = first) — anchored
   // on IST "today" and stepped backwards a whole day at a time via UTC
   // noon (avoids any DST/boundary edge cases), so this doesn't drift even
   // if the device's own clock/timezone isn't set to IST.
   const days = [];
   const todayIST = todayStr();
-  for(let i=9; i>=0; i--){
+  for(let i=4; i>=0; i--){
     const base = new Date(todayIST+'T12:00:00Z');
     base.setUTCDate(base.getUTCDate()-i);
     days.push(base.toISOString().split('T')[0]);

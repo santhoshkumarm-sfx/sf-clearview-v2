@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.33 - 2026-07-23 - (1) Adherence window 10->5 days per request. (2) Removed X-Ray Reference AND Image Compare from nav — both retired, being rebuilt. (3) Added a new "Image Compare" link that opens compare.html (a fully separate standalone page) in a new tab — the ~90MB CLIP model and all comparison code now lives ENTIRELY outside index.html, guaranteeing zero possible impact on Scan AWB/End of Shift performance regardless of what that page does. (4) saveSession()/clearSession() now mirror isAdmin into localStorage (shared across tabs, unlike sessionStorage) so compare.html can gate its admin-only index-build controls. Code.gs: getXrayLibrary/deleteXrayLibraryItem updated for the NEW sheet column layout you restructured by hand (A=AWB, B=Main Category, C=Sub Category, D=Product Name, E=X-ray Image, F=Clean Product Name). Also delivered: compare.html (standalone comparison page — category or all-reference compare modes, upload/paste-link/webcam/phone-camera capture up to 5 images, grayscale+contrast preprocessing to handle color differences between clean digital references and phone/monitor photos), 11_clean_product_names.gs (adds a Clean Product Name column, honest about not being able to reliably decode bare Apple SKU codes), 12_library_embeddings_add_columns.sql (adds clean_name/sub_category columns). Code.gs changed — MUST redeploy as New Version. -->
+<!-- SF ClearView v2.34 - 2026-07-23 - Restored X-Ray Reference to the nav (was retired for rebuild, brought back per request as a plain library — separate from Image Compare). compare.html: removed the "lightweight/standalone" subtitle, reordered Images-before-Compare-Mode, merged the two camera buttons into one (tries live webcam first, silently falls back to native camera/photo picker if unavailable), results now show only the single closest match by default with a "Show N more" toggle instead of all 5 at once. No Code.gs changes this round. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -251,11 +251,7 @@ video{width:100%;height:100%;object-fit:cover;}
          admin. Purely a read-only reference lookup, no write path at all. -->
     <div class="nav-sec" id="nav-lib">
       <div class="nav-sec-lbl">Reference</div>
-      <!-- X-Ray Reference — removed from nav per request, being rebuilt.
-           Nothing deleted underneath, just unreachable. Re-add this line
-           to bring it back:
       <div class="nav-item" id="ni-xraylib" onclick="show('v-xraylib')"><span class="nav-icon">📚</span>X-Ray Reference</div>
-      -->
       <!-- Image Compare — old embedded version removed for the same
            reason. The NEW version lives in its own separate page
            (compare.html), opened in a new tab — this keeps the heavy

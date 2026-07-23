@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.34 - 2026-07-23 - Restored X-Ray Reference to the nav (was retired for rebuild, brought back per request as a plain library — separate from Image Compare). compare.html: removed the "lightweight/standalone" subtitle, reordered Images-before-Compare-Mode, merged the two camera buttons into one (tries live webcam first, silently falls back to native camera/photo picker if unavailable), results now show only the single closest match by default with a "Show N more" toggle instead of all 5 at once. No Code.gs changes this round. -->
+<!-- SF ClearView v2.35 - 2026-07-23 - ADD: PASS 3 sequence-match fallback for the last ~5% of timestamp-based matching. After AWB matching (PASS 1) and tolerance-based timestamp matching (PASS 2), whatever's still unmatched gets one more pass: since shipments are scanned into SF ClearView and immediately run through the machine in order, the chronological sequence of leftover photos and leftover pending scans should still line up even when a specific pair's exact time gap fell just outside the normal tolerance (clock drift, a brief batching delay). Uses a look-ahead merge (not a naive walk — a naive one breaks badly on any genuine one-sided gap, cascading a wrong shift through everything after it; verified against exactly that scenario before shipping) bounded to 30 minutes outside. Every pairing made this way is labeled "Sequence match — inferred from order, please verify" and rendered in a distinct amber color with its own count pill, specifically so it never looks as confirmed as an exact AWB/timestamp match. Also confirmed/audited: folder-matching only ever writes to xray_image_url (Code.gs defaults type to 'xray' when unspecified) — Label/Front/Back/Product images are a fully separate code path, untouched by any of this. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -3049,6 +3049,64 @@ async function processFd(files){
       : 'No AWB or readable timestamp in filename — left unmatched';
   }
 
+  // PASS 3 — SEQUENTIAL FALLBACK (new). For whatever's still unmatched
+  // after PASS 1/2: on a timestamp-based machine, shipments get scanned
+  // into SF ClearView and immediately run through the machine, one
+  // after another — so the chronological ORDER of both the leftover
+  // photos and the leftover pending scans should still line up, even
+  // for the handful of pairs whose exact time gap happened to fall
+  // just outside the tolerance window (a brief batching delay, a
+  // moment of clock drift — the kind of thing that explains "mostly
+  // matches, with the occasional gap" rather than a real absence of
+  // data). This walks BOTH lists in time order together, like merging
+  // two sorted lists, and only pairs two items when they're each
+  // other's best available option in sequence — never guessing past a
+  // wide outer bound, and never touching anything PASS 1/2 already
+  // resolved. Every pairing made here is labeled distinctly (not
+  // "Time match") specifically so it reads as inferred-from-order
+  // rather than a confirmed identity match — worth a quick visual
+  // check before relying on it the way you would an exact match.
+  const SEQ_FALLBACK_TOLERANCE=1800; // 30 min outer bound — wide, but still bounded
+  const leftoverFiles=parsedFiles.filter(m=>!m.rec && !m.parsed.candidates.length && m.parsed.timestamp)
+                                   .sort((a,b)=>a.parsed.timestamp-b.parsed.timestamp);
+  const leftoverRecords=unlinked.filter(r=>!used.has(r.id))
+                                  .sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  // Look-ahead merge, not a naive one — a naive two-pointer walk breaks
+  // badly the moment there's a genuine gap on either side (e.g. one
+  // scan really has no photo at all): it force-pairs the current items
+  // anyway, which then shifts every pairing after it by one, silently
+  // assigning wrong photos to wrong AWBs instead of correctly leaving a
+  // gap unmatched. Before accepting the current pairing, this checks
+  // whether skipping ahead on either side would actually line up
+  // better — verified against exactly that gap scenario before shipping.
+  let fi=0, ri=0;
+  while(fi<leftoverFiles.length && ri<leftoverRecords.length){
+    const m=leftoverFiles[fi], r=leftoverRecords[ri];
+    const rTs=new Date(r.scanned_at).getTime()/1000;
+    const mTs=m.parsed.timestamp.getTime()/1000;
+    const dCur=Math.abs(mTs-rTs);
+    const rNext=leftoverRecords[ri+1];
+    const mNext=leftoverFiles[fi+1];
+    const dSkipRec=rNext ? Math.abs(mTs-(new Date(rNext.scanned_at).getTime()/1000)) : Infinity;
+    const dSkipFile=mNext ? Math.abs((mNext.parsed.timestamp.getTime()/1000)-rTs) : Infinity;
+    if(dCur<=dSkipRec && dCur<=dSkipFile){
+      if(dCur<=SEQ_FALLBACK_TOLERANCE){
+        m.rec=r; m.method='Sequence match — inferred from order, please verify'; m.diffSec=Math.round(dCur);
+        used.add(r.id);
+        fi++; ri++;
+      } else {
+        // Even the closest available pairing is outside the outer
+        // bound — advance whichever side is chronologically behind, to
+        // try to catch back up rather than force a bad match.
+        if(mTs<rTs) fi++; else ri++;
+      }
+    } else if(dSkipRec<dSkipFile){
+      ri++; // this record doesn't belong with this file — leave it for a later, closer file (or genuinely unmatched)
+    } else {
+      fi++; // this file doesn't belong with this record — leave it unmatched rather than force it
+    }
+  }
+
   const matches=parsedFiles.map(m=>({seq:m.seq,name:m.name,file:m.file,thumb:m.thumb,rec:m.rec,ok:!!m.rec,method:m.method,diffSec:m.diffSec,parsed:m.parsed,manual:false}));
   document.getElementById('fd-prog-bar').style.width='100%';
   pendingFd=matches;
@@ -3102,6 +3160,7 @@ function renderFdMatchList(){
   const unmatchedCount=matches.length-ok;
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
   const byTime=matches.filter(m=>m.method==='Time match').length;
+  const bySeq=matches.filter(m=>m.method&&m.method.indexOf('Sequence match')===0).length;
 
   // Search filters which ROWS are shown, but every row still carries its
   // real index into pendingFd (not its position in the filtered list) —
@@ -3116,6 +3175,7 @@ function renderFdMatchList(){
     +'<span class="pill pill-ok">✅ '+ok+'/'+matches.length+'</span>'
     +(byAwb?'<span class="pill pill-t1">AWB: '+byAwb+'</span>':'')
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
+    +(bySeq?'<span class="pill pill-warn">⚠ Sequence (verify): '+bySeq+'</span>':'')
     +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
     +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
     +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+matches.length+'</span>':'')
@@ -3123,7 +3183,7 @@ function renderFdMatchList(){
     +(visible.length===0
       ?'<div style="text-align:center;color:var(--text3);padding:16px;font-size:11px;">No files match "'+q+'"</div>'
       :visible.map(({m,idx})=>{
-      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.manual?'var(--warn)':'var(--text3)';
+      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.method&&m.method.indexOf('Sequence match')===0?'var(--warn)':m.manual?'var(--warn)':'var(--text3)';
       const assignPicker = (!m.ok && fdUnlinkedPool.length)
         ? '<select onchange="if(this.value)manualAssignFd('+idx+',this.value)" style="width:auto;padding:2px 6px;font-size:10px;margin-left:6px;" onclick="event.stopPropagation()">'
           +'<option value="">🔗 Assign to AWB...</option>'

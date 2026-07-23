@@ -1,8 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.38 - 2026-07-23 - Two fixes together for "operator scans not showing up for admin/POC for 5-10 minutes, unaffected by repeated refreshing":
-     (1) show('v-adash') was calling renderDash() — which only re-renders whatever's ALREADY in memory — instead of refreshDashboard(), which does the actual live fetch. Navigating away from Dashboard and back (without a full page reload) showed frozen numbers from whenever it was last actually fetched, while operators kept scanning in the background. Now calls refreshDashboard() every time Dashboard opens, plus a 45s auto-refresh for as long as it stays the active tab (stopped on navigating away or logging out). Shift Logs/Adherence were already confirmed to do their own fresh fetch each time — this was Dashboard-specific.
-     (2) None of the Supabase/Apps Script fetch() calls (sbGet, sbGetAll, sbPost, sbPatch, sbDelete, gsGet, gsPost) specified any cache behavior — without an explicit no-store directive, browsers apply their own heuristic freshness window to GET responses, which can persist across a normal reload (a plain refresh doesn't reliably bypass this for fetch() calls the way it does the main document). Every one of those now sets cache:'no-store' AND appends a cache-busting query param, so no layer — Dashboard-specific bug or general staleness — can serve a stale response.
-     Also added an explicit "🔄 Refresh Now" button on the Admin Dashboard for an instant manual option alongside the 45s auto-refresh. No Code.gs changes. -->
+<!-- SF ClearView v2.39 - 2026-07-23 - URGENT HOTFIX: v2.38's cache-busting fix broke login and every other Supabase call (400 error) for everyone. Cause: the _cb=timestamp query param added to sbGet() wasn't ignored by Supabase's API the way an unrecognized param would be on most REST APIs — PostgREST reads every query parameter as either a command or a column filter, so _cb got parsed as "WHERE _cb = ..." against a column that doesn't exist, and correctly rejected with 400. Removed the query param; kept cache:'no-store' (that part was always fine — it's a browser-only fetch option, never actually sent to the server, so it couldn't have caused this). GAS's gsGet() keeps its own _cb= param since Code.gs's doGet() only ever switches on p.action and safely ignores anything else — that one was never a problem. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -931,8 +928,18 @@ const SB_HDRS = {
 // — browser cache or otherwise — left that could serve a stale
 // response instead of actually hitting Supabase/Apps Script fresh.
 async function sbGet(path){
-  const sep = path.includes('?') ? '&' : '?';
-  const resp = await fetch(SB_URL + path + sep + '_cb=' + Date.now(), { headers: SB_HDRS, cache: 'no-store' });
+  // FIX (urgent, 2026-07-23): the cache-busting query param added
+  // moments ago (_cb=timestamp) broke EVERY Supabase call, including
+  // login. Supabase's API treats query parameters as either a
+  // recognized command or a filter on an actual column — an unknown
+  // parameter like _cb isn't silently ignored the way it would be on
+  // a typical REST API, it's read as "WHERE _cb = ..." against a
+  // column that doesn't exist, which the database correctly rejects
+  // with a 400. cache:'no-store' alone is completely safe (that's a
+  // browser-only instruction, it's never part of the actual request
+  // sent to the server) — it's specifically the extra query parameter
+  // that needed to go, not the caching fix itself.
+  const resp = await fetch(SB_URL + path, { headers: SB_HDRS, cache: 'no-store' });
   if(!resp.ok) throw new Error('Supabase GET failed: ' + resp.status);
   return resp.json();
 }

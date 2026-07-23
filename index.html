@@ -1,5 +1,8 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.35 - 2026-07-23 - ADD: PASS 3 sequence-match fallback for the last ~5% of timestamp-based matching. After AWB matching (PASS 1) and tolerance-based timestamp matching (PASS 2), whatever's still unmatched gets one more pass: since shipments are scanned into SF ClearView and immediately run through the machine in order, the chronological sequence of leftover photos and leftover pending scans should still line up even when a specific pair's exact time gap fell just outside the normal tolerance (clock drift, a brief batching delay). Uses a look-ahead merge (not a naive walk — a naive one breaks badly on any genuine one-sided gap, cascading a wrong shift through everything after it; verified against exactly that scenario before shipping) bounded to 30 minutes outside. Every pairing made this way is labeled "Sequence match — inferred from order, please verify" and rendered in a distinct amber color with its own count pill, specifically so it never looks as confirmed as an exact AWB/timestamp match. Also confirmed/audited: folder-matching only ever writes to xray_image_url (Code.gs defaults type to 'xray' when unspecified) — Label/Front/Back/Product images are a fully separate code path, untouched by any of this. No Code.gs changes. -->
+<!-- SF ClearView v2.38 - 2026-07-23 - Two fixes together for "operator scans not showing up for admin/POC for 5-10 minutes, unaffected by repeated refreshing":
+     (1) show('v-adash') was calling renderDash() — which only re-renders whatever's ALREADY in memory — instead of refreshDashboard(), which does the actual live fetch. Navigating away from Dashboard and back (without a full page reload) showed frozen numbers from whenever it was last actually fetched, while operators kept scanning in the background. Now calls refreshDashboard() every time Dashboard opens, plus a 45s auto-refresh for as long as it stays the active tab (stopped on navigating away or logging out). Shift Logs/Adherence were already confirmed to do their own fresh fetch each time — this was Dashboard-specific.
+     (2) None of the Supabase/Apps Script fetch() calls (sbGet, sbGetAll, sbPost, sbPatch, sbDelete, gsGet, gsPost) specified any cache behavior — without an explicit no-store directive, browsers apply their own heuristic freshness window to GET responses, which can persist across a normal reload (a plain refresh doesn't reliably bypass this for fetch() calls the way it does the main document). Every one of those now sets cache:'no-store' AND appends a cache-busting query param, so no layer — Dashboard-specific bug or general staleness — can serve a stale response.
+     Also added an explicit "🔄 Refresh Now" button on the Admin Dashboard for an instant manual option alongside the 45s auto-refresh. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -484,6 +487,7 @@ video{width:100%;height:100%;object-fit:cover;}
           <input type="date" id="dash-date" onchange="refreshDashboard()" style="width:160px;font-size:14px;">
           <button class="btn btn-ghost btn-sm" onclick="setDashDate('today')">📅 Today</button>
           <button class="btn btn-ghost btn-sm" onclick="setDashDate('yesterday')">Yesterday</button>
+          <button class="btn btn-t1 btn-sm" onclick="refreshDashboard()">🔄 Refresh Now</button>
           <span id="dash-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
           <span id="dash-count" style="font-family:var(--mono);font-size:11px;color:var(--t1);margin-left:auto;"></span>
         </div>
@@ -711,6 +715,20 @@ video{width:100%;height:100%;object-fit:cover;}
   </div>
 </div>
 
+<!-- EOS FOLDER-MATCH FULL-RESOLUTION PREVIEW MODAL — click any
+     thumbnail in the match list to verify the actual photo against the
+     claimed AWB before applying. -->
+<div id="modal-fdpreview" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:12px;" onclick="if(event.target===this)closeFdPreview()">
+  <div style="position:relative;width:90vw;max-width:800px;height:70vh;background:#0f1117;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;" onclick="event.stopPropagation()">
+    <button onclick="closeFdPreview()" style="position:absolute;top:10px;right:12px;z-index:10;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:14px;">✕ Close</button>
+    <img id="fd-preview-img" src="" style="max-width:100%;max-height:100%;object-fit:contain;">
+  </div>
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 18px;width:90vw;max-width:800px;" onclick="event.stopPropagation()">
+    <div id="fd-preview-name" style="font-size:13px;font-weight:600;color:var(--text);font-family:var(--mono);"></div>
+    <div id="fd-preview-awb" style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:2px;"></div>
+  </div>
+</div>
+
 <!-- TOLERANCE REQUEST MODAL -->
 <div id="modal-tolreq" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:8000;align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
   <div style="background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:28px;width:360px;max-width:92vw;">
@@ -881,6 +899,7 @@ const SCAN_LIMIT = 2000; // warn operator at this count
 //  STATE
 // ══════════════════════════════════════════════════════════════
 let CU=null, isAdmin=false, isSupervisor=false, isPoc=false;
+let dashAutoRefreshTimer=null; // only runs while Dashboard is the active tab — see show()
 let DB = {records:[], users:[], locations:[], awbMaster:{}};
 let camStream=null, captured=[null,null,null,null], nlMT=1;
 let pendingXl=[], pendingFd=[];
@@ -898,8 +917,22 @@ const SB_HDRS = {
   'Authorization': 'Bearer ' + SB_KEY
 };
 
+// FIX (2026-07-23): none of these fetch() calls specified any cache
+// behavior at all. Without an explicit Cache-Control header from the
+// server, browsers apply their OWN heuristic freshness window to GET
+// responses — which can silently persist across a normal page reload
+// (a plain refresh doesn't reliably bypass this the way a true hard
+// refresh does, and even that isn't guaranteed for subresource fetch()
+// calls, only the top-level document). That's exactly the symptom
+// reported: an operator's scan not showing up for admin/POC for
+// several minutes, unchanged no matter how many times the page was
+// refreshed. Every read below now explicitly disables caching AND
+// appends a one-time cache-busting query param, so there is no layer
+// — browser cache or otherwise — left that could serve a stale
+// response instead of actually hitting Supabase/Apps Script fresh.
 async function sbGet(path){
-  const resp = await fetch(SB_URL + path, { headers: SB_HDRS });
+  const sep = path.includes('?') ? '&' : '?';
+  const resp = await fetch(SB_URL + path + sep + '_cb=' + Date.now(), { headers: SB_HDRS, cache: 'no-store' });
   if(!resp.ok) throw new Error('Supabase GET failed: ' + resp.status);
   return resp.json();
 }
@@ -930,6 +963,7 @@ async function sbPost(table, payload){
   const resp = await fetch(SB_URL + '/rest/v1/' + table, {
     method:'POST',
     headers: Object.assign({}, SB_HDRS, {'Prefer':'return=representation'}),
+    cache: 'no-store',
     body: JSON.stringify(payload)
   });
   if(!resp.ok){ const t=await resp.text(); throw new Error(t); }
@@ -941,6 +975,7 @@ async function sbPatch(table, filter, payload){
   const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
     method:'PATCH',
     headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'}),
+    cache: 'no-store',
     body: JSON.stringify(payload)
   });
   return resp.ok;
@@ -949,7 +984,8 @@ async function sbPatch(table, filter, payload){
 async function sbDelete(table, filter){
   const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
     method:'DELETE',
-    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'})
+    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'}),
+    cache: 'no-store'
   });
   return resp.ok;
 }
@@ -959,7 +995,7 @@ async function sbDelete(table, filter){
 // ══════════════════════════════════════════════════════════════
 async function gsGet(params){
   const q = Object.entries(params).map(([k,v])=>encodeURIComponent(k)+'='+encodeURIComponent(v)).join('&');
-  const resp = await fetch(GS_URL+'?'+q, {redirect:'follow'});
+  const resp = await fetch(GS_URL+'?'+q+'&_cb='+Date.now(), {redirect:'follow', cache:'no-store'});
   const text = await resp.text();
   try{ return JSON.parse(text); }
   catch(e){ throw new Error('Response: '+text.substring(0,150)); }
@@ -971,7 +1007,8 @@ async function gsPost(data){
       method:'POST',
       headers:{'Content-Type':'text/plain'},
       body:JSON.stringify(data),
-      redirect:'follow'
+      redirect:'follow',
+      cache:'no-store'
     });
     const text = await resp.text();
     try{ return JSON.parse(text); }
@@ -1207,6 +1244,12 @@ function show(id){
   if(!isAdmin && !isSupervisor && !isPoc && admOnly.includes(id)){ show('v-scan'); return; }
   if(isPoc && admOnly.includes(id) && !pocAllowed.includes(id)){ show('v-adash'); return; }
 
+  // Dashboard auto-refresh only runs while Dashboard is actually the
+  // visible tab — stopped here unconditionally on every navigation so
+  // it never keeps polling in the background after leaving, and never
+  // stacks multiple timers if Dashboard gets opened more than once.
+  if(dashAutoRefreshTimer){ clearInterval(dashAutoRefreshTimer); dashAutoRefreshTimer=null; }
+
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
   document.getElementById(id)?.classList.add('on');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('on'));
@@ -1231,7 +1274,24 @@ function show(id){
     if(rd&&!rd.value){ rd.value=todayStr(); onRecDateChange(); }
     else renderRec();
   }
-  if(id==='v-adash')  renderDash();
+  // FIX (2026-07-23): this used to just re-render whatever was already
+  // sitting in memory — meaning navigating away from Dashboard and back
+  // (without a full page reload) showed frozen numbers from whenever it
+  // was last actually fetched (login, or the last time the date picker
+  // changed), while operators kept scanning fresh data in the
+  // background. That's exactly what "admin/operator/POC counts don't
+  // match, even after refreshing" looks like from the admin/POC side —
+  // refreshDashboard() below does the real live fetch (and already
+  // calls renderDash() itself at the end), so calling that here instead
+  // guarantees every visit to this tab is actually current. Also starts
+  // a 45s auto-refresh for as long as Dashboard stays the active tab,
+  // so the numbers keep updating even without navigating away and back
+  // — stopped automatically the moment any other tab is opened (see the
+  // clearInterval at the top of this function).
+  if(id==='v-adash'){
+    refreshDashboard();
+    dashAutoRefreshTimer=setInterval(refreshDashboard, 45000);
+  }
   if(id==='v-ausers') renderUsers();
   if(id==='v-aloc')   renderLocs();
   if(id==='v-aawb')   renderAwb();
@@ -1408,6 +1468,7 @@ async function enterApp(){
 
 function doLogout(){
   if(camStream)stopCam();
+  if(dashAutoRefreshTimer){ clearInterval(dashAutoRefreshTimer); dashAutoRefreshTimer=null; }
   CU=null; isAdmin=false; isSupervisor=false; isPoc=false;
   clearSession();
   document.getElementById('app').style.display='none';
@@ -3192,14 +3253,41 @@ function renderFdMatchList(){
         : '';
       // Hover highlight on each row — makes it unambiguous which
       // filename lines up with which AWB when scanning down the list.
+      // The thumbnail itself is deliberately tiny (see makeThumb) for
+      // load speed across 300-600 files — clicking it opens the actual
+      // full-resolution photo on demand (read fresh from the original
+      // file, not the thumbnail) so it's actually useful for visually
+      // verifying against the claimed AWB.
       return '<div class="fd-match-row" style="display:flex;gap:6px;align-items:center;padding:5px 6px;border-bottom:1px solid rgba(28,58,85,.3);border-radius:3px;font-size:11px;transition:background .1s;">'
-        +'<img src="'+m.thumb+'" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;background:#0f1117;">'
+        +'<img src="'+m.thumb+'" onclick="event.stopPropagation();previewFdImage('+idx+')" style="width:28px;height:22px;object-fit:cover;border-radius:2px;flex-shrink:0;background:#0f1117;cursor:zoom-in;">'
         +'<span style="font-family:var(--mono);font-size:10px;color:var(--text3);flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+m.name+'</span>'
         +'<span style="font-family:var(--mono);font-weight:700;color:'+(m.ok?'var(--success)':'var(--danger)')+';">'+(m.ok?m.rec.awb:(m.parsed?.awb||'no match'))+'</span>'
         +'<span style="font-family:var(--mono);font-size:9px;color:'+(m.ok?tc:'var(--danger)')+';">'+(m.method||'')+(m.diffSec!==null?' '+m.diffSec+'s':'')+'</span>'
         +assignPicker
         +'</div>';
     }).join(''));
+}
+
+// Opens the ORIGINAL full-resolution photo for a match-list row, read
+// fresh from the file (URL.createObjectURL is instant — no re-encoding
+// cost) rather than the tiny preview thumbnail — makes it actually
+// possible to visually check the photo against the claimed AWB before
+// applying. Revokes the object URL on close so it doesn't linger in
+// memory across a 300-600 file batch.
+let fdPreviewObjectUrl=null;
+function previewFdImage(idx){
+  const m=pendingFd[idx];
+  if(!m || !m.file) return;
+  if(fdPreviewObjectUrl) URL.revokeObjectURL(fdPreviewObjectUrl);
+  fdPreviewObjectUrl=URL.createObjectURL(m.file);
+  document.getElementById('fd-preview-img').src=fdPreviewObjectUrl;
+  document.getElementById('fd-preview-name').textContent=m.name;
+  document.getElementById('fd-preview-awb').textContent=m.ok?('Matched: '+m.rec.awb):('Guess: '+(m.parsed?.awb||'no AWB found'));
+  document.getElementById('modal-fdpreview').style.display='flex';
+}
+function closeFdPreview(){
+  document.getElementById('modal-fdpreview').style.display='none';
+  if(fdPreviewObjectUrl){ URL.revokeObjectURL(fdPreviewObjectUrl); fdPreviewObjectUrl=null; }
 }
 
 

@@ -91,19 +91,25 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
       <span id="index-status" class="pill">—</span>
       <button class="btn btn-t1 btn-sm" onclick="buildIndex()" id="build-btn">🔄 Build / Update Index</button>
       <button class="btn btn-danger btn-sm" onclick="rebuildIndex()" id="rebuild-btn" title="Wipes the index and rebuilds everything from scratch — needed once now (accuracy fix changed how images are processed) and any time you want stale categories fully refreshed">🗑 Full Rebuild</button>
+      <button class="btn btn-sm" onclick="cancelBuild()" id="build-cancel-btn" style="display:none;">✕ Cancel</button>
       <span id="index-progress" class="status" style="display:none;"></span>
     </div>
     <div class="progbar-wrap" id="index-prog" style="display:none;"><div class="progbar" id="index-prog-bar"></div></div>
     <div class="row" style="margin-top:14px;gap:20px;">
-      <div class="fg" style="margin-bottom:0;max-width:320px;">
+      <div class="fg" style="margin-bottom:0;max-width:280px;">
         <label class="lbl">Match threshold (%) — how close counts as "Original"</label>
         <input type="number" id="threshold" min="50" max="99" value="85" onchange="saveThreshold()">
       </div>
-      <div class="fg" style="margin-bottom:0;max-width:320px;">
-        <label class="lbl">Color weight (%) — 0 = shape only (CLIP), 100 = color only</label>
-        <input type="number" id="color-weight" min="0" max="100" value="50" onchange="saveColorWeight()">
+      <div class="fg" style="margin-bottom:0;max-width:280px;">
+        <label class="lbl">Color weight (%) — material/color signature</label>
+        <input type="number" id="color-weight" min="0" max="100" value="33" onchange="saveColorWeight()">
+      </div>
+      <div class="fg" style="margin-bottom:0;max-width:280px;">
+        <label class="lbl">Shape weight (%) — edges/structure, color-invariant</label>
+        <input type="number" id="shape-weight" min="0" max="100" value="33" onchange="saveShapeWeight()">
       </div>
     </div>
+    <div class="status" style="margin-top:0;">Remaining weight (100 − color − shape) goes to CLIP's semantic match. Color+Shape shouldn't add past 100.</div>
   </div>
 
   <div class="card">
@@ -134,6 +140,7 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
 
     <div class="row" style="margin-top:14px;">
       <button class="btn btn-t1" onclick="runCompare()" id="run-btn">▶ COMPARE</button>
+      <button class="btn btn-danger" onclick="cancelCompare()" id="cancel-btn" style="display:none;">✕ CANCEL</button>
       <button class="btn btn-sm" onclick="clearQueue()">CLEAR</button>
     </div>
     <div class="status" id="model-status"></div>
@@ -147,10 +154,7 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
     </div>
     <div id="cat-select-wrap" class="fg" style="margin-bottom:0;">
       <label class="lbl">Category</label>
-      <div class="row" style="gap:8px;">
-        <div style="flex:1;"><select id="cat-select"><option value="">Loading categories...</option></select></div>
-        <button class="btn btn-sm" onclick="loadCategories()" title="Re-fetches the category list fresh from the database — use this any time the Sheet's categories changed and this dropdown looks out of date">🔄 Force Refresh</button>
-      </div>
+      <select id="cat-select"><option value="">Loading categories...</option></select>
     </div>
   </div>
 
@@ -252,6 +256,9 @@ function saveThreshold(){
 }
 function saveColorWeight(){
   localStorage.setItem('cv_libcmp_colorweight', document.getElementById('color-weight').value);
+}
+function saveShapeWeight(){
+  localStorage.setItem('cv_libcmp_shapeweight', document.getElementById('shape-weight').value);
 }
 
 // ── Model loading (lazy — only on first Compare/Build Index click) ──
@@ -409,13 +416,78 @@ function histogramSimilarity(h1,h2){
   for(let i=0;i<h1.length;i++) inter+=Math.min(h1[i],h2[i]);
   return inter; // histogram intersection — already in [0,1] when both normalized to sum 1
 }
+
+// THIRD SIGNAL (new): a block-based edge/shape descriptor — exactly
+// the "consider images in blocks, find shape, then color" approach
+// asked for. Splits the image into a 4x4 grid, and within each block
+// computes a histogram of edge directions (a simplified version of the
+// same idea behind HOG — Histogram of Oriented Gradients). This is
+// computed from LUMINANCE GRADIENTS ONLY, not color values, which is
+// exactly why it's the right tool for the phone/webcam-vs-digital
+// color-shift problem: a shape/edge signature doesn't care what hue
+// the object was rendered in, only where its actual edges are. Cheap,
+// classical, no model involved.
+function computeShapeDescriptor(img, gridSize){
+  gridSize = gridSize || 4;
+  const size = 128;
+  const c=document.createElement('canvas');
+  c.width=size; c.height=size;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
+  ctx.drawImage(img,0,0,size,size);
+  const d=ctx.getImageData(0,0,size,size).data;
+
+  const lum=new Float32Array(size*size);
+  for(let i=0;i<size*size;i++){
+    lum[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+  }
+
+  const blockSize=size/gridSize;
+  const ORIENT_BINS=8;
+  const descriptor=[];
+  for(let by=0;by<gridSize;by++){
+    for(let bx=0;bx<gridSize;bx++){
+      const hist=new Array(ORIENT_BINS).fill(0);
+      let total=0;
+      const y0=Math.max(1,Math.floor(by*blockSize)), y1=Math.min(size-1,Math.floor((by+1)*blockSize));
+      const x0=Math.max(1,Math.floor(bx*blockSize)), x1=Math.min(size-1,Math.floor((bx+1)*blockSize));
+      for(let y=y0;y<y1;y++){
+        for(let x=x0;x<x1;x++){
+          const idx=y*size+x;
+          const gx=lum[idx+1]-lum[idx-1];
+          const gy=lum[idx+size]-lum[idx-size];
+          const mag=Math.sqrt(gx*gx+gy*gy);
+          if(mag>10){ // skip near-flat regions — background/padding, not a real edge
+            let angle=Math.atan2(gy,gx);
+            if(angle<0) angle+=Math.PI; // fold to 0..PI — gradient direction, not polarity
+            const bin=Math.min(ORIENT_BINS-1,Math.floor(angle/Math.PI*ORIENT_BINS));
+            hist[bin]+=mag;
+            total+=mag;
+          }
+        }
+      }
+      if(total>0) for(let i=0;i<ORIENT_BINS;i++) hist[i]/=total; // normalize per block — robust to overall brightness/contrast differences between capture devices
+      descriptor.push(...hist);
+    }
+  }
+  return descriptor;
+}
+function shapeSimilarity(d1,d2){
+  if(!d1||!d2||d1.length!==d2.length) return 0;
+  let dot=0,n1=0,n2=0;
+  for(let i=0;i<d1.length;i++){ dot+=d1[i]*d2[i]; n1+=d1[i]*d1[i]; n2+=d2[i]*d2[i]; }
+  const denom=Math.sqrt(n1)*Math.sqrt(n2);
+  return denom>0 ? Math.max(0,dot/denom) : 0;
+}
 // Blend weight — how much the color histogram counts vs CLIP's semantic
 // embedding. Admin-adjustable (see saveColorWeight), same idea as the
 // match threshold: worth tuning against real results rather than
 // guessing the "right" number blind.
-function blendedScore(clipScore, histScore){
-  const w=(parseFloat(localStorage.getItem('cv_libcmp_colorweight'))||50)/100;
-  return (1-w)*clipScore + w*histScore;
+function blendedScore(clipScore, histScore, shapeScore){
+  const colorW=(parseFloat(localStorage.getItem('cv_libcmp_colorweight'))||33)/100;
+  const shapeW=(parseFloat(localStorage.getItem('cv_libcmp_shapeweight'))||33)/100;
+  const clipW=Math.max(0, 1-colorW-shapeW);
+  return clipW*clipScore + colorW*histScore + (shapeScore!=null ? shapeW*shapeScore : 0);
 }
 
 function loadImageFromDataUrl(dataUrl){
@@ -440,7 +512,7 @@ function cosineSim(a,b){
 async function computeSignature(dataUrl){
   const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
   const img = await loadImageFromDataUrl(dataUrl);
-  const cropped = autoCropToContent(img); // one crop, shared by both signals below
+  const cropped = autoCropToContent(img); // one crop, shared by all three signals below
   const preppedUrl = preprocessToDataUrl(cropped); // re-crops a no-op on an already-tight region — harmless
   const { processor, model } = await ensureModel();
   const image = await RawImage.fromURL(preppedUrl);
@@ -448,7 +520,8 @@ async function computeSignature(dataUrl){
   const { image_embeds } = await model(inputs);
   const embedding = l2normalize(Array.from(image_embeds.data));
   const histogram = computeHistogram(cropped); // full color, cropped region — not the padding-heavy original frame
-  return { embedding, histogram };
+  const shape = computeShapeDescriptor(cropped); // luminance-only, color-invariant — robust to phone/webcam color shift
+  return { embedding, histogram, shape };
 }
 // Kept for anywhere that only needs the embedding on its own.
 async function computeEmbeddingFromDataUrl(dataUrl){
@@ -472,26 +545,31 @@ async function loadCategories(){
 
 async function ensureEmbeddingsLoaded(){
   if(libraryEmbeddings) return libraryEmbeddings;
-  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding,histogram');
+  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding,histogram,shape');
   libraryEmbeddings = Array.isArray(data) ? data : [];
   return libraryEmbeddings;
 }
 
 // ── Admin: build/update index ──
+let buildCancelled = false;
 async function buildIndex(){
   if(!isAdmin){ alert('Admin only'); return; }
+  buildCancelled = false;
   const btn = document.getElementById('build-btn');
+  const rebuildBtn = document.getElementById('rebuild-btn');
+  const buildCancelBtn = document.getElementById('build-cancel-btn');
   const statusEl = document.getElementById('index-status');
   const progEl = document.getElementById('index-progress');
   const progWrap = document.getElementById('index-prog');
   const progBar = document.getElementById('index-prog-bar');
-  btn.disabled = true;
+  btn.disabled = true; rebuildBtn.disabled = true;
+  if(buildCancelBtn) buildCancelBtn.style.display='inline-flex';
   try{ await ensureModel(); }
-  catch(e){ alert('Failed to load model: '+e.message); btn.disabled=false; return; }
+  catch(e){ alert('Failed to load model: '+e.message); btn.disabled=false; rebuildBtn.disabled=false; if(buildCancelBtn) buildCancelBtn.style.display='none'; return; }
 
   let library;
   try{ library = await gsGet({action:'xrayLibrary'}); }
-  catch(e){ alert('Failed to load reference library: '+e.message); btn.disabled=false; return; }
+  catch(e){ alert('Failed to load reference library: '+e.message); btn.disabled=false; rebuildBtn.disabled=false; if(buildCancelBtn) buildCancelBtn.style.display='none'; return; }
   if(!Array.isArray(library)) library = [];
 
   let existing = [];
@@ -501,38 +579,47 @@ async function buildIndex(){
 
   if(!todo.length){
     statusEl.textContent = 'Index up to date — '+library.length+' item(s) indexed.';
-    btn.disabled = false; return;
+    btn.disabled = false; rebuildBtn.disabled=false; if(buildCancelBtn) buildCancelBtn.style.display='none'; return;
   }
 
   progWrap.style.display='block'; progEl.style.display='inline';
-  let done=0, failed=0;
+  let done=0, failed=0, wasCancelled=false;
   const BATCH=6;
   for(let i=0;i<todo.length;i+=BATCH){
+    if(buildCancelled){ wasCancelled=true; break; }
     const batch = todo.slice(i,i+BATCH);
     progEl.textContent = done+'/'+todo.length+' indexed'+(failed?(' · '+failed+' failed'):'');
     try{
       const res = await gsPost({action:'getImagesAsB64', refs: batch.map(it=>it.image_url)});
       const imagesMap = res?.images || {};
       for(const it of batch){
+        if(buildCancelled){ wasCancelled=true; break; }
         const dataUrl = imagesMap[it.image_url];
         if(!dataUrl){ failed++; continue; }
         try{
-          const {embedding, histogram} = await computeSignature(dataUrl);
+          const {embedding, histogram, shape} = await computeSignature(dataUrl);
           await sbPost('library_embeddings', {
             awb: it.awb, product_name: it.product_name, clean_name: it.clean_name||'',
-            category: it.category, image_url: it.image_url, embedding: embedding, histogram: histogram
+            category: it.category, image_url: it.image_url, embedding: embedding, histogram: histogram, shape: shape
           });
           done++;
         }catch(e){ failed++; console.warn('embed failed for', it.awb, e.message); }
         progBar.style.width = Math.round(((done+failed)/todo.length)*100)+'%';
       }
     }catch(e){ failed += batch.length; console.warn('batch fetch failed:', e.message); }
+    if(wasCancelled) break;
   }
-  progEl.textContent = done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
-  statusEl.textContent = 'Index build complete — '+(existingSet.size+done)+' of '+library.length+' total item(s) indexed.';
+  progEl.textContent = (wasCancelled?'Cancelled — ':'')+done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
+  statusEl.textContent = wasCancelled
+    ? 'Cancelled — '+(existingSet.size+done)+' of '+library.length+' indexed so far. Progress made before cancelling is saved; run again to pick up where this left off.'
+    : 'Index build complete — '+(existingSet.size+done)+' of '+library.length+' total item(s) indexed.';
   libraryEmbeddings = null;
   await loadCategories();
-  btn.disabled = false;
+  btn.disabled = false; rebuildBtn.disabled=false;
+  if(buildCancelBtn) buildCancelBtn.style.display='none';
+}
+function cancelBuild(){
+  buildCancelled = true;
 }
 
 // Wipes library_embeddings completely and rebuilds from scratch. Needed
@@ -703,13 +790,18 @@ function thumbUrl(url){
 }
 
 // ── Run comparison ──
+let compareCancelled = false;
 async function runCompare(){
   if(!queue.length){ alert('Add at least one image first'); return; }
+  compareCancelled = false;
   const btn = document.getElementById('run-btn');
+  const cancelBtn = document.getElementById('cancel-btn');
   const statusEl = document.getElementById('model-status');
   btn.disabled = true; btn.textContent = 'COMPARING...';
+  cancelBtn.style.display = 'inline-flex';
   try{
     await ensureModel();
+    if(compareCancelled) throw new Error('CANCELLED');
     statusEl.textContent = 'Loading reference index...';
     let lib = await ensureEmbeddingsLoaded();
     if(mode==='category'){
@@ -718,19 +810,25 @@ async function runCompare(){
     }
     if(!lib.length){
       alert('No indexed items to compare against'+(mode==='category'?' in this category':'')+' — ask an admin to Build/Update Index first.');
-      btn.disabled=false; btn.textContent='▶ COMPARE'; return;
+      btn.disabled=false; btn.textContent='▶ COMPARE'; cancelBtn.style.display='none'; return;
     }
     const threshold = (parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
     statusEl.textContent = 'Comparing '+queue.length+' image(s) against '+lib.length+' reference item(s)...';
     const results = [];
     for(const q of queue){
-      const {embedding, histogram} = await computeSignature(q.dataUrl);
+      if(compareCancelled) throw new Error('CANCELLED');
+      const {embedding, histogram, shape} = await computeSignature(q.dataUrl);
       const scored = lib.map(item=>{
         const clipScore = cosineSim(embedding, item.embedding);
-        // Older indexed items built before the histogram fix won't have
-        // one — falls back to CLIP alone for those rather than treating
-        // a missing histogram as a zero-similarity mismatch.
-        const score = item.histogram ? blendedScore(clipScore, histogramSimilarity(histogram, item.histogram)) : clipScore;
+        // Older indexed items built before the histogram/shape fix
+        // won't have them — falls back gracefully (CLIP + whichever
+        // signals ARE present) rather than treating a missing signal
+        // as a zero-similarity mismatch.
+        const histScore = item.histogram ? histogramSimilarity(histogram, item.histogram) : null;
+        const shapeScore = item.shape ? shapeSimilarity(shape, item.shape) : null;
+        const score = (histScore!=null || shapeScore!=null)
+          ? blendedScore(clipScore, histScore!=null?histScore:clipScore, shapeScore)
+          : clipScore;
         return {item, score};
       }).sort((a,b)=>b.score-a.score).slice(0,5);
       results.push({query:q, matches:scored, verdict:(scored[0] && scored[0].score>=threshold)?'ORIGINAL':'NOMATCH'});
@@ -738,10 +836,18 @@ async function runCompare(){
     renderResults(results);
     statusEl.textContent = 'Done.';
   }catch(e){
-    alert('Compare failed: '+e.message);
-    statusEl.textContent = 'Error: '+e.message;
+    if(e.message==='CANCELLED'){
+      statusEl.textContent = 'Cancelled.';
+    } else {
+      alert('Compare failed: '+e.message);
+      statusEl.textContent = 'Error: '+e.message;
+    }
   }
-  btn.disabled=false; btn.textContent='▶ COMPARE';
+  btn.disabled=false; btn.textContent='▶ COMPARE'; cancelBtn.style.display='none';
+}
+
+function cancelCompare(){
+  compareCancelled = true;
 }
 
 function renderResults(results){
@@ -800,7 +906,8 @@ function toggleMore(ri){
     refreshIndexStatus();
   }
   document.getElementById('threshold').value = localStorage.getItem('cv_libcmp_threshold') || 85;
-  document.getElementById('color-weight').value = localStorage.getItem('cv_libcmp_colorweight') || 50;
+  document.getElementById('color-weight').value = localStorage.getItem('cv_libcmp_colorweight') || 33;
+  document.getElementById('shape-weight').value = localStorage.getItem('cv_libcmp_shapeweight') || 33;
   await loadCategories();
 })();
 </script>

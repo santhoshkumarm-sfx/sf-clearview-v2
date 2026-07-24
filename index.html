@@ -1,8 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.40 - 2026-07-24 - Two real bugs found via actual data analysis (1283+812 real image files + 90k-row MatchLog + 66k-row Records export), not guessing:
-     (1) unlinkedByAwb was a plain Map — when the SAME AWB has more than one pending scan (a shipment genuinely re-scanned later the same shift; confirmed in real data: 6 of 812 files in one folder alone were AWBs appearing twice, hours apart), the second scan record was silently overwriting and losing the first, permanently orphaning whichever photo needed it. Now holds an array per AWB, and when multiple pending records share an AWB, picks whichever is closest to the file's own encoded timestamp — verified correct against the actual duplicate-AWB case found in the data.
-     (2) Volumetric shipments were showing as permanently "pending" everywhere (Scan AWB stats, End of Shift, My Records, All Records, Dashboard) because every one of those checked xray_image_url/image_linked directly — which a Volumetric shipment can never have, by definition (too big for the machine). computeImageLinked() is now the single source of truth, checking product_image_url instead for Volumetric — every scattered duplicate check across the app now routes through it instead of re-deriving the same logic inconsistently in nine different places.
-     Verified via direct testing: all 812 AWB-named + 1283 timestamp-only real files from the provided folders parse with 100% success (candidate extraction and timestamp extraction both). No Code.gs changes. -->
+<!-- SF ClearView v2.41 - 2026-07-24 - Extended forceRefreshLibrary() (admin, X-Ray Reference) to also sync category/sub_category/product_name/clean_name for the comparison model's already-indexed items — a lightweight metadata-only update (no ML model needed, runs right here in the main app), so one admin button now keeps both the library display AND the comparison model's categories in sync. The "Force Refresh" button that used to live inside Image Compare's category dropdown was removed from there per request — this is now the only place it lives. The actual image-matching rebuild (embeddings/histograms/shape descriptors) still has to happen from Image Compare's own admin panel — only that page has the comparison model loaded, and keeping it out of this file entirely is what keeps Scan AWB/End of Shift fast. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -1656,22 +1653,53 @@ async function forceRefreshLibrary(){
     DB.xrayLib=Array.isArray(data)?data:[];
     try{ sessionStorage.setItem('cv_xraylib_v1', JSON.stringify(DB.xrayLib)); }catch(e){}
 
-    let orphansRemoved=0;
+    let orphansRemoved=0, metadataSynced=0;
     try{
-      const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb');
-      const currentAwbs=new Set(DB.xrayLib.map(it=>it.awb));
-      const orphans=(existing||[]).filter(e=>!currentAwbs.has(e.awb));
+      const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb,category,sub_category,product_name,clean_name');
+      const currentByAwb=new Map(DB.xrayLib.map(it=>[it.awb,it]));
+
+      const orphans=(existing||[]).filter(e=>!currentByAwb.has(e.awb));
       for(const o of orphans){
         await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(o.awb));
         orphansRemoved++;
       }
-      if(orphansRemoved) libLibraryEmbeddings=null; // force a fresh fetch next Compare run
+
+      // Per your request: Force Refresh here should also keep the
+      // comparison model's category/name metadata in sync — this is
+      // the CHEAP part (no ML model needed, just updating text fields
+      // on rows already indexed), doable right here in the admin
+      // portal. The actual image-matching rebuild (recomputing
+      // embeddings/histograms/shape descriptors) still has to happen
+      // from Image Compare's own admin panel, since only that page has
+      // the comparison model loaded — keeping that heavy model out of
+      // this main app entirely is what keeps Scan AWB/End of Shift
+      // fast, so that split is intentional, not an oversight.
+      const needsSync=(existing||[]).filter(e=>{
+        const cur=currentByAwb.get(e.awb);
+        if(!cur) return false;
+        return cur.category!==e.category || (cur.sub_category||'')!==(e.sub_category||'') ||
+               cur.product_name!==e.product_name || (cur.clean_name||'')!==(e.clean_name||'');
+      });
+      const SYNC_CONCURRENCY=10;
+      for(let i=0;i<needsSync.length;i+=SYNC_CONCURRENCY){
+        const batch=needsSync.slice(i,i+SYNC_CONCURRENCY);
+        await Promise.all(batch.map(async e=>{
+          const cur=currentByAwb.get(e.awb);
+          const ok=await sbPatch('library_embeddings','awb=eq.'+encodeURIComponent(e.awb),{
+            category:cur.category, sub_category:cur.sub_category||'', product_name:cur.product_name, clean_name:cur.clean_name||''
+          });
+          if(ok) metadataSynced++;
+        }));
+      }
+      if(orphansRemoved||metadataSynced) libLibraryEmbeddings=null; // force a fresh fetch next Compare run
     }catch(e){ console.warn('Embedding reconciliation skipped:',e.message); }
 
     renderXrayLibCategories(); renderXrayLibGrid();
     if(document.getElementById('libcmp-index-status')) refreshLibIndexStatus();
     hideLoad();
-    toast('Refreshed — '+DB.xrayLib.length+' item(s) direct from the Sheet'+(orphansRemoved?', removed '+orphansRemoved+' stale search entr'+(orphansRemoved===1?'y':'ies'):''),'ok');
+    toast('Refreshed — '+DB.xrayLib.length+' item(s) direct from the Sheet'
+      +(metadataSynced?', synced '+metadataSynced+' comparison-model categor'+(metadataSynced===1?'y':'ies'):'')
+      +(orphansRemoved?', removed '+orphansRemoved+' stale search entr'+(orphansRemoved===1?'y':'ies'):''),'ok');
   }catch(e){
     hideLoad();
     toast('Force refresh failed: '+e.message,'err');

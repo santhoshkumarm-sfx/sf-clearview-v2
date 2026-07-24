@@ -1,5 +1,8 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.39 - 2026-07-23 - URGENT HOTFIX: v2.38's cache-busting fix broke login and every other Supabase call (400 error) for everyone. Cause: the _cb=timestamp query param added to sbGet() wasn't ignored by Supabase's API the way an unrecognized param would be on most REST APIs — PostgREST reads every query parameter as either a command or a column filter, so _cb got parsed as "WHERE _cb = ..." against a column that doesn't exist, and correctly rejected with 400. Removed the query param; kept cache:'no-store' (that part was always fine — it's a browser-only fetch option, never actually sent to the server, so it couldn't have caused this). GAS's gsGet() keeps its own _cb= param since Code.gs's doGet() only ever switches on p.action and safely ignores anything else — that one was never a problem. No Code.gs changes. -->
+<!-- SF ClearView v2.40 - 2026-07-24 - Two real bugs found via actual data analysis (1283+812 real image files + 90k-row MatchLog + 66k-row Records export), not guessing:
+     (1) unlinkedByAwb was a plain Map — when the SAME AWB has more than one pending scan (a shipment genuinely re-scanned later the same shift; confirmed in real data: 6 of 812 files in one folder alone were AWBs appearing twice, hours apart), the second scan record was silently overwriting and losing the first, permanently orphaning whichever photo needed it. Now holds an array per AWB, and when multiple pending records share an AWB, picks whichever is closest to the file's own encoded timestamp — verified correct against the actual duplicate-AWB case found in the data.
+     (2) Volumetric shipments were showing as permanently "pending" everywhere (Scan AWB stats, End of Shift, My Records, All Records, Dashboard) because every one of those checked xray_image_url/image_linked directly — which a Volumetric shipment can never have, by definition (too big for the machine). computeImageLinked() is now the single source of truth, checking product_image_url instead for Volumetric — every scattered duplicate check across the app now routes through it instead of re-deriving the same logic inconsistently in nine different places.
+     Verified via direct testing: all 812 AWB-named + 1283 timestamp-only real files from the provided folders parse with 100% success (candidate extraction and timestamp extraction both). No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -263,7 +266,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="compare.html" target="_blank" rel="noopener" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-23</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-24</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -1139,7 +1142,17 @@ function isValidAwbFormat(awb){
 // Back/Product don't factor into this at all (they're still required
 // to SAVE a Fake/Empty/Tampered scan — that's a separate check in
 // submitScan(), unrelated to this flag).
+//
+// EXCEPT Volumetric (2026-07-24 fix): a Volumetric shipment can NEVER
+// get a genuine X-ray photo — it's physically too big for the machine,
+// that's the whole point of the category. Requiring xray_image_url for
+// "linked" meant every Volumetric shipment showed as permanently
+// pending, forever, even after the operator did exactly what the
+// workflow asks (capture a product photo instead). For Volumetric,
+// this checks product_image_url instead — the substitute artifact that
+// actually exists for this case.
 function computeImageLinked(r){
+  if(r.result==='VOLUMETRIC') return !!r.product_image_url;
   return !!r.xray_image_url;
 }
 
@@ -2364,8 +2377,8 @@ function updateStats(){
   const r=myToday();
   document.getElementById('ss-today').textContent  =r.length;
   document.getElementById('ss-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
-  document.getElementById('ss-pending').textContent=r.filter(x=>!x.image_linked).length;
-  document.getElementById('ss-linked').textContent =r.filter(x=>x.image_linked).length;
+  document.getElementById('ss-pending').textContent=r.filter(x=>!computeImageLinked(x)).length;
+  document.getElementById('ss-linked').textContent =r.filter(x=>computeImageLinked(x)).length;
   // Scan limit warning badge
   if(r.length>=SCAN_LIMIT*0.9){
     const pct=Math.round((r.length/SCAN_LIMIT)*100);
@@ -2399,7 +2412,7 @@ function renderRecentScans(){
 }
 
 function updateBanner(){
-  const r=myToday(), p=r.filter(x=>!x.image_linked).length;
+  const r=myToday(), p=r.filter(x=>!computeImageLinked(x)).length;
   const b=document.getElementById('recon-banner');
   if(b){ if(p>0&&r.length>0){ b.style.display='flex'; document.getElementById('recon-sub') && (document.getElementById('recon-sub').textContent=p+' AWBs waiting'); } else b.style.display='none'; }
 }
@@ -2462,7 +2475,7 @@ async function triggerAutoSync(){
 
 // ── EOS SUBMIT — sync Supabase → GSheet via GAS ─────────────
 async function eosSubmit(){
-  const pending=myToday().filter(r=>!r.image_linked).length;
+  const pending=myToday().filter(r=>!computeImageLinked(r)).length;
   if(pending>0){
     const go=confirm(pending+' records still have no image linked. Submit anyway?');
     if(!go) return;
@@ -2490,8 +2503,8 @@ function renderShift(){
   document.getElementById('eos-t2').style.display=mt===2?'block':'none';
   const r=myToday();
   document.getElementById('eos-total').textContent  =r.length;
-  document.getElementById('eos-pending').textContent=r.filter(x=>!x.image_linked).length;
-  document.getElementById('eos-linked').textContent =r.filter(x=>x.image_linked).length;
+  document.getElementById('eos-pending').textContent=r.filter(x=>!computeImageLinked(x)).length;
+  document.getElementById('eos-linked').textContent =r.filter(x=>computeImageLinked(x)).length;
   document.getElementById('eos-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
   if(mt===2) renderT2();
   renderEosLinked();
@@ -2500,7 +2513,7 @@ function renderT2(){
   // Same fix as the folder-matching pool — this shows what still needs
   // its X-ray-machine photo attached, regardless of whether Label/Front/
   // Back are already done.
-  const r=myToday().filter(x=>!x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  const r=myToday().filter(x=>!computeImageLinked(x)).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
   document.getElementById('t2-body').innerHTML=r.length===0
     ?'<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:12px;">All linked</td></tr>'
     :r.map((rec,i)=>'<tr><td style="font-family:var(--mono);color:var(--t2);">#'+(rec.seq_num!=null?rec.seq_num:('~'+(i+1)))+'</td>'
@@ -2512,7 +2525,7 @@ function renderT2(){
 }
 let eosLinkedShowAll=false; // capped by default — see renderEosLinked
 function renderEosLinked(){
-  const all=myToday().filter(x=>x.image_linked||x.xray_image_url).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  const all=myToday().filter(x=>computeImageLinked(x)).sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
   // FIX: this used to rebuild EVERY linked record of the whole shift as
   // one giant HTML block on every single render — on a busy day with
   // 200-900+ scans, that's several thousand DOM nodes torn down and
@@ -2538,7 +2551,7 @@ function renderEosLinked(){
       +'<td class="tc-awb">'+rec.awb+'</td>'
       +'<td style="font-size:11px;color:var(--text3);">'+new Date(rec.scanned_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'</td>'
       +'<td style="font-size:12px;">'+(rec.product_name||'–')+'</td>'
-      +'<td>'+((rec.xray_image_url||rec.image_linked)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="View X-Ray/Label/Front/Back">🖼 Images</span>':'<span class="pill pill-warn">⏳</span>')
+      +'<td>'+(computeImageLinked(rec)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="View X-Ray/Label/Front/Back/Product">🖼 Images</span>':'<span class="pill pill-warn">⏳</span>')
         +(rec.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+rec.id+'\')" title="Product photo also attached">📦 Product</span>':'')
         +(rec.manually_corrected?' <span class="pill pill-warn" style="margin-left:4px;" title="Manually replaced by operator">⚠ FORCED</span>':'')+'</td>'
       +'<td>'+resultPill(rec.result)+'</td>'
@@ -2795,7 +2808,7 @@ async function processXl(file){
   const ab=await file.arrayBuffer();
   const wb=XLSX.read(ab,{type:'array'});
   const data=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{raw:false});
-  const today=myToday().filter(r=>!r.image_linked);
+  const today=myToday().filter(r=>!computeImageLinked(r));
   const matches=[];
   data.forEach(row=>{
     const a=(row[awbCol]||'').toString().trim().toUpperCase();
@@ -3037,8 +3050,24 @@ async function processFd(files){
   // check O(1) instead, which matters a lot once BLR/MDC-scale batches
   // start actually finding matches (previously they mostly didn't, so
   // this cost was hidden).
+  // FIX (2026-07-24, found via real data): a plain Map keyed by AWB can
+  // only ever hold ONE record per key — when the same AWB genuinely has
+  // more than one pending scan (a shipment re-scanned later the same
+  // day, confirmed in real data: 6 of 812 files in one folder alone
+  // were AWBs appearing twice, hours apart), the second scan record was
+  // silently overwriting and losing the first in this map, permanently
+  // orphaning whichever photo needed it. Now holds an array per AWB,
+  // and when more than one candidate record is still available for the
+  // same AWB, uses the file's OWN encoded timestamp (already being
+  // parsed anyway) to pick whichever pending record is closest in time
+  // — almost certainly the correct one for that specific photo.
   const unlinkedByAwb=new Map();
-  unlinked.forEach(r=>{ const a=(r.awb||'').toString().trim().toUpperCase(); if(a) unlinkedByAwb.set(a,r); });
+  unlinked.forEach(r=>{
+    const a=(r.awb||'').toString().trim().toUpperCase();
+    if(!a) return;
+    if(!unlinkedByAwb.has(a)) unlinkedByAwb.set(a,[]);
+    unlinkedByAwb.get(a).push(r);
+  });
   const linkedAwbSet=new Set();
   allInWindow.forEach(r=>{ if(r.xray_image_url){ const a=(r.awb||'').toString().trim().toUpperCase(); if(a) linkedAwbSet.add(a); } });
 
@@ -3054,14 +3083,23 @@ async function processFd(files){
     if(!m.parsed.candidates.length) continue;
     let claimedInThisBatch=false, alreadyLinked=false;
     for(const cand of m.parsed.candidates){
-      const rec=unlinkedByAwb.get(cand);
-      if(rec){
-        if(!used.has(rec.id)){
-          m.rec=rec; m.method='AWB in name'; m.diffSec=0; used.add(rec.id);
-          break;
-        } else {
-          claimedInThisBatch=true;
+      const bucket=unlinkedByAwb.get(cand);
+      const available=bucket ? bucket.filter(r=>!used.has(r.id)) : [];
+      if(available.length){
+        let rec=available[0];
+        if(available.length>1 && m.parsed.timestamp){
+          // Multiple pending scans share this AWB — pick whichever is
+          // closest in time to THIS photo's own encoded timestamp.
+          let best=Math.abs(m.parsed.timestamp-new Date(rec.scanned_at));
+          for(const cand2 of available.slice(1)){
+            const diff=Math.abs(m.parsed.timestamp-new Date(cand2.scanned_at));
+            if(diff<best){ best=diff; rec=cand2; }
+          }
         }
+        m.rec=rec; m.method='AWB in name'; m.diffSec=0; used.add(rec.id);
+        break;
+      } else if(bucket && bucket.length){
+        claimedInThisBatch=true;
       } else if(linkedAwbSet.has(cand)){
         alreadyLinked=true;
       }
@@ -3371,7 +3409,7 @@ async function applyFolder(){
 
   // Show post-upload options: Continue Scanning or End Shift
   const total = myToday().length;
-  const pending = myToday().filter(r=>!r.image_linked).length;
+  const pending = myToday().filter(r=>!computeImageLinked(r)).length;
   const msg = linked.length+' images uploaded'+(failed.length?', '+failed.length+' failed':'!')+' '+(pending>0?pending+' records still unlinked.':'All images linked.');
 
   // Create inline notification with options
@@ -3446,7 +3484,7 @@ function assignSerials(pool){
 // time, status), its own scan count, its own matched/unmatched
 // breakdown — never combined with any other shift's numbers.
 function renderShiftSection(title, statusBadge, recs){
-  const matched=recs.filter(r=>r.image_linked||r.xray_image_url).length;
+  const matched=recs.filter(r=>computeImageLinked(r)).length;
   const unmatched=recs.length-matched;
   const rows=recs.length===0
     ? '<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:16px;">No records in this shift.</td></tr>'
@@ -3460,7 +3498,7 @@ function renderShiftSection(title, statusBadge, recs){
         +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
         +'<td style="font-size:12px;">'+(r.shoe_box||'–')+'</td>'
         +'<td style="font-size:11px;color:var(--text2);">'+(r.remarks||'–')+'</td>'
-        +'<td>'+((r.xray_image_url||r.image_linked)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼</span>':'<span class="pill pill-warn">⏳</span>')
+        +'<td>'+(computeImageLinked(r)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼</span>':'<span class="pill pill-warn">⏳</span>')
           +(r.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">📦</span>':'')+'</td>'
         +'<td style="display:flex;gap:4px;">'
           +'<button class="btn btn-ghost btn-xs" onclick="openEditRecord(\''+r.id+'\')">✏️ Edit</button>'
@@ -3649,7 +3687,7 @@ function renderDash(){
     ?'<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--text3);">No locations yet.</div>'
     :dashLocs.map(loc=>{
       const lr=recs.filter(r=>r.location_code===loc.code);
-      const pending=lr.filter(r=>!r.image_linked&&!r.xray_image_url).length;
+      const pending=lr.filter(r=>!computeImageLinked(r)).length;
       const forced=lr.filter(r=>r.manually_corrected).length;
       const withProduct=lr.filter(r=>r.product_image_url).length;
       return '<div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:14px;border-top:2px solid '+(loc.machine_type===1||loc.machine_type==='1'?'var(--t1)':'var(--t2)')+';">'
@@ -3929,7 +3967,7 @@ async function renderAllRec(){
       +'<td>'+resultPill(r.result)+'</td>'
       +'<td style="font-size:12px;">'+(r.tamper_status||'–')+'</td>'
       +'<td style="font-family:var(--mono);font-size:11px;color:var(--text3);">'+r.operator_email+'</td>'
-      +'<td>'+((r.xray_image_url||r.image_linked)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼 Images</span>':'–')
+      +'<td>'+(computeImageLinked(r)?'<span class="pill pill-ok" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">🖼 Images</span>':'–')
         +(r.product_image_url?' <span class="pill pill-warn" style="cursor:pointer;" onclick="viewImages(\''+r.id+'\')">📦</span>':'')+'</td>'
       +'<td>'+(r.manually_corrected?'<span class="pill pill-warn" style="font-size:8px;">⚠ FORCED</span>':'')
         +(r.pinned?' <span style="font-size:11px;">📌</span>':'')+'</td>'

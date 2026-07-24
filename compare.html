@@ -147,7 +147,10 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
     </div>
     <div id="cat-select-wrap" class="fg" style="margin-bottom:0;">
       <label class="lbl">Category</label>
-      <select id="cat-select"><option value="">Loading categories...</option></select>
+      <div class="row" style="gap:8px;">
+        <div style="flex:1;"><select id="cat-select"><option value="">Loading categories...</option></select></div>
+        <button class="btn btn-sm" onclick="loadCategories()" title="Re-fetches the category list fresh from the database — use this any time the Sheet's categories changed and this dropdown looks out of date">🔄 Force Refresh</button>
+      </div>
     </div>
   </div>
 
@@ -188,7 +191,7 @@ const isAdmin = localStorage.getItem('cv_shared_isAdmin') === 'true';
 
 // ── Minimal fetch helpers (standalone — no dependency on index.html) ──
 async function sbGet(path){
-  const r = await fetch(SB_URL+path, { headers: { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY } });
+  const r = await fetch(SB_URL+path, { headers: { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY }, cache: 'no-store' });
   if(!r.ok) throw new Error('Supabase GET failed: '+r.status);
   return r.json();
 }
@@ -222,11 +225,11 @@ async function sbDelete(table, query){
 }
 async function gsGet(params){
   const q = new URLSearchParams(params).toString();
-  const r = await fetch(GS_URL+'?'+q);
+  const r = await fetch(GS_URL+'?'+q+'&_cb='+Date.now(), { cache: 'no-store' });
   return r.json();
 }
 async function gsPost(body){
-  const r = await fetch(GS_URL, { method:'POST', body: JSON.stringify(body) });
+  const r = await fetch(GS_URL, { method:'POST', body: JSON.stringify(body), cache: 'no-store' });
   return r.json();
 }
 
@@ -284,16 +287,88 @@ async function ensureModel(){
 // objects (a watch vs earbuds, a shirt vs a power bank) were scoring
 // 85-100% against each other. Now just resizes — color is preserved
 // all the way through to the model.
+// NEW (2026-07-24): most of the frame in this fleet's raw X-ray
+// captures is black padding around a narrow strip actually containing
+// the product (confirmed directly from real screenshots — the actual
+// object often occupies well under half the frame width). That padding
+// was diluting BOTH the visual thumbnails (product barely visible even
+// at reasonable sizes) AND the model's signal (most of what CLIP and
+// the histogram were "looking at" was empty padding, not the product).
+// This detects the actual content region (anything that isn't
+// near-black padding or near-white background) and crops to it, used
+// for the image fed to the model AND the thumbnails shown to a person.
+function autoCropToContent(img, marginPct){
+  marginPct = marginPct==null ? 0.05 : marginPct;
+  const srcW = img.naturalWidth||img.width, srcH = img.naturalHeight||img.height;
+  if(!srcW || !srcH) return img;
+
+  // Detect on a small downscaled sample for speed — the bounding box
+  // scales back up to full resolution for the actual crop.
+  const sampleMax = 300;
+  const scale = Math.min(1, sampleMax / Math.max(srcW, srcH));
+  const sw = Math.max(1, Math.round(srcW*scale)), sh = Math.max(1, Math.round(srcH*scale));
+  const sc = document.createElement('canvas');
+  sc.width=sw; sc.height=sh;
+  const sctx = sc.getContext('2d');
+  sctx.drawImage(img,0,0,sw,sh);
+  const d = sctx.getImageData(0,0,sw,sh).data;
+
+  function isContent(r,g,b){
+    const lum = 0.299*r+0.587*g+0.114*b;
+    return lum>=18 && lum<=245; // excludes near-black padding and near-white background
+  }
+
+  let minX=sw, maxX=0, minY=sh, maxY=0, found=false;
+  for(let y=0;y<sh;y++){
+    for(let x=0;x<sw;x++){
+      const i=(y*sw+x)*4;
+      if(isContent(d[i],d[i+1],d[i+2])){
+        found=true;
+        if(x<minX) minX=x; if(x>maxX) maxX=x;
+        if(y<minY) minY=y; if(y>maxY) maxY=y;
+      }
+    }
+  }
+  if(!found) return img; // nothing detected as content — fall back to the original rather than a zero-size crop
+
+  const realScale = 1/scale;
+  const bw=(maxX-minX)*realScale, bh=(maxY-minY)*realScale;
+  const mX=bw*marginPct, mY=bh*marginPct;
+  const cropX=Math.max(0, minX*realScale-mX), cropY=Math.max(0, minY*realScale-mY);
+  const cropW=Math.min(srcW-cropX, bw+mX*2), cropH=Math.min(srcH-cropY, bh+mY*2);
+
+  const c=document.createElement('canvas');
+  c.width=Math.max(1,Math.round(cropW)); c.height=Math.max(1,Math.round(cropH));
+  c.getContext('2d').drawImage(img, cropX, cropY, cropW, cropH, 0, 0, c.width, c.height);
+  return c;
+}
+
+// Crops a data URL for DISPLAY purposes (queue thumbnails, the "what
+// you searched" image in results) — separate from the model pipeline
+// below, but uses the same autoCropToContent utility.
+async function cropForDisplay(dataUrl){
+  try{
+    const img = await loadImageFromDataUrl(dataUrl);
+    const cropped = autoCropToContent(img);
+    return (cropped instanceof HTMLCanvasElement) ? cropped.toDataURL('image/jpeg',0.92) : dataUrl;
+  }catch(e){
+    console.warn('Auto-crop for display failed, using original image:', e.message);
+    return dataUrl;
+  }
+}
+
 function preprocessToDataUrl(img, maxDim){
   maxDim = maxDim || 224;
-  const scale = Math.min(1, maxDim / Math.max(img.naturalWidth||img.width, img.naturalHeight||img.height));
-  const w = Math.max(1, Math.round((img.naturalWidth||img.width)*scale));
-  const h = Math.max(1, Math.round((img.naturalHeight||img.height)*scale));
+  const cropped = autoCropToContent(img);
+  const srcW = cropped.naturalWidth||cropped.width, srcH = cropped.naturalHeight||cropped.height;
+  const scale = Math.min(1, maxDim / Math.max(srcW, srcH));
+  const w = Math.max(1, Math.round(srcW*scale));
+  const h = Math.max(1, Math.round(srcH*scale));
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0,0,w,h);
-  ctx.drawImage(img, 0, 0, w, h);
+  ctx.drawImage(cropped, 0, 0, w, h);
   return c.toDataURL('image/jpeg', 0.9);
 }
 
@@ -365,13 +440,14 @@ function cosineSim(a,b){
 async function computeSignature(dataUrl){
   const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
   const img = await loadImageFromDataUrl(dataUrl);
-  const preppedUrl = preprocessToDataUrl(img);
+  const cropped = autoCropToContent(img); // one crop, shared by both signals below
+  const preppedUrl = preprocessToDataUrl(cropped); // re-crops a no-op on an already-tight region — harmless
   const { processor, model } = await ensureModel();
   const image = await RawImage.fromURL(preppedUrl);
   const inputs = await processor(image);
   const { image_embeds } = await model(inputs);
   const embedding = l2normalize(Array.from(image_embeds.data));
-  const histogram = computeHistogram(img); // uses the ORIGINAL (full color) image, not the model's preprocessed copy
+  const histogram = computeHistogram(cropped); // full color, cropped region — not the padding-heavy original frame
   return { embedding, histogram };
 }
 // Kept for anywhere that only needs the embedding on its own.
@@ -513,7 +589,8 @@ async function addFilesToQueue(files){
   for(const f of files){
     if(queue.length>=5){ alert('Max 5 images at a time'); break; }
     const dataUrl = await fileToDataUrl(f);
-    queue.push({name:f.name, dataUrl});
+    const cropped = await cropForDisplay(dataUrl);
+    queue.push({name:f.name, dataUrl:cropped});
   }
   renderQueue();
 }
@@ -534,12 +611,12 @@ async function useLink(){
   try{
     const res = await gsPost({action:'getImagesAsB64', refs:[raw]});
     const dataUrl = res?.images?.[raw];
-    if(dataUrl){ queue.push({name:raw.slice(0,40), dataUrl}); }
+    if(dataUrl){ queue.push({name:raw.slice(0,40), dataUrl:await cropForDisplay(dataUrl)}); }
     else{
       const r = await fetch(raw);
       const blob = await r.blob();
       const dUrl = await new Promise((res2,rej2)=>{ const fr=new FileReader(); fr.onload=e=>res2(e.target.result); fr.onerror=rej2; fr.readAsDataURL(blob); });
-      queue.push({name:raw.slice(0,40), dataUrl:dUrl});
+      queue.push({name:raw.slice(0,40), dataUrl:await cropForDisplay(dUrl)});
     }
   }catch(e){
     alert('Could not load image from that link: '+e.message);
@@ -598,8 +675,11 @@ function captureFromCam(){
   const c = document.createElement('canvas');
   c.width = video.videoWidth; c.height = video.videoHeight;
   c.getContext('2d').drawImage(video,0,0);
-  queue.push({name:'webcam-capture-'+Date.now()+'.jpg', dataUrl:c.toDataURL('image/jpeg',0.9)});
-  renderQueue();
+  const rawUrl = c.toDataURL('image/jpeg',0.9);
+  cropForDisplay(rawUrl).then(cropped=>{
+    queue.push({name:'webcam-capture-'+Date.now()+'.jpg', dataUrl:cropped});
+    renderQueue();
+  });
   closeCamera();
 }
 

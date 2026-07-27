@@ -191,7 +191,15 @@ const GS_URL = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5
 const SB_URL = 'https://ckmfixhyuklzqkggzudb.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
 
-const isAdmin = localStorage.getItem('cv_shared_isAdmin') === 'true';
+// FIX (2026-07-27): this used to read a shared localStorage flag,
+// which meant on any shared device whichever role logged in most
+// recently leaked into every subsequent tab-open of this page,
+// regardless of who's actually using it right now — a real reported
+// bug (admin controls showing up for operators). The role is now
+// passed as a URL query param at the exact moment index.html opens
+// this tab, tied to whoever is actually logged in at that click —
+// no stale state possible, since a fresh param is set every time.
+const isAdmin = new URLSearchParams(window.location.search).get('admin') === 'true';
 
 // ── Minimal fetch helpers (standalone — no dependency on index.html) ──
 async function sbGet(path){

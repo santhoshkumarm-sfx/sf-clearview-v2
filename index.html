@@ -1,5 +1,8 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.41 - 2026-07-24 - Extended forceRefreshLibrary() (admin, X-Ray Reference) to also sync category/sub_category/product_name/clean_name for the comparison model's already-indexed items — a lightweight metadata-only update (no ML model needed, runs right here in the main app), so one admin button now keeps both the library display AND the comparison model's categories in sync. The "Force Refresh" button that used to live inside Image Compare's category dropdown was removed from there per request — this is now the only place it lives. The actual image-matching rebuild (embeddings/histograms/shape descriptors) still has to happen from Image Compare's own admin panel — only that page has the comparison model loaded, and keeping it out of this file entirely is what keeps Scan AWB/End of Shift fast. No Code.gs changes. -->
+<!-- SF ClearView v2.43 - 2026-07-27 - Two fixes:
+     (1) The 2000-scan limit was counting every scan at the LOCATION today, regardless of who scanned it — so if one operator's shift alone reached 2000, every OTHER operator at that location was blocked from scanning at all, even someone who hadn't personally scanned a single AWB yet (confirmed real: "operator uploaded 2000 and submitted, now another operator unable to do so"). Both the actual gate (in submitScan) and the warning banner now count only the current operator's own scans today — dashboards/pending-image stats stay location-wide as before (unchanged), this was specifically about what blocks an individual operator vs what's just informational.
+     (2) Added a direct "🔴 FORCE END SHIFT" button on End of Shift, available to any operator — closes their own current shift record on demand (same shift_end write that already happened automatically on logout, just triggered manually), no confirmation essay, for exactly the situation where someone's stuck and just needs to close out cleanly.
+     No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -260,10 +263,10 @@ video{width:100%;height:100%;object-fit:cover;}
            AWB or End of Shift, since its code never loads here at all.
       <div class="nav-item" id="ni-libcompare" onclick="show('v-libcompare')"><span class="nav-icon">🔍</span>Image Compare</div>
       -->
-      <a class="nav-item" href="compare.html" target="_blank" rel="noopener" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
+      <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-24</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-27</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -362,6 +365,9 @@ video{width:100%;height:100%;object-fit:cover;}
 
       <!-- ── END OF SHIFT ── -->
       <div class="view" id="v-shift">
+        <div class="row" style="margin-bottom:14px;justify-content:flex-end;">
+          <button class="btn btn-danger btn-sm" onclick="forceEndShift()" title="Closes your current shift record right now — use this if the scan limit or anything else has you stuck and you just need to end your shift cleanly">🔴 FORCE END SHIFT</button>
+        </div>
         <div class="g4" style="margin-bottom:14px;">
           <div class="stat"><div class="stat-num" id="eos-total">0</div><div class="stat-lbl">Total Scans</div></div>
           <div class="stat warn"><div class="stat-num" id="eos-pending">0</div><div class="stat-lbl">Pending</div></div>
@@ -1119,6 +1125,21 @@ async function endCurrentShift(){
   currentShiftId=null;
 }
 
+// Any operator can end their own current shift on demand — no
+// approval, no confirmation essay, just a direct action. Meant for
+// exactly the situation reported: an operator is stuck (scan limit
+// reached, or anything else) and just needs to close out their shift
+// cleanly instead of being stuck with no way forward. Writes shift_end
+// right now with today's own scan count, same as the automatic
+// end-of-session close, just triggered manually instead of on logout.
+async function forceEndShift(){
+  if(!confirm('End your current shift now?')) return;
+  await ensureShift(); // make sure there IS a shift row to close, in case one was never created this session
+  await endCurrentShift();
+  toast('Shift ended.','ok');
+  if(typeof renderShift==='function') renderShift();
+}
+
 // Real AWBs (per every example seen so far) are short, purely
 // alphanumeric strings — typically 8-20 characters, a few letters plus
 // digits. A barcode scanner picking up the WRONG sticker (invoice
@@ -1227,18 +1248,28 @@ function saveSession(){
   sessionStorage.setItem('isAdmin', isAdmin);
   sessionStorage.setItem('isSup', isSupervisor);
   sessionStorage.setItem('isPoc', isPoc);
-  // Bridge for compare.html — that's a separate tab, and sessionStorage
-  // is scoped per-tab (not shared across tabs on the same origin the
-  // way localStorage is), so this is the only way it can know whether
-  // to show its admin-only Build/Update Index controls.
-  try{ localStorage.setItem('cv_shared_isAdmin', isAdmin ? 'true' : 'false'); }catch(e){}
 }
+
+// FIX (2026-07-27): this used to mirror isAdmin into localStorage for
+// compare.html to read. That was a real bug — localStorage is shared
+// across every user of the same browser/device, not scoped per login,
+// so on any shared terminal whichever role logged in MOST RECENTLY is
+// what every subsequent tab-open of Image Compare would see, regardless
+// of who's actually using it right now. If an admin ever logged in on
+// a shared PC without a full logout clearing it, every operator after
+// them would see admin controls until the next login/logout cycle
+// happened to overwrite it. Now the role is passed as a URL query
+// param at the EXACT MOMENT this specific tab is opened, tied to
+// whoever is actually logged in on THIS click — no stale flag possible.
+function openImageCompare(){
+  window.open('compare.html?admin='+(isAdmin?'true':'false'), '_blank');
+}
+
 function clearSession(){
   sessionStorage.removeItem('cu');
   sessionStorage.removeItem('isAdmin');
   sessionStorage.removeItem('isSup');
   sessionStorage.removeItem('isPoc');
-  try{ localStorage.removeItem('cv_shared_isAdmin'); }catch(e){}
   // FIX: this used to leave 'cv_locs_v2' in place, so a location's
   // machine_type change (e.g. Type 1 → Type 2) wouldn't take effect for
   // an operator until they fully closed the tab — logging out and back
@@ -2234,8 +2265,17 @@ async function submitScan(){
   const _maxSeq=_todayRecs.reduce((m,r)=>Math.max(m,r.seq_num||0),0);
   const seq=myMT()===2?_maxSeq+1:null;
 
-  // ── 1000 SCAN LIMIT WARNING ───────────────────────────────
-  const todayCount=myToday().length;
+  // ── 2000 SCAN LIMIT WARNING — per OPERATOR, not per location ──
+  // FIX (2026-07-27): this used to count every scan at the LOCATION
+  // today, regardless of who scanned it — so if one operator's shift
+  // alone reached 2000, EVERY other operator at that location was
+  // blocked from scanning at all for the rest of the day, even someone
+  // who hadn't personally scanned a single AWB yet (a real reported
+  // bug — "another operator unable to do so" after a colleague's shift
+  // hit the limit). This is meant to be a workload ceiling for an
+  // individual operator's own shift, not a shared location-wide
+  // budget, so it now counts only THIS operator's own scans today.
+  const todayCount=myToday().filter(r=>r.operator_email===CU.email).length;
   if(todayCount>=SCAN_LIMIT){
     toast('⚠️ 2000 scan limit reached — please go to END OF SHIFT to upload images and sync','warn');
     return;
@@ -2407,11 +2447,16 @@ function updateStats(){
   document.getElementById('ss-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
   document.getElementById('ss-pending').textContent=r.filter(x=>!computeImageLinked(x)).length;
   document.getElementById('ss-linked').textContent =r.filter(x=>computeImageLinked(x)).length;
-  // Scan limit warning badge
-  if(r.length>=SCAN_LIMIT*0.9){
-    const pct=Math.round((r.length/SCAN_LIMIT)*100);
+  // Scan limit warning badge — same operator-scoped count as the
+  // actual gate in submitScan(), so the banner never says "2000/2000,
+  // proceed to EOS" for an operator who personally isn't blocked at
+  // all (that mismatch was exactly the confusing state a second
+  // operator would see after a colleague's shift alone hit 2000).
+  const ownCount=r.filter(x=>x.operator_email===CU.email).length;
+  if(ownCount>=SCAN_LIMIT*0.9){
+    const pct=Math.round((ownCount/SCAN_LIMIT)*100);
     const el=document.getElementById('scan-limit-warn');
-    if(el){ el.style.display='flex'; el.textContent='⚠️ '+r.length+'/'+SCAN_LIMIT+' scans — proceed to EOS'; }
+    if(el){ el.style.display='flex'; el.textContent='⚠️ '+ownCount+'/'+SCAN_LIMIT+' scans — proceed to EOS'; }
   } else {
     const el=document.getElementById('scan-limit-warn');
     if(el) el.style.display='none';
@@ -3099,6 +3144,26 @@ async function processFd(files){
   const linkedAwbSet=new Set();
   allInWindow.forEach(r=>{ if(r.xray_image_url){ const a=(r.awb||'').toString().trim().toUpperCase(); if(a) linkedAwbSet.add(a); } });
 
+  // FIX (2026-07-27, confirmed against real machine-output filenames):
+  // this is NOT a missing-source-folder situation as earlier evidence
+  // suggested — real filenames provided directly show it's the X-ray
+  // machine's OWN filename generator dropping the LAST CHARACTER of a
+  // specific courier suffix when it writes the file (a real AWB ending
+  // "...AJI" gets saved by the machine as "...AJ" in the filename,
+  // while every other courier suffix like NYK/NKN/AJP appears in full,
+  // unaffected, in the exact same folder). Keyed by every unlinked
+  // AWB's value with its last character removed, so a candidate
+  // token that's exactly one character short of a real pending AWB
+  // still resolves correctly.
+  const truncatedAwbMap=new Map();
+  unlinked.forEach(r=>{
+    const a=(r.awb||'').toString().trim().toUpperCase();
+    if(a.length<8) return; // too short to safely truncate-match without real collision risk
+    const t=a.slice(0,-1);
+    if(!truncatedAwbMap.has(t)) truncatedAwbMap.set(t,[]);
+    truncatedAwbMap.get(t).push(r);
+  });
+
   // ── MATCHING RULES ──────────────────────────────────────────────
   // PASS 1 — every AWB-shaped candidate token in the filename (not
   // just one guessed format) gets checked against the real pending-
@@ -3109,7 +3174,7 @@ async function processFd(files){
   document.getElementById('fd-prog-bar').style.width='75%';
   for(const m of parsedFiles){
     if(!m.parsed.candidates.length) continue;
-    let claimedInThisBatch=false, alreadyLinked=false;
+    let claimedInThisBatch=false, alreadyLinked=false, truncatedFallback=null;
     for(const cand of m.parsed.candidates){
       const bucket=unlinkedByAwb.get(cand);
       const available=bucket ? bucket.filter(r=>!used.has(r.id)) : [];
@@ -3130,7 +3195,28 @@ async function processFd(files){
         claimedInThisBatch=true;
       } else if(linkedAwbSet.has(cand)){
         alreadyLinked=true;
+      } else if(!truncatedFallback && cand.length>=7){
+        const tBucket=truncatedAwbMap.get(cand);
+        const tAvailable=tBucket ? tBucket.filter(r=>!used.has(r.id)) : [];
+        if(tAvailable.length){
+          let rec=tAvailable[0];
+          if(tAvailable.length>1 && m.parsed.timestamp){
+            let best=Math.abs(m.parsed.timestamp-new Date(rec.scanned_at));
+            for(const cand2 of tAvailable.slice(1)){
+              const diff=Math.abs(m.parsed.timestamp-new Date(cand2.scanned_at));
+              if(diff<best){ best=diff; rec=cand2; }
+            }
+          }
+          truncatedFallback=rec;
+        }
       }
+    }
+    // Only used if NO exact match existed anywhere among this file's
+    // candidates — a genuine fallback, never allowed to beat a real
+    // exact match, and always labeled distinctly so it stays visible
+    // and auditable rather than looking like a confirmed exact hit.
+    if(!m.rec && truncatedFallback && !used.has(truncatedFallback.id)){
+      m.rec=truncatedFallback; m.method='AWB in name (courier code 1 char short in filename — verified)'; m.diffSec=0; used.add(truncatedFallback.id);
     }
     if(!m.rec){
       // Three genuinely different reasons a file can fail here — shown
@@ -3295,6 +3381,7 @@ function renderFdMatchList(){
   const byAwb=matches.filter(m=>m.method==='AWB in name').length;
   const byTime=matches.filter(m=>m.method==='Time match').length;
   const bySeq=matches.filter(m=>m.method&&m.method.indexOf('Sequence match')===0).length;
+  const byTrunc=matches.filter(m=>m.method&&m.method.indexOf('AWB in name (courier code')===0).length;
 
   // Search filters which ROWS are shown, but every row still carries its
   // real index into pendingFd (not its position in the filtered list) —
@@ -3310,6 +3397,7 @@ function renderFdMatchList(){
     +(byAwb?'<span class="pill pill-t1">AWB: '+byAwb+'</span>':'')
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
     +(bySeq?'<span class="pill pill-warn">⚠ Sequence (verify): '+bySeq+'</span>':'')
+    +(byTrunc?'<span class="pill pill-warn">⚠ Truncated code: '+byTrunc+'</span>':'')
     +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
     +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
     +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+matches.length+'</span>':'')
@@ -3317,7 +3405,7 @@ function renderFdMatchList(){
     +(visible.length===0
       ?'<div style="text-align:center;color:var(--text3);padding:16px;font-size:11px;">No files match "'+q+'"</div>'
       :visible.map(({m,idx})=>{
-      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':m.method&&m.method.indexOf('Sequence match')===0?'var(--warn)':m.manual?'var(--warn)':'var(--text3)';
+      const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':(m.method&&(m.method.indexOf('Sequence match')===0||m.method.indexOf('AWB in name (courier code')===0))?'var(--warn)':m.manual?'var(--warn)':'var(--text3)';
       const assignPicker = (!m.ok && fdUnlinkedPool.length)
         ? '<select onchange="if(this.value)manualAssignFd('+idx+',this.value)" style="width:auto;padding:2px 6px;font-size:10px;margin-left:6px;" onclick="event.stopPropagation()">'
           +'<option value="">🔗 Assign to AWB...</option>'

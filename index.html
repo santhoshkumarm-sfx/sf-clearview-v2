@@ -1,8 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.43 - 2026-07-27 - Two fixes:
-     (1) The 2000-scan limit was counting every scan at the LOCATION today, regardless of who scanned it — so if one operator's shift alone reached 2000, every OTHER operator at that location was blocked from scanning at all, even someone who hadn't personally scanned a single AWB yet (confirmed real: "operator uploaded 2000 and submitted, now another operator unable to do so"). Both the actual gate (in submitScan) and the warning banner now count only the current operator's own scans today — dashboards/pending-image stats stay location-wide as before (unchanged), this was specifically about what blocks an individual operator vs what's just informational.
-     (2) Added a direct "🔴 FORCE END SHIFT" button on End of Shift, available to any operator — closes their own current shift record on demand (same shift_end write that already happened automatically on logout, just triggered manually), no confirmation essay, for exactly the situation where someone's stuck and just needs to close out cleanly.
-     No Code.gs changes. -->
+<!-- SF ClearView v2.44 - 2026-07-28 - CRITICAL FIX (root cause of "operator has proof of 0 pending, but admin dashboard/CSV never shows it"): Code.gs's uploadImageDrive() only LOGGED a warning when the Supabase database patch failed after a successful Drive upload — it still returned {ok:true, url:...} regardless, so the operator's client correctly (from its own perspective) marked the record linked locally, while the actual scans row in Supabase never got updated at all. A failed database write now returns a real error (still includes the url for reference, since the Drive file did get created) and logs to the UploadErrors SHEET directly, not just the GAS execution console. Client-side: 6 separate places across index.html were checking `res?.url` alone to decide success/failure (uploadImagesBackground, forceReplaceImage, saveEditRecord, applyFolder) — all now check `res?.ok && res?.url`, since Code.gs can return a url alongside a real error. Also: cross-checked LKO's full July 27 data (96 unlinked AWBs from the CSV export against the actual 614-file folder) — 26 will now resolve via last round's truncated-suffix fallback, 2 were genuine small misses, and 68 have literally no file anywhere in the folder (mostly still AJI-suffix, plus a few new ones: LI, SID, BEU) — that part remains a source-data gap, not something a software fix can create data for. Code.gs changed — MUST redeploy as New Version. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -266,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-27</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-28</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -2361,11 +2358,11 @@ async function uploadImagesBackground(awb, recId, imgs){
             location:myLoc(), awb, type:types[i], scanId:recId
           });
         }catch(err){ res=null; }
-        if(res?.url) break;
+        if(res?.ok && res?.url) break; // FIX: url alone isn't enough — Code.gs can now return url alongside an error if the DB write failed after a successful Drive upload
         if(attempt<2) await new Promise(r=>setTimeout(r,2000));
       }
 
-      if(res?.url){
+      if(res?.ok && res?.url){
         urls[i]=res.url;
       }else{
         // Every retry failed — don't lose the photo. Save it locally so
@@ -2662,7 +2659,7 @@ function forceReplaceImage(recId, awb){
         forced:true, operatorEmail:CU.email
       });
       hideLoad();
-      if(res?.url){
+      if(res?.ok && res?.url){
         const r=DB.records.find(x=>x.id===recId);
         if(r){ r.xray_image_url=res.url; r.image_linked=true; r.manually_corrected=true; }
         renderShift(); updateStats();
@@ -2847,7 +2844,7 @@ async function saveEditRecord(){
         location:myLoc(), awb:r.awb, type:slot, scanId:erRecId,
         forced:true, operatorEmail:CU.email
       });
-      if(res?.url){
+      if(res?.ok && res?.url){
         r[slot+'_image_url']=res.url;
         r.image_linked = computeImageLinked(r);
       }
@@ -3486,10 +3483,12 @@ async function applyFolder(){
       let res, errMsg='';
       try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
       // One automatic retry if the first attempt failed or GAS returned an error
-      if(!res?.url){
+      // FIX: check ok explicitly — Code.gs can return url alongside an error if the
+      // Drive upload succeeded but the Supabase database write afterward failed
+      if(!(res?.ok && res?.url)){
         try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
       }
-      if(res?.url){
+      if(res?.ok && res?.url){
         const r=DB.records.find(x=>x.id===m.rec.id);
         if(r){
           r.xray_image_url=res.url;r.image_linked=true;linked.push(r);

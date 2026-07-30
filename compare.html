@@ -156,14 +156,6 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
       <label class="lbl">Category</label>
       <select id="cat-select"><option value="">Loading categories...</option></select>
     </div>
-    <!-- NEW: search-by-product-name filter. Works alongside either
-         compare mode above — narrows the reference library down to
-         items whose name matches this text before the image
-         comparison runs. Left blank, behavior is unchanged. -->
-    <div class="fg" style="margin-bottom:0;margin-top:12px;">
-      <label class="lbl">Search by product name</label>
-      <input type="text" id="product-search" placeholder="e.g. watch, earbuds, power bank...">
-    </div>
   </div>
 
   <div id="results"></div>
@@ -824,19 +816,8 @@ async function runCompare(){
       const cat = document.getElementById('cat-select').value;
       if(cat) lib = lib.filter(item=>item.category===cat);
     }
-    // NEW: narrow further by product-name search text, if provided.
-    // Applies on top of whichever compare mode is active above. Matches
-    // against clean_name first, falling back to product_name, both
-    // lowercased for a simple case-insensitive "contains" search.
-    const nameQuery = document.getElementById('product-search').value.trim().toLowerCase();
-    if(nameQuery){
-      lib = lib.filter(item=>{
-        const name = (item.clean_name || item.product_name || '').toLowerCase();
-        return name.includes(nameQuery);
-      });
-    }
     if(!lib.length){
-      alert('No indexed items to compare against'+(mode==='category'?' in this category':'')+(nameQuery?' matching "'+nameQuery+'"':'')+' — ask an admin to Build/Update Index first, or adjust your filters.');
+      alert('No indexed items to compare against'+(mode==='category'?' in this category':'')+' — ask an admin to Build/Update Index first.');
       btn.disabled=false; btn.textContent='▶ COMPARE'; cancelBtn.style.display='none'; return;
     }
     const threshold = (parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;

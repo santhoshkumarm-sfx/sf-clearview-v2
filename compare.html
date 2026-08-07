@@ -147,6 +147,15 @@ label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono
   </div>
 
   <div class="card">
+    <div class="card-head">🔍 LOOKUP BY PRODUCT NAME</div>
+    <div class="row" style="gap:8px;">
+      <div style="flex:1;"><input type="text" id="name-search-input" placeholder="Type a product name to find it in the reference library..." oninput="onNameSearchInput()"></div>
+    </div>
+    <div id="name-search-results" class="match-row" style="margin-top:12px;"></div>
+    <div class="status" id="name-search-status"></div>
+  </div>
+
+  <div class="card">
     <div class="card-head">COMPARE MODE</div>
     <div class="mode-row">
       <div class="mode-btn on" id="mode-cat-btn" onclick="setMode('category')">🗂 Compare within a category</div>
@@ -549,6 +558,50 @@ async function loadCategories(){
   }catch(e){
     sel.innerHTML = '<option value="">Could not load categories</option>';
   }
+}
+
+// Product-name lookup — a direct search of the reference library itself
+// (not the image-comparison flow). Reuses the same library data
+// runCompare() uses, lazy-loaded on first actual use so this page stays
+// light until someone actually needs it. Debounced so it doesn't
+// re-search on every single keystroke.
+let nameSearchTimer = null;
+function onNameSearchInput(){
+  clearTimeout(nameSearchTimer);
+  nameSearchTimer = setTimeout(runNameSearch, 300);
+}
+async function runNameSearch(){
+  const q = document.getElementById('name-search-input').value.trim().toLowerCase();
+  const resultsEl = document.getElementById('name-search-results');
+  const statusEl = document.getElementById('name-search-status');
+  if(!q){ resultsEl.innerHTML=''; statusEl.textContent=''; return; }
+
+  statusEl.textContent = 'Searching...';
+  let lib;
+  try{ lib = await ensureEmbeddingsLoaded(); }
+  catch(e){ statusEl.textContent = 'Could not load the reference library: '+e.message; return; }
+
+  const matches = lib.filter(item=>{
+    const name = ((item.clean_name||'')+' '+(item.product_name||'')+' '+(item.awb||'')).toLowerCase();
+    return name.includes(q);
+  }).slice(0, 24); // cap the display — this is a quick lookup, not a full browse
+
+  if(!matches.length){
+    resultsEl.innerHTML = '';
+    statusEl.textContent = 'No matches for "'+q+'".';
+    return;
+  }
+  statusEl.textContent = matches.length+' match'+(matches.length===1?'':'es')+(lib.length>0 && matches.length===24?' (showing first 24)':'');
+  resultsEl.innerHTML = matches.map(item=>{
+    const thumb = thumbUrl(item.image_url);
+    const label = item.clean_name || item.product_name || item.awb;
+    return '<div class="match-card" onclick="openMatchPreview(\''+item.image_url.replace(/'/g,"\\'")+'\',\''+label.replace(/'/g,"\\'")+'\',\''+item.awb+'\')">'
+      +(thumb?'<img src="'+thumb+'">':'')
+      +'<div class="match-body">'
+        +'<div class="match-name">'+label+'</div>'
+        +'<div class="match-awb">'+item.awb+' · '+(item.category||'')+'</div>'
+      +'</div></div>';
+  }).join('');
 }
 
 async function ensureEmbeddingsLoaded(){

@@ -337,9 +337,35 @@ function autoCropToContent(img, marginPct){
   sctx.drawImage(img,0,0,sw,sh);
   const d = sctx.getImageData(0,0,sw,sh).data;
 
+  // FIX (2026-08-07): this used to assume padding was always pure black
+  // or pure white (a fixed brightness range) — real images confirmed
+  // this fails silently for a tan/beige X-ray backdrop (very common),
+  // whose brightness falls just inside the old "content" range. That
+  // meant the crop did nothing at all for those images — the padding
+  // stayed in, diluting every comparison signal exactly the way this
+  // feature was built to prevent, which is why genuinely close matches
+  // were being missed. Now detects the ACTUAL background color by
+  // sampling a thin strip around the frame's edge (always background in
+  // every real capture, whatever color it happens to be) and flags
+  // anything meaningfully different from THAT as content — adapts to
+  // black, white, tan, or any other backdrop automatically.
+  const borderPx = Math.max(2, Math.round(Math.min(sw,sh)*0.03));
+  let sr=0,sg=0,sb=0,sn=0;
+  function sampleBorder(x,y){ const i=(y*sw+x)*4; sr+=d[i]; sg+=d[i+1]; sb+=d[i+2]; sn++; }
+  for(let x=0;x<sw;x++){
+    for(let y=0;y<borderPx;y++) sampleBorder(x,y);
+    for(let y=Math.max(0,sh-borderPx);y<sh;y++) sampleBorder(x,y);
+  }
+  for(let y=0;y<sh;y++){
+    for(let x=0;x<borderPx;x++) sampleBorder(x,y);
+    for(let x=Math.max(0,sw-borderPx);x<sw;x++) sampleBorder(x,y);
+  }
+  const bgR = sn?sr/sn:255, bgG = sn?sg/sn:255, bgB = sn?sb/sn:255;
+
+  const COLOR_DIST_THRESHOLD = 28; // tuned to catch real product edges without flagging JPEG noise in flat background as "content"
   function isContent(r,g,b){
-    const lum = 0.299*r+0.587*g+0.114*b;
-    return lum>=18 && lum<=245; // excludes near-black padding and near-white background
+    const dr=r-bgR, dg=g-bgG, db=b-bgB;
+    return Math.sqrt(dr*dr+dg*dg+db*db) > COLOR_DIST_THRESHOLD;
   }
 
   let minX=sw, maxX=0, minY=sh, maxY=0, found=false;

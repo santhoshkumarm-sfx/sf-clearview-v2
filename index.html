@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- SF ClearView v2.44 - 2026-07-28 - CRITICAL FIX (root cause of "operator has proof of 0 pending, but admin dashboard/CSV never shows it"): Code.gs's uploadImageDrive() only LOGGED a warning when the Supabase database patch failed after a successful Drive upload — it still returned {ok:true, url:...} regardless, so the operator's client correctly (from its own perspective) marked the record linked locally, while the actual scans row in Supabase never got updated at all. A failed database write now returns a real error (still includes the url for reference, since the Drive file did get created) and logs to the UploadErrors SHEET directly, not just the GAS execution console. Client-side: 6 separate places across index.html were checking `res?.url` alone to decide success/failure (uploadImagesBackground, forceReplaceImage, saveEditRecord, applyFolder) — all now check `res?.ok && res?.url`, since Code.gs can return a url alongside a real error. Also: cross-checked LKO's full July 27 data (96 unlinked AWBs from the CSV export against the actual 614-file folder) — 26 will now resolve via last round's truncated-suffix fallback, 2 were genuine small misses, and 68 have literally no file anywhere in the folder (mostly still AJI-suffix, plus a few new ones: LI, SID, BEU) — that part remains a source-data gap, not something a software fix can create data for. Code.gs changed — MUST redeploy as New Version. -->
+<!-- SF ClearView v2.45 - 2026-08-07 - (1) X-Ray Reference library now actually displays clean_name — Code.gs already sent it (added several rounds back), but the card, modal, delete-confirmation, and search filter in index.html never read it, always showing the full raw product_name instead. Fixed all four spots to prefer clean_name, falling back to product_name if a row hasn't been cleaned yet. compare.html already used clean_name correctly for match labels — if it's still not showing there, the comparison model's own index has stale/blank clean_name values from before names were cleaned; run Force Refresh (admin) to sync it in, no code fix needed for that side. (2) Finished the product-name search in Image Compare that was left mid-build earlier — a dedicated "Lookup by Product Name" card, debounced search, reuses the same reference data the comparison flow already loads (lazy — doesn't fetch anything until first used), results open in the existing preview modal. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
 <head>
@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-07-28</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-07</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -1773,7 +1773,7 @@ function renderXrayLibGrid(){
   }
   if(libActiveSubcat) items=items.filter(it=>(it.sub_category||'')===libActiveSubcat);
 
-  if(s) items=items.filter(it=>(it.awb||'').toLowerCase().includes(s)||(it.product_name||'').toLowerCase().includes(s)||(it.sub_category||'').toLowerCase().includes(s));
+  if(s) items=items.filter(it=>(it.awb||'').toLowerCase().includes(s)||(it.product_name||'').toLowerCase().includes(s)||(it.clean_name||'').toLowerCase().includes(s)||(it.sub_category||'').toLowerCase().includes(s));
   const countEl=document.getElementById('lib-count');
   if(countEl) countEl.textContent=items.length+' item'+(items.length===1?'':'s');
   const grid=document.getElementById('lib-grid');
@@ -1788,7 +1788,7 @@ function renderXrayLibGrid(){
     return '<div class="lib-card" onclick="openLibItem('+idx+')">'
       +'<div class="lib-card-img">'+(thumb?'<img src="'+thumb+'" loading="lazy">':'<span style="color:var(--text3);font-size:11px;">No preview</span>')+'</div>'
       +'<div class="lib-card-body">'
-        +'<div class="lib-card-name">'+(it.product_name||'Unnamed product')+'</div>'
+        +'<div class="lib-card-name">'+(it.clean_name||it.product_name||'Unnamed product')+'</div>'
         +'<div class="lib-card-meta"><span class="pill pill-dim" style="font-size:9px;">'+it.category+(it.sub_category?' · '+it.sub_category:'')+'</span><span>'+it.awb+'</span></div>'
       +'</div></div>';
   }).join('');
@@ -1822,7 +1822,7 @@ function openLibItem(idx){
   } else {
     imgEl.style.display='none'; iframe.style.display='block'; iframe.src=it.image_url;
   }
-  document.getElementById('lib-modal-name').textContent=it.product_name||'Unnamed product';
+  document.getElementById('lib-modal-name').textContent=it.clean_name||it.product_name||'Unnamed product';
   document.getElementById('lib-modal-awb').textContent=it.awb+'  ·  '+it.category+(it.sub_category?' / '+it.sub_category:'');
   document.getElementById('lib-modal-download').href=it.image_url;
   // Delete is ADMIN ONLY (not POC, not supervisor) — matches the request
@@ -1840,7 +1840,7 @@ function openLibItem(idx){
 async function deleteLibItem(){
   const it=DB.xrayLib[libCurrentIdx];
   if(!it) return;
-  if(!confirm('Permanently delete "'+(it.product_name||it.awb)+'" ('+it.awb+') from the reference library?\n\nThis removes the row from the Sheet AND trashes the image in Drive. This cannot be undone from here.')) return;
+  if(!confirm('Permanently delete "'+(it.clean_name||it.product_name||it.awb)+'" ('+it.awb+') from the reference library?\n\nThis removes the row from the Sheet AND trashes the image in Drive. This cannot be undone from here.')) return;
   showLoad('Deleting '+it.awb+' from reference library...');
   try{
     const res=await gsPost({action:'deleteXrayLibraryItem', awb:it.awb, requesterRole: isAdmin?'admin':'none'});

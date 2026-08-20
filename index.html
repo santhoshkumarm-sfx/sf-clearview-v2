@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-07</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-20</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -433,6 +433,7 @@ video{width:100%;height:100%;object-fit:cover;}
               <div class="prog-wrap" id="fd-prog" style="display:none;"><div class="prog-bar" id="fd-prog-bar" style="width:0%;background:var(--t2);"></div></div>
               <div id="fd-result" style="display:none;margin-top:12px;">
                 <div id="fd-fallback-warn" style="display:none;background:rgba(255,51,85,.1);border:1px solid rgba(255,51,85,.35);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--danger);margin-bottom:10px;">⚠️ Could not load the full unlinked-record history from Supabase — matching against TODAY's scans only. Some genuinely valid older AWBs may show as "not found" below. Try again in a minute, or contact admin if this keeps happening.</div>
+                <div id="fd-storage-warn" style="display:none;background:rgba(255,187,0,.1);border:1px solid rgba(255,187,0,.35);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:11px;color:var(--warn);margin-bottom:10px;">🗄️ Some images failed to upload with a Drive storage error. This usually means the shared Drive account is out of storage space — matching itself worked fine, but the file couldn't be saved. Contact admin instead of retrying.</div>
                 <div class="search-wrap" style="margin-bottom:10px;"><span class="search-icon">🔍</span><input id="fd-match-search" placeholder="Search filename or AWB..." oninput="renderFdMatchList()"></div>
                 <div id="fd-match-list"></div>
                 <div style="display:flex;gap:8px;margin-top:10px;">
@@ -1199,6 +1200,57 @@ function readFile(file){
     };
     fr.readAsDataURL(file);
   });
+}
+
+// ══════════════════════════════════════════════════════════════
+//  UPLOAD COMPRESSION — added 2026-08-20 in direct response to
+//  confirmed Drive storage-quota failures (8,784 "Service error:
+//  Drive" upload failures logged in UploadErrors, concentrated at the
+//  highest-volume locations). Raw phone-camera photos and X-ray-
+//  machine output files can run several MB each; at thousands of
+//  images/day across 12+ locations that adds up to real storage
+//  pressure fast. This downscales the longest edge to MAX_UPLOAD_DIM
+//  and re-encodes as JPEG at UPLOAD_QUALITY before anything is sent
+//  to Drive — plenty of resolution for visual/manual inspection and
+//  for compare.html's CLIP model (which internally downsamples to
+//  224px regardless of what you feed it), while cutting typical file
+//  size by roughly 70-90% depending on the source. This does NOT touch
+//  anything already reasonably sized (camera captures via capPhoto()
+//  are already canvas-encoded at native video resolution) — only the
+//  raw-file upload paths, which is where the large files come from.
+// ══════════════════════════════════════════════════════════════
+const MAX_UPLOAD_DIM = 1600;
+const UPLOAD_QUALITY = 0.82;
+function compressForUpload(dataUrl){
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const scale=Math.min(1, MAX_UPLOAD_DIM/Math.max(img.naturalWidth,img.naturalHeight));
+      const w=Math.max(1,Math.round(img.naturalWidth*scale));
+      const h=Math.max(1,Math.round(img.naturalHeight*scale));
+      const c=document.createElement('canvas');
+      c.width=w; c.height=h;
+      const ctx=c.getContext('2d');
+      ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+      ctx.drawImage(img,0,0,w,h);
+      resolve(c.toDataURL('image/jpeg',UPLOAD_QUALITY));
+    };
+    // If decoding fails for any reason, fall back to the original data
+    // URL rather than losing the image — a slightly larger upload is
+    // always better than none at all.
+    img.onerror=()=>resolve(dataUrl);
+    img.src=dataUrl;
+  });
+}
+
+// Recognizes the specific "Drive is out of storage" failure signature
+// so operators/admin get a clear, actionable message instead of a
+// generic "upload failed" — this is a real, currently-ongoing
+// condition (confirmed via UploadErrors), not a hypothetical, so it's
+// worth calling out by name rather than lumping it in with transient
+// network errors that just need a retry.
+function isDriveStorageError(msg){
+  return /Service error: Drive/i.test(msg||'');
 }
 
 // FIX (2026-07-21): the folder-match list used to embed the FULL
@@ -2339,6 +2391,7 @@ async function uploadImagesBackground(awb, recId, imgs){
   // Upload silently — prevent logout until done
   window._uploading = (window._uploading||0)+1;
   const failedTypes=[];
+  let anyStorageError=false;
   try{
     const types=['label','front','back','product'];
     const urls=['','','',''];
@@ -2359,6 +2412,12 @@ async function uploadImagesBackground(awb, recId, imgs){
           });
         }catch(err){ res=null; }
         if(res?.ok && res?.url) break; // FIX: url alone isn't enough — Code.gs can now return url alongside an error if the DB write failed after a successful Drive upload
+        // FIX (2026-08-20): if this specific attempt failed with a Drive
+        // storage-quota error, retrying again in 2s is pointless — the
+        // quota doesn't free up on its own between attempts, so this
+        // stops burning retries/time on a failure mode that retrying
+        // cannot fix, and goes straight to the fallback below instead.
+        if(isDriveStorageError(res?.error)){ anyStorageError=true; break; }
         if(attempt<2) await new Promise(r=>setTimeout(r,2000));
       }
 
@@ -2395,7 +2454,9 @@ async function uploadImagesBackground(awb, recId, imgs){
       r.product_image_url=urls[3]||r.product_image_url;
       r.image_linked = computeImageLinked(r);
     }
-    if(failedTypes.length){
+    if(anyStorageError){
+      toast('🗄️ '+awb+': Drive storage appears full — image(s) saved to your Downloads folder. Contact admin, don\'t keep retrying.','err');
+    }else if(failedTypes.length){
       toast('⚠️ '+awb+': '+failedTypes.length+' image(s) saved to your Downloads folder — Drive upload failed. Show admin.','err');
     }else{
       toast('Images uploaded for '+awb,'ok');
@@ -2509,10 +2570,18 @@ function capPhoto(slot){
   captured[slot]=d; setThumb(slot,d);
   toast(['Label','Front','Back','Product'][slot]+' captured!','ok');
 }
-function loadImg(input,slot){
+async function loadImg(input,slot){
   const f=input.files[0]; if(!f)return;
   const r=new FileReader();
-  r.onload=e=>{ captured[slot]=e.target.result; setThumb(slot,e.target.result); };
+  r.onload=async e=>{
+    // FIX (2026-08-20): raw phone-camera files loaded here used to be
+    // stored and later uploaded completely unmodified — often several
+    // MB each. Compressed the same way as every other upload path now
+    // (see compressForUpload above), directly reducing the Drive
+    // storage pressure that's been causing real upload failures.
+    const compressed=await compressForUpload(e.target.result);
+    captured[slot]=compressed; setThumb(slot,compressed);
+  };
   r.readAsDataURL(f);
 }
 function setThumb(slot,data){
@@ -2648,7 +2717,11 @@ function forceReplaceImage(recId, awb){
     if(!file) return;
     showLoad('Uploading replacement image for '+awb+'...');
     try{
-      const dataUrl=await readFile(file);
+      const rawDataUrl=await readFile(file);
+      // FIX (2026-08-20): compress before upload — same reasoning as
+      // loadImg() above, this is a manually-picked file, not a
+      // canvas-derived camera capture, so it can be arbitrarily large.
+      const dataUrl=await compressForUpload(rawDataUrl);
       const blob=await(await fetch(dataUrl)).blob();
       const b64=await blobToB64(blob);
       const fn=todayStr().replace(/-/g,'')+'_'+awb+'_forced.jpg';
@@ -2665,7 +2738,9 @@ function forceReplaceImage(recId, awb){
         renderShift(); updateStats();
         toast('Image replaced for '+awb+' — marked as manually corrected','ok');
       }else{
-        toast('Replacement failed: '+(res?.error||'unknown error'),'err');
+        toast(isDriveStorageError(res?.error)
+          ? '🗄️ Drive storage appears full — replacement not saved. Contact admin.'
+          : 'Replacement failed: '+(res?.error||'unknown error'),'err');
       }
     }catch(e){
       hideLoad();
@@ -2755,8 +2830,11 @@ function toggleErProductVisibility(){
 function erPickImage(input,slot){
   const f=input.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=e=>{
-    erPickedImages[slot]=e.target.result;
+  r.onload=async e=>{
+    // FIX (2026-08-20): compress before storing — same reasoning as
+    // loadImg() above, this is also a raw manually-picked file.
+    const compressed=await compressForUpload(e.target.result);
+    erPickedImages[slot]=compressed;
     document.getElementById('er-'+slot+'-thumb').textContent='📷 '+slot.toUpperCase()+' (new)';
   };
   r.readAsDataURL(f);
@@ -2812,6 +2890,7 @@ async function saveEditRecord(){
   }
 
   showLoad('Saving corrections...');
+  const uploadFailures=[];
   try{
     // 1. Patch AWB/result/tamper if changed, mark manually_corrected
     const patchPayload={ manually_corrected:true, corrected_by:CU.email, corrected_at:new Date().toISOString() };
@@ -2833,6 +2912,7 @@ async function saveEditRecord(){
     // front/back — only the server-side type='xray' patch does that, and
     // only when explicitly asked (Force Image). "Linked" is recomputed
     // after each upload from actual completeness, not "something changed."
+    // erPickedImages entries are already compressed (see erPickImage above).
     for(const slot of ['label','front','back','product']){
       if(!erPickedImages[slot]) continue;
       const blob=await(await fetch(erPickedImages[slot])).blob();
@@ -2847,6 +2927,8 @@ async function saveEditRecord(){
       if(res?.ok && res?.url){
         r[slot+'_image_url']=res.url;
         r.image_linked = computeImageLinked(r);
+      }else{
+        uploadFailures.push({slot, storage:isDriveStorageError(res?.error)});
       }
     }
 
@@ -2861,7 +2943,12 @@ async function saveEditRecord(){
     hideLoad();
     closeModal('modal-editrec');
     renderShift(); renderRec(); updateStats();
-    toast('Record updated — '+changes.length+' change(s) logged','ok');
+    if(uploadFailures.length){
+      const anyStorage=uploadFailures.some(f=>f.storage);
+      toast((anyStorage?'🗄️ Drive storage appears full — ':'⚠️ ')+uploadFailures.length+' image(s) did not upload ('+uploadFailures.map(f=>f.slot).join(', ')+'). Other changes were saved.','err');
+    }else{
+      toast('Record updated — '+changes.length+' change(s) logged','ok');
+    }
   }catch(e){
     hideLoad();
     toast('Save failed: '+e.message,'err');
@@ -3046,6 +3133,8 @@ async function processFd(files){
   document.getElementById('fd-prog').style.display='block';
   const fallbackWarn=document.getElementById('fd-fallback-warn');
   if(fallbackWarn) fallbackWarn.style.display='none';
+  const storageWarn=document.getElementById('fd-storage-warn');
+  if(storageWarn) storageWarn.style.display='none';
   files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
 
   // Pulls every still-unmatched record from the last 14 days (not just
@@ -3379,6 +3468,13 @@ function renderFdMatchList(){
   const byTime=matches.filter(m=>m.method==='Time match').length;
   const bySeq=matches.filter(m=>m.method&&m.method.indexOf('Sequence match')===0).length;
   const byTrunc=matches.filter(m=>m.method&&m.method.indexOf('AWB in name (courier code')===0).length;
+  // Split unmatched reasons out explicitly — "already linked" is a
+  // benign/expected outcome (this AWB already has its photo, usually
+  // from re-processing an overlapping folder selection), not a real
+  // failure, so it's worth showing separately rather than lumping it
+  // in with genuine "AWB not found" gaps that actually need attention.
+  const byAlreadyLinked=matches.filter(m=>m.method==='Already linked — this AWB already has its X-ray photo').length;
+  const byNotFound=matches.filter(m=>m.method&&m.method.indexOf('AWB not found')===0).length;
 
   // Search filters which ROWS are shown, but every row still carries its
   // real index into pendingFd (not its position in the filtered list) —
@@ -3396,7 +3492,8 @@ function renderFdMatchList(){
     +(bySeq?'<span class="pill pill-warn">⚠ Sequence (verify): '+bySeq+'</span>':'')
     +(byTrunc?'<span class="pill pill-warn">⚠ Truncated code: '+byTrunc+'</span>':'')
     +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
-    +(unmatchedCount?'<span class="pill pill-warn">Unmatched: '+unmatchedCount+'</span>':'')
+    +(byAlreadyLinked?'<span class="pill pill-dim">Already linked: '+byAlreadyLinked+'</span>':'')
+    +(byNotFound?'<span class="pill pill-err">AWB not found: '+byNotFound+'</span>':'')
     +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+matches.length+'</span>':'')
     +'</div>'
     +(visible.length===0
@@ -3456,6 +3553,7 @@ async function applyFolder(){
   const linked=[];
   const failed=[];
   const manualLog=[];
+  let anyStorageError=false;
   const BATCH=5;
 
   async function uploadOne(m){
@@ -3464,9 +3562,15 @@ async function applyFolder(){
     // this always re-reads the ORIGINAL full-resolution file fresh, right
     // here, at the moment of upload, regardless of what got generated
     // for the preview list earlier.
-    let blob;
-    if(m.file){ const d=await readFile(m.file); blob=await(await fetch(d)).blob(); }
-    else blob=await(await fetch(m.thumb)).blob(); // defensive fallback only — should never be reached
+    // FIX (2026-08-20): compress before upload — this is the single
+    // highest-volume upload path (hundreds of X-ray-machine images per
+    // shift per location), and the largest contributor to the Drive
+    // storage pressure behind the confirmed "Service error: Drive"
+    // failures. See compressForUpload() above.
+    let dataUrl;
+    if(m.file){ const raw=await readFile(m.file); dataUrl=await compressForUpload(raw); }
+    else dataUrl=await compressForUpload(m.thumb); // defensive fallback only — should never be reached
+    const blob=await(await fetch(dataUrl)).blob();
     const b64=await blobToB64(blob);
     const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray'+(m.manual?'_MANUAL':'')+'.jpg';
     return await gsPost({
@@ -3482,10 +3586,12 @@ async function applyFolder(){
     await Promise.all(batch.map(async m=>{
       let res, errMsg='';
       try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
-      // One automatic retry if the first attempt failed or GAS returned an error
-      // FIX: check ok explicitly — Code.gs can return url alongside an error if the
-      // Drive upload succeeded but the Supabase database write afterward failed
-      if(!(res?.ok && res?.url)){
+      // FIX (2026-08-20): a Drive storage-quota failure won't resolve
+      // itself on a second attempt a moment later — skip the automatic
+      // retry in that specific case so a full-storage location doesn't
+      // silently double its upload attempts (and its wait time) for no
+      // benefit. Every other failure reason still gets the one retry.
+      if(!(res?.ok && res?.url) && !isDriveStorageError(res?.error)){
         try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
       }
       if(res?.ok && res?.url){
@@ -3497,6 +3603,7 @@ async function applyFolder(){
       }else{
         const reason = errMsg || (res && res.error) || 'no url returned';
         const stepInfo = (res && res.step) ? (' [failed at: '+res.step+']') : '';
+        if(isDriveStorageError(reason)) anyStorageError=true;
         console.warn('Upload failed for AWB', m.rec.awb, ':', reason+stepInfo);
         failed.push({awb:m.rec.awb, reason: reason+stepInfo});
       }
@@ -3517,9 +3624,15 @@ async function applyFolder(){
   document.getElementById('fd-result').style.display='none';
   renderShift(); updateStats(); updateBanner();
 
+  if(anyStorageError){
+    const sw=document.getElementById('fd-storage-warn');
+    if(sw) sw.style.display='block';
+  }
   if(failed.length){
     console.table(failed);
-    toast('⚠️ '+failed.length+' image(s) failed to upload — see console (F12) for AWBs/reasons. Try End of Shift again to retry.','err');
+    toast(anyStorageError
+      ? '🗄️ '+failed.length+' image(s) failed — Drive storage appears full. Contact admin instead of retrying.'
+      : '⚠️ '+failed.length+' image(s) failed to upload — see console (F12) for AWBs/reasons. Try End of Shift again to retry.','err');
   }
 
   // Show post-upload options: Continue Scanning or End Shift

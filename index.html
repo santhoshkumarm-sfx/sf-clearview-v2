@@ -1249,8 +1249,18 @@ function compressForUpload(dataUrl){
 // condition (confirmed via UploadErrors), not a hypothetical, so it's
 // worth calling out by name rather than lumping it in with transient
 // network errors that just need a retry.
+//
+// FIX (2026-08-20, urgent): the actual error Google throws for a full
+// Drive is "Limit Exceeded: Drive." — NOT "Service error: Drive" as
+// originally assumed. Confirmed against live UploadErrors data: every
+// single Drive failure logged at KOT (693 of them, ongoing) uses this
+// exact string. The original regex never matched it, so the storage-
+// specific banner/message and retry-skip logic silently never fired
+// for the real, currently-happening failure — operators just kept
+// seeing a generic "try again" message and burning retries against a
+// problem no retry can fix. Now matches both known variants.
 function isDriveStorageError(msg){
-  return /Service error: Drive/i.test(msg||'');
+  return /Service error: Drive/i.test(msg||'') || /Limit Exceeded:\s*Drive/i.test(msg||'');
 }
 
 // FIX (2026-07-21): the folder-match list used to embed the FULL

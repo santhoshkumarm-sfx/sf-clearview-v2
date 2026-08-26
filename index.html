@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-26c</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-26d</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -1322,8 +1322,40 @@ function isDriveStorageError(msg){
 // still the original File object, re-read fresh at the moment of
 // actual upload (see uploadOne() in applyFolder()) — this only changes
 // what gets held in memory/rendered for the PREVIEW list.
+// FIX (2026-08-26): rewritten to decode directly from the File's binary
+// data via createImageBitmap() instead of the old FileReader→base64
+// text→Image()→canvas chain. The output was always a tiny thumbnail,
+// but the DECODE step was still working from a full base64-text copy of
+// the original multi-megapixel file — for a 700-900 file folder (real
+// operator scale, confirmed), that's hundreds of heavy text-based
+// decodes back-to-back and is what was actually hanging the browser/
+// laptop during the MATCHING phase, before any upload even starts.
+// createImageBitmap decodes straight from binary, no base64 round-trip,
+// and is hardware-accelerated in most browsers — same tiny thumbnail
+// output, dramatically less work to produce it.
 function makeThumb(file, maxDim){
   maxDim=maxDim||60;
+  return new Promise(resolve=>{
+    if(typeof createImageBitmap!=='function'){ makeThumbFallback(file,maxDim).then(resolve); return; }
+    createImageBitmap(file).then(bitmap=>{
+      const scale=Math.min(1, maxDim/Math.max(bitmap.width,bitmap.height));
+      const w=Math.max(1,Math.round(bitmap.width*scale));
+      const h=Math.max(1,Math.round(bitmap.height*scale));
+      const c=document.createElement('canvas');
+      c.width=w; c.height=h;
+      const ctx=c.getContext('2d');
+      ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+      ctx.drawImage(bitmap,0,0,w,h);
+      bitmap.close();
+      resolve(c.toDataURL('image/jpeg',.6));
+    }).catch(()=>{
+      // Rare format createImageBitmap can't decode — fall back to the
+      // original approach rather than losing the row's preview entirely.
+      makeThumbFallback(file,maxDim).then(resolve);
+    });
+  });
+}
+function makeThumbFallback(file, maxDim){
   return new Promise(resolve=>{
     const fr=new FileReader();
     fr.onload=e=>{
@@ -3243,7 +3275,16 @@ async function processFd(files){
   // "hung" or only processed a handful before needing to be re-run —
   // same "parallel beats sequential" principle already proven for
   // uploads elsewhere in this app, applied here to reading instead.
+  //
+  // FIX (2026-08-26): added a short yield between batches. makeThumb()
+  // is now much lighter (createImageBitmap-based, see above), but at
+  // real operator scale (700-900 files/shift, confirmed) even light
+  // work run in 100+ back-to-back batches with zero pause can still
+  // starve the browser's ability to paint/respond, which is what reads
+  // as a "hung" tab/laptop even when work is still progressing
+  // underneath. This gives it room to breathe every batch.
   const READ_BATCH=8;
+  const READ_BATCH_PAUSE_MS=30;
   const parsedFiles=new Array(files.length);
   for(let i=0;i<files.length;i+=READ_BATCH){
     const batch=files.slice(i,i+READ_BATCH);
@@ -3256,6 +3297,7 @@ async function processFd(files){
       parsedFiles[idx]={seq:idx+1,name:r.file.name,file:r.file,thumb:r.thumb,parsed:r.parsed,rec:null,method:'',diffSec:null};
     });
     document.getElementById('fd-prog-bar').style.width=Math.round(((i+batch.length)/files.length)*70)+'%';
+    if(i+READ_BATCH<files.length) await new Promise(r=>setTimeout(r,READ_BATCH_PAUSE_MS));
   }
 
   // REBUILT (2026-07-21) — lookup tables instead of repeated linear

@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-26e</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-26f</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -3238,6 +3238,7 @@ async function processFd(files){
   // immediately dump everything into the today-only fallback.
   if(fdProcessing){ toast('Already processing a folder — please wait for it to finish first','err'); return; }
   fdProcessing=true;
+  fdMatchListShowAll=false; // fresh run — don't inherit an expanded view from a previous folder selection
   document.getElementById('fd-prog').style.display='block';
   const fallbackWarn=document.getElementById('fd-fallback-warn');
   if(fallbackWarn) fallbackWarn.style.display='none';
@@ -3605,9 +3606,28 @@ function renderFdMatchList(){
   // real index into pendingFd (not its position in the filtered list) —
   // otherwise manualAssignFd would silently assign the wrong file.
   const q=(document.getElementById('fd-match-search')?.value||'').trim().toLowerCase();
-  const visible=matches
+  const visibleAll=matches
     .map((m,idx)=>({m,idx}))
     .filter(({m})=>!q || m.name.toLowerCase().includes(q) || (m.parsed?.awb||'').toLowerCase().includes(q) || (m.ok?m.rec.awb.toLowerCase():'').includes(q));
+
+  // FIX (2026-08-26): confirmed root cause of the "Page Unresponsive"
+  // freeze that kept happening at the SAME point every time (right at
+  // the end of processing, not partway through) — this was never the
+  // thumbnail-decode loop (already fixed separately). It's this render:
+  // building one giant HTML string with an embedded base64 <img> for
+  // EVERY matched file (700-1000+ at real operator scale) and writing it
+  // to the DOM in a single synchronous innerHTML assignment. The browser
+  // has to parse/layout ~1000 rows and ~1000 inline images all at once
+  // with zero opportunity to yield — that's what was actually freezing,
+  // not the matching computation itself (which is fast — plain Maps).
+  // Same cap-by-default pattern already used for the Linked Today table
+  // (see eosLinkedShowAll) — full data is untouched underneath (Apply
+  // Matches always applies from the complete pendingFd array, not from
+  // what's currently rendered), this only limits what's drawn on screen
+  // by default.
+  const RENDER_CAP=150;
+  const capped=!fdMatchListShowAll && visibleAll.length>RENDER_CAP;
+  const visible=capped?visibleAll.slice(0,RENDER_CAP):visibleAll;
 
   document.getElementById('fd-match-list').innerHTML=
     '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
@@ -3619,7 +3639,9 @@ function renderFdMatchList(){
     +(manualCount?'<span class="pill pill-warn">Manual: '+manualCount+'</span>':'')
     +(byAlreadyLinked?'<span class="pill pill-dim">Already linked: '+byAlreadyLinked+'</span>':'')
     +(byNotFound?'<span class="pill pill-err">AWB not found: '+byNotFound+'</span>':'')
-    +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+matches.length+'</span>':'')
+    +(q?'<span class="pill pill-dim">Showing '+visible.length+' of '+visibleAll.length+' matching</span>':'')
+    +(capped?'<span class="pill pill-warn" style="cursor:pointer;" onclick="fdMatchListShowAll=true;renderFdMatchList();">Showing first '+RENDER_CAP+' of '+visibleAll.length+' — click to show all (slower)</span>':'')
+    +(!capped&&fdMatchListShowAll&&visibleAll.length>RENDER_CAP?'<span class="pill pill-dim" style="cursor:pointer;" onclick="fdMatchListShowAll=false;renderFdMatchList();">Showing all '+visibleAll.length+' — click to collapse</span>':'')
     +'</div>'
     +(visible.length===0
       ?'<div style="text-align:center;color:var(--text3);padding:16px;font-size:11px;">No files match "'+q+'"</div>'
@@ -3647,6 +3669,7 @@ function renderFdMatchList(){
         +'</div>';
     }).join(''));
 }
+let fdMatchListShowAll=false; // capped by default at RENDER_CAP — see renderFdMatchList
 
 // Opens the ORIGINAL full-resolution photo for a match-list row, read
 // fresh from the file (URL.createObjectURL is instant — no re-encoding

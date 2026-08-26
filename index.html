@@ -3564,7 +3564,17 @@ async function applyFolder(){
   const failed=[];
   const manualLog=[];
   let anyStorageError=false;
-  const BATCH=5;
+  // FIX (2026-08-26): dropped from 5 to 3, with a pause added between
+  // batches below. Confirmed via console logs from a real run (322/342
+  // succeeded, 20 failed with "Failed to fetch" + sporadic 404s on
+  // script.googleusercontent.com — NOT a Drive storage error this time)
+  // that firing 5 concurrent uploads back-to-back with zero pause for a
+  // 300+ file batch can outrun Apps Script's ability to keep up under
+  // sustained concurrent load, occasionally dropping/misdirecting a
+  // request instead of returning a clean error. Lower concurrency plus
+  // real spacing between batches gives it room to keep up.
+  const BATCH=3;
+  const BATCH_PAUSE_MS=400;
 
   async function uploadOne(m){
     // m.file is always present for folder-matched entries (m.thumb is a
@@ -3601,7 +3611,14 @@ async function applyFolder(){
       // retry in that specific case so a full-storage location doesn't
       // silently double its upload attempts (and its wait time) for no
       // benefit. Every other failure reason still gets the one retry.
+      //
+      // FIX (2026-08-26): the retry used to fire immediately, right back
+      // into whatever congestion just caused the failure — no better
+      // than not retrying at all for a load-related error like "Failed
+      // to fetch". A short pause before the retry gives Apps Script a
+      // moment to catch up instead of restating the same collision.
       if(!(res?.ok && res?.url) && !isDriveStorageError(res?.error)){
+        await new Promise(r=>setTimeout(r,800));
         try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
       }
       if(res?.ok && res?.url){
@@ -3618,6 +3635,12 @@ async function applyFolder(){
         failed.push({awb:m.rec.awb, reason: reason+stepInfo});
       }
     }));
+    // FIX (2026-08-26): a short pause between batches (not just within a
+    // single item's retry) — spaces out sustained concurrent load across
+    // the whole 300+ file run, not just around one failure, which is what
+    // actually reduces how often Apps Script gets outrun in the first
+    // place rather than just recovering better after the fact.
+    if(i+BATCH<matches.length) await new Promise(r=>setTimeout(r,BATCH_PAUSE_MS));
   }
 
   // Log manual assignments to CorrectionLog — visible to admin as flagged

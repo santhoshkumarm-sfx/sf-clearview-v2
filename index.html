@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-20</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-26b</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -1241,6 +1241,52 @@ function compressForUpload(dataUrl){
     img.onerror=()=>resolve(dataUrl);
     img.src=dataUrl;
   });
+}
+
+// FIX (2026-08-26): direct file→Blob compression path, for the highest-
+// volume caller (applyFolder's uploadOne, hundreds of files per run).
+// compressForUpload() above is fine for the low-volume manual-pick paths
+// (loadImg/erPickImage/forceReplaceImage), which need a data-URL string
+// anyway to show a live <img> preview immediately. But for a raw File
+// object with no preview requirement, routing through compressForUpload
+// means THREE full image re-encodings per file: FileReader→dataURL,
+// canvas.toDataURL()→dataURL again, then fetch(dataURL)→Blob→base64 a
+// third time — each one holding a full text copy of the image in memory
+// at once. Confirmed via a real run (system-wide lag, stuck progress,
+// not just tab slowness) that this is heavy enough to bog down an
+// operator's whole machine across a 300+ file batch.
+// createImageBitmap() decodes directly from the File (binary, no base64
+// round-trip at all) and canvas.toBlob() re-encodes to binary JPEG
+// (instead of a text data-URL) — cutting this to ONE encoding instead of
+// three. BMP-saved-as-.jpg files (a real production pattern — see the
+// KOT note in readFile() above) decode fine here too, since browsers
+// sniff actual file bytes rather than trusting the extension.
+function compressFileForUpload(file){
+  return new Promise(resolve=>{
+    if(typeof createImageBitmap!=='function'){ compressForUploadFallback(file).then(resolve); return; }
+    createImageBitmap(file).then(bitmap=>{
+      const scale=Math.min(1, MAX_UPLOAD_DIM/Math.max(bitmap.width,bitmap.height));
+      const w=Math.max(1,Math.round(bitmap.width*scale));
+      const h=Math.max(1,Math.round(bitmap.height*scale));
+      const c=document.createElement('canvas');
+      c.width=w; c.height=h;
+      const ctx=c.getContext('2d');
+      ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h);
+      ctx.drawImage(bitmap,0,0,w,h);
+      bitmap.close();
+      c.toBlob(b=>resolve(b||null), 'image/jpeg', UPLOAD_QUALITY);
+    }).catch(()=>{
+      // createImageBitmap can't decode this particular file (rare, but
+      // possible for an unusual format) — fall back to the original
+      // FileReader+Image path rather than losing the image.
+      compressForUploadFallback(file).then(resolve);
+    });
+  });
+}
+async function compressForUploadFallback(file){
+  const dataUrl=await readFile(file);
+  const compressed=await compressForUpload(dataUrl);
+  return await (await fetch(compressed)).blob();
 }
 
 // Recognizes the specific "Drive is out of storage" failure signature
@@ -3582,15 +3628,16 @@ async function applyFolder(){
     // this always re-reads the ORIGINAL full-resolution file fresh, right
     // here, at the moment of upload, regardless of what got generated
     // for the preview list earlier.
-    // FIX (2026-08-20): compress before upload — this is the single
-    // highest-volume upload path (hundreds of X-ray-machine images per
-    // shift per location), and the largest contributor to the Drive
-    // storage pressure behind the confirmed "Service error: Drive"
-    // failures. See compressForUpload() above.
-    let dataUrl;
-    if(m.file){ const raw=await readFile(m.file); dataUrl=await compressForUpload(raw); }
-    else dataUrl=await compressForUpload(m.thumb); // defensive fallback only — should never be reached
-    const blob=await(await fetch(dataUrl)).blob();
+    // FIX (2026-08-26): now uses compressFileForUpload() — a single
+    // binary decode→resize→re-encode straight to a Blob, instead of the
+    // previous 3-full-text-encoding chain (readFile→dataURL,
+    // compressForUpload→dataURL, fetch(dataURL)→Blob). Same visual
+    // output, dramatically less CPU/memory per file — this is the fix
+    // for the system-wide lag/stuck-progress-bar seen on a real run.
+    // See compressFileForUpload() above for the full reasoning.
+    let blob;
+    if(m.file){ blob=await compressFileForUpload(m.file); }
+    else { const dataUrl=await compressForUpload(m.thumb); blob=await(await fetch(dataUrl)).blob(); } // defensive fallback only — should never be reached
     const b64=await blobToB64(blob);
     const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray'+(m.manual?'_MANUAL':'')+'.jpg';
     return await gsPost({

@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-27b</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-27c</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -3525,7 +3525,18 @@ async function processFd(files){
   // "Time match") specifically so it reads as inferred-from-order
   // rather than a confirmed identity match — worth a quick visual
   // check before relying on it the way you would an exact match.
-  const SEQ_FALLBACK_TOLERANCE=1800; // 30 min outer bound — wide, but still bounded
+  // FIX (2026-08-27, urgent): widened from 30 min to 3 hours in response
+  // to BLR/JAI reporting near-total match failure on this exact
+  // time-based mechanism, right after it worked 100% at MDC the day
+  // before — pointing at a location-specific clock offset (machine
+  // system time out of sync with real time) rather than a bug in the
+  // matching itself. Safe to widen broadly here specifically because
+  // this pass matches by RELATIVE ORDER (merging two sorted lists), not
+  // absolute proximity — a systematic clock offset shifts every
+  // timestamp by roughly the same amount without disturbing the actual
+  // sequence, so widening this doesn't introduce the false-match risk
+  // that widening PASS 2's absolute-time tolerance would.
+  const SEQ_FALLBACK_TOLERANCE=10800; // 3 hour outer bound — temporary widening, see note above
   const leftoverFiles=parsedFiles.filter(m=>!m.rec && !m.parsed.candidates.length && m.parsed.timestamp)
                                    .sort((a,b)=>a.parsed.timestamp-b.parsed.timestamp);
   const leftoverRecords=unlinked.filter(r=>!used.has(r.id))

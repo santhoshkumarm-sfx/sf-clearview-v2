@@ -263,7 +263,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-26f</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-27b</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -1219,8 +1219,16 @@ function readFile(file){
 //  are already canvas-encoded at native video resolution) — only the
 //  raw-file upload paths, which is where the large files come from.
 // ══════════════════════════════════════════════════════════════
-const MAX_UPLOAD_DIM = 1600;
-const UPLOAD_QUALITY = 0.82;
+// FIX (2026-08-27): trimmed from 1600/0.82 to 1400/0.78 — smaller
+// payload means faster base64 encode, faster network transfer, and
+// less work for Apps Script to decode+write per image. Still plenty of
+// resolution for visual/manual inspection and for compare.html's CLIP
+// model. Requested by operators reporting slow uploads — the dominant
+// cost is actually Apps Script's own per-request execution time, not
+// raw network speed, so a smaller payload is one of the few levers
+// available without changing the upload architecture itself.
+const MAX_UPLOAD_DIM = 1400;
+const UPLOAD_QUALITY = 0.78;
 function compressForUpload(dataUrl){
   return new Promise(resolve=>{
     const img=new Image();
@@ -3215,6 +3223,25 @@ function parseImageFilename(filename){
     }
   }
   if(!timestamp){m=name.match(/(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);if(m){const[,yy,mo,dd,hh,mi,ss]=m;if(+mo<=12&&+dd<=31&&+hh<=23){timestamp=new Date(2000+(+yy),+mo-1,+dd,+hh,+mi,+ss);}}}
+  // JAI machine format: image_YYMMDDHHMMSS_serial.jpg — e.g.
+  // image_260827015606_218.jpg. Date+time are fused into one 12-digit
+  // block with NO separating underscore between them (unlike MDC's
+  // image_YYYYMMDD_HHMMSS_NN_ViewN format), followed by a plain running
+  // sequence number. There's never an AWB in these — confirmed against
+  // real JAI output — so PASS 2 (timestamp proximity) and PASS 3
+  // (sequential fallback) are what resolve them, not a filename-embedded
+  // AWB. This only extracts the timestamp; candidates already correctly
+  // comes back empty for these since the serial number is pure digits
+  // (the "needs both a letter and a digit" rule already excludes it).
+  if(!timestamp){
+    m=name.match(/^image_(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})_\d+$/);
+    if(m){
+      const[,yy,mo,dd,hh,mi,ss]=m;
+      if(+mo>=1&&+mo<=12&&+dd>=1&&+dd<=31&&+hh<=23){
+        timestamp=new Date(2000+(+yy),+mo-1,+dd,+hh,+mi,+ss);
+      }
+    }
+  }
   return {awb,candidates,timestamp};
 }
 
@@ -3711,8 +3738,17 @@ async function applyFolder(){
   // sustained concurrent load, occasionally dropping/misdirecting a
   // request instead of returning a clean error. Lower concurrency plus
   // real spacing between batches gives it room to keep up.
-  const BATCH=3;
-  const BATCH_PAUSE_MS=400;
+  //
+  // FIX (2026-08-27): nudged back up to 4/250ms (from 3/400ms) after
+  // requests to speed things up. Modest, bounded step — not back to the
+  // 5/0ms that caused the original congestion. If "Failed to fetch" or
+  // 404-on-script.googleusercontent.com errors show up again in the
+  // console, that's the signal to drop this back down, not push it
+  // higher — the real fix for that ceiling is architectural (direct-to-
+  // Drive upload, bypassing Apps Script for the file bytes), not more
+  // concurrency squeezed out of the current setup.
+  const BATCH=4;
+  const BATCH_PAUSE_MS=250;
 
   async function uploadOne(m){
     // m.file is always present for folder-matched entries (m.thumb is a

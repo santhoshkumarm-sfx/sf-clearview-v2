@@ -232,6 +232,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <div class="nav-item on" id="ni-scan"  onclick="show('v-scan')"><span class="nav-icon">📡</span>Scan AWB</div>
       <div class="nav-item"   id="ni-shift" onclick="show('v-shift')"><span class="nav-icon">📤</span>End of Shift</div>
       <div class="nav-item"   id="ni-rec"   onclick="show('v-rec')"><span class="nav-icon">📋</span>My Records</div>
+      <div class="nav-item"   id="ni-shiftlog" onclick="show('v-shiftlog')"><span class="nav-icon">🕐</span>Shift Log</div>
     </div>
     <!-- Admin nav -->
     <div class="nav-sec" id="nav-adm" style="display:none;">
@@ -263,7 +264,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-27d</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-27e</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -445,7 +446,9 @@ video{width:100%;height:100%;object-fit:cover;}
           </div>
         </div>
         <div class="card">
-          <div class="card-head"><span class="card-head-icon">✅</span><span class="card-head-title">LINKED TODAY</span></div>
+          <div class="card-head"><span class="card-head-icon">✅</span><span class="card-head-title">LINKED TODAY</span>
+            <button class="btn btn-danger btn-xs" style="margin-left:auto;" onclick="bulkUnlinkImages()" title="Fix a run of mismatched images from folder-matching by clearing them for a serial range, instead of one at a time">🗑 Bulk Unlink by Serial #</button>
+          </div>
           <div class="tbl-wrap"><table>
             <thead><tr><th>#</th><th>AWB</th><th>Time</th><th>Product</th><th>X-Ray</th><th>Result</th><th>Tamper</th><th>Actions</th></tr></thead>
             <tbody id="eos-linked-body"></tbody>
@@ -465,6 +468,24 @@ video{width:100%;height:100%;object-fit:cover;}
           <span id="rec-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
         </div>
         <div id="rec-container"></div>
+      </div>
+
+      <!-- ── SHIFT LOG (operator-facing handoff log) — separate from the
+           admin-only Shift Logs (v-shifts): this is scoped to the
+           operator's OWN location only, shows every operator's shift
+           for the selected day in order, and surfaces handover remarks
+           so an incoming operator can see what happened before them. ── -->
+      <div class="view" id="v-shiftlog">
+        <div class="fbar">
+          <input type="date" id="shiftlog-date" onchange="renderShiftLog()">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('shiftlog-date').value=todayStr();renderShiftLog();">📅 Today</button>
+          <button class="btn btn-ghost btn-sm" onclick="renderShiftLog()">↻ Refresh</button>
+          <span id="shiftlog-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-head-icon">🕐</span><span class="card-head-title">OPERATOR LOG — <span id="shiftlog-loc-name">–</span></span></div>
+          <div id="shiftlog-body" style="padding:4px 0;"></div>
+        </div>
       </div>
 
       <!-- ── ADMIN DASHBOARD ── -->
@@ -1034,7 +1055,11 @@ function dismissNotif(){ var el=document.getElementById('post-upload-notif'); if
 function continueScanning(){ dismissNotif(); show('v-scan'); }
 function endShift(){
   dismissNotif();
-  endCurrentShift(); // records shift_end + final scan count — fire and forget, don't block the UI
+  // NEW: optional handover remarks, visible to the next operator via
+  // the new Shift Log view — e.g. "camera acting up", "3 units need
+  // review". Skippable, doesn't block the flow if left blank.
+  const remarks = prompt('Any handover notes for the next operator? (optional — leave blank to skip)')||'';
+  endCurrentShift(remarks); // records shift_end + final scan count — fire and forget, don't block the UI
   // Show simple thank you — no sync, no navigation noise
   const thanks = document.createElement('div');
   thanks.style.cssText = 'position:fixed;inset:0;background:rgba(6,11,16,.95);z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;';
@@ -1110,13 +1135,14 @@ async function ensureShift(){
   }catch(e){ console.warn('ensureShift failed:',e.message); }
   return currentShiftId;
 }
-async function endCurrentShift(){
+async function endCurrentShift(remarks){
   if(!currentShiftId) return;
   try{
-    await sbPatch('shift_logs','id=eq.'+encodeURIComponent(currentShiftId),{
-      shift_end:new Date().toISOString(),
-      scan_count:myToday().length
-    });
+    const patch={ shift_end:new Date().toISOString(), scan_count:myToday().length };
+    // NEW: optional handover remarks column — see SHIFT_LOG_DEPLOY note
+    // below for the one-time Supabase schema change this needs.
+    if(remarks) patch.remarks=remarks;
+    await sbPatch('shift_logs','id=eq.'+encodeURIComponent(currentShiftId),patch);
   }catch(e){ console.warn('endCurrentShift failed:',e.message); }
   const key='cv_shift_id_'+todayStr()+'_'+myLoc()+'_'+CU.email;
   sessionStorage.removeItem(key);
@@ -1132,8 +1158,9 @@ async function endCurrentShift(){
 // end-of-session close, just triggered manually instead of on logout.
 async function forceEndShift(){
   if(!confirm('End your current shift now?')) return;
+  const remarks = prompt('Any handover notes for the next operator? (optional — leave blank to skip)')||'';
   await ensureShift(); // make sure there IS a shift row to close, in case one was never created this session
-  await endCurrentShift();
+  await endCurrentShift(remarks);
   toast('Shift ended.','ok');
   if(typeof renderShift==='function') renderShift();
 }
@@ -1450,7 +1477,7 @@ function clearSession(){
 // ══════════════════════════════════════════════════════════════
 function show(id){
   // Role guards
-  const opOnly=['v-scan','v-shift','v-rec'];
+  const opOnly=['v-scan','v-shift','v-rec','v-shiftlog'];
   const admOnly=['v-adash','v-ausers','v-aloc','v-aawb','v-arec','v-adhere','v-shifts'];
   const pocAllowed=['v-adash','v-arec','v-adhere','v-shifts']; // POC's read-only subset
   if((isAdmin||isSupervisor||isPoc) && opOnly.includes(id)){ show('v-adash'); return; }
@@ -1466,11 +1493,11 @@ function show(id){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
   document.getElementById(id)?.classList.add('on');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('on'));
-  const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec',
+  const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec','v-shiftlog':'ni-shiftlog',
             'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
             'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts',
             'v-xraylib':'ni-xraylib','v-libcompare':'ni-libcompare'};
-  const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS',
+  const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS','v-shiftlog':'SHIFT LOG',
             'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
             'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS',
             'v-xraylib':'X-RAY REFERENCE','v-libcompare':'IMAGE COMPARE'};
@@ -1482,6 +1509,11 @@ function show(id){
     setTimeout(()=>document.getElementById('awb-inp')?.focus(),50);
   }
   if(id==='v-shift')  renderShift();
+  if(id==='v-shiftlog'){
+    var sld=document.getElementById('shiftlog-date');
+    if(sld&&!sld.value) sld.value=todayStr();
+    renderShiftLog();
+  }
   if(id==='v-rec'){
     var rd=document.getElementById('rec-date');
     if(rd&&!rd.value){ rd.value=todayStr(); onRecDateChange(); }
@@ -2864,6 +2896,56 @@ function forceReplaceImage(recId, awb){
     }
   };
   input.click();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  BULK UNLINK BY SERIAL # — for when folder-matching (time-based)
+//  cascades into a run of mismatched images: one bad match early on can
+//  throw off several after it. Clears the X-RAY image link (not the
+//  scan record itself — AWB/result/tamper stay intact) for a serial
+//  range within today's shift, so the operator can re-run folder
+//  matching or Force Image each one correctly, instead of undoing
+//  mismatches one record at a time. Requires explicit confirmation
+//  showing the exact count before touching anything, and is logged to
+//  CorrectionLog for audit (who, when, how many, what range).
+// ══════════════════════════════════════════════════════════════
+async function bulkUnlinkImages(){
+  const fromStr=prompt('Unlink X-ray images for today\'s shift — FROM serial #:');
+  if(fromStr===null) return;
+  const from=parseInt(fromStr,10);
+  if(isNaN(from)){ toast('Enter a valid serial number','err'); return; }
+  const toStr=prompt('TO serial # (inclusive):');
+  if(toStr===null) return;
+  const to=parseInt(toStr,10);
+  if(isNaN(to)||to<from){ toast('Enter a valid serial number \u2265 the "from" value','err'); return; }
+
+  const pool=myToday().filter(r=>r.seq_num!=null && r.seq_num>=from && r.seq_num<=to &&
+    (r.result==='VOLUMETRIC' ? !!r.product_image_url : !!r.xray_image_url));
+  if(!pool.length){ toast('No linked records found in serial #'+from+'\u2013'+to,'info'); return; }
+
+  if(!confirm(CU.email+' is about to unlink '+pool.length+' image(s) — serial #'+from+' to #'+to+' at '+myLoc()+
+    '. The scan records themselves (AWB/result/tamper) are NOT affected, only the image link. This cannot be undone from here. Continue?')) return;
+
+  showLoad('Unlinking '+pool.length+' image(s)...');
+  let failed=0;
+  for(const r of pool){
+    try{
+      const field=r.result==='VOLUMETRIC' ? 'product_image_url' : 'xray_image_url';
+      const ok=await sbPatch('scans','id=eq.'+encodeURIComponent(r.id),{[field]:'', image_linked:false});
+      if(ok){ r[field]=''; r.image_linked=computeImageLinked(r); } else failed++;
+    }catch(e){ failed++; }
+  }
+  try{
+    await gsPost({
+      action:'logCorrection', location:myLoc(), operator:CU.email,
+      awb:'BULK #'+from+'-'+to,
+      changes:[{field:'xray_image_url', oldValue:pool.length+' linked image(s), serial #'+from+'-'+to, newValue:'unlinked (bulk)'}]
+    });
+  }catch(e){ console.warn('bulk-unlink audit log failed (non-fatal):', e.message); }
+
+  hideLoad();
+  renderShift(); updateStats(); updateBanner();
+  toast((pool.length-failed)+' image(s) unlinked (serial #'+from+'\u2013'+to+')'+(failed?', '+failed+' failed':''), failed?'err':'ok');
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4624,6 +4706,64 @@ async function renderAdherence(){
 
   document.getElementById('adhere-total').textContent = grandTotal.toLocaleString()+' total scans';
   document.getElementById('adhere-updated').textContent = 'Updated: '+new Date().toLocaleTimeString('en-IN');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  OPERATOR-FACING SHIFT LOG — scoped to the operator's OWN location
+//  only, shows every operator's shift for the selected day in order,
+//  with scan/linked counts and any handover remarks. Separate from the
+//  admin-only Shift Logs (v-shifts) above/below, which covers every
+//  location and is admin/supervisor/POC only.
+// ══════════════════════════════════════════════════════════════
+async function renderShiftLog(){
+  const body=document.getElementById('shiftlog-body');
+  const date=document.getElementById('shiftlog-date')?.value||todayStr();
+  const loading=document.getElementById('shiftlog-loading');
+  const locNameEl=document.getElementById('shiftlog-loc-name');
+  if(locNameEl) locNameEl.textContent=myLoc()+' — '+new Date(date+'T12:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+  if(loading) loading.style.display='inline';
+  body.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);font-family:var(--mono);font-size:11px;">Loading...</div>';
+  let shifts=[];
+  try{
+    shifts=await sbGetAll('/rest/v1/shift_logs?location_code=eq.'+encodeURIComponent(myLoc())+'&order=shift_start.asc&shift_start=gte.'+date+'T00:00:00%2B05:30&shift_start=lte.'+date+'T23:59:59%2B05:30');
+  }catch(e){
+    if(loading) loading.style.display='none';
+    body.innerHTML='<div style="text-align:center;padding:20px;color:var(--danger);font-family:var(--mono);font-size:11px;">Failed to load: '+e.message+'</div>';
+    return;
+  }
+  if(loading) loading.style.display='none';
+  if(!shifts.length){
+    body.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);font-family:var(--mono);font-size:11px;">No shifts logged for this date yet.</div>';
+    return;
+  }
+  // Linked-image count per shift isn't stored on shift_logs itself —
+  // computed here per shift from the scans it covers. Fine at the scale
+  // of a handful of shifts/day/location; not meant for admin's
+  // all-locations view, which stays on the existing scan_count-only
+  // Shift Logs table above.
+  const html=await Promise.all(shifts.map(async (sh,i)=>{
+    let linked=0, total=sh.scan_count??0;
+    try{
+      const recs=await sbGetAll('/rest/v1/scans?shift_id=eq.'+encodeURIComponent(sh.id)+'&select=xray_image_url,result,product_image_url');
+      total=recs.length;
+      linked=recs.filter(r=>r.result==='VOLUMETRIC'?!!r.product_image_url:!!r.xray_image_url).length;
+    }catch(e){ /* fall back to stored scan_count, linked stays 0/unknown */ }
+    const start=sh.shift_start?new Date(sh.shift_start).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}):'?';
+    const end=sh.shift_end?new Date(sh.shift_end).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}):null;
+    const who=(sh.operator_email||'').split('@')[0];
+    return '<div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;flex-wrap:wrap;">'
+      +'<div style="width:26px;height:26px;border-radius:50%;background:var(--bg2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;color:var(--t1);flex-shrink:0;">'+(i+1)+'</div>'
+      +'<div style="min-width:140px;">'
+        +'<div style="font-weight:600;font-size:13px;">'+who+'</div>'
+        +'<div style="font-family:var(--mono);font-size:10px;color:var(--text3);">'+start+' – '+(end||'ongoing')+'</div>'
+      +'</div>'
+      +'<span class="pill pill-t1">'+total+' scanned</span>'
+      +'<span class="pill '+(linked<total?'pill-warn':'pill-ok')+'">'+linked+' linked</span>'
+      +(end?'':'<span class="pill pill-warn">⏳ ongoing</span>')
+      +(sh.remarks?'<div style="flex:1;min-width:200px;font-size:12px;color:var(--text2);font-style:italic;">💬 "'+sh.remarks+'"</div>':'')
+      +'</div>';
+  }));
+  body.innerHTML=html.join('');
 }
 
 // ══════════════════════════════════════════════════════════════

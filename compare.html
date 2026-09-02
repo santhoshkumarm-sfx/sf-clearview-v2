@@ -299,7 +299,15 @@ async function sbPost(table, body){
     headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json', Prefer:'return=minimal' },
     body: JSON.stringify(body)
   });
-  if(!r.ok) throw new Error('Supabase POST failed: '+r.status);
+  // FIX: this used to throw just the HTTP status code, which is why a
+  // total indexing failure showed as "failed" with no visible reason —
+  // the actual cause (e.g. an unknown column) was in the response body,
+  // which was being discarded. Now surfaces the real message.
+  if(!r.ok){
+    let detail = '';
+    try{ detail = (await r.json()).message || ''; }catch(e){}
+    throw new Error('Supabase POST failed: '+r.status+(detail?' — '+detail:''));
+  }
 }
 async function sbDelete(table, query){
   const r = await fetch(SB_URL+'/rest/v1/'+table+'?'+query, {
@@ -973,11 +981,31 @@ async function buildIndex(){
         if(!dataUrl){ failed++; continue; }
         try{
           const {embedding, histogram, shape, dino} = await computeSignature(dataUrl);
-          await sbPost('library_embeddings', {
+          const payload = {
             awb: it.awb, product_name: it.product_name, clean_name: it.clean_name||'',
             category: it.category, image_url: it.image_url, embedding: embedding, histogram: histogram, shape: shape,
             dino_embedding: dino || null
-          });
+          };
+          try{
+            await sbPost('library_embeddings', payload);
+          }catch(postErr){
+            // FIX: if the DB rejects dino_embedding specifically (most
+            // likely cause: the one-time `ALTER TABLE ... ADD COLUMN
+            // dino_embedding` migration hasn't been run yet), retry
+            // without it rather than failing the whole item — the item
+            // still gets indexed on CLIP+Color+Shape, and picks up DINO
+            // automatically on the next rebuild once the column exists.
+            if(/dino_embedding/i.test(postErr.message)){
+              delete payload.dino_embedding;
+              await sbPost('library_embeddings', payload);
+              if(!window._dinoColumnWarned){
+                window._dinoColumnWarned = true;
+                console.warn('dino_embedding column not found in Supabase — indexing without it. Run: ALTER TABLE library_embeddings ADD COLUMN IF NOT EXISTS dino_embedding jsonb;  then Full Rebuild again.');
+              }
+            } else {
+              throw postErr;
+            }
+          }
           done++;
         }catch(e){ failed++; console.warn('embed failed for', it.awb, e.message); }
         progBar.style.width = Math.round(((done+failed)/todo.length)*100)+'%';
@@ -985,7 +1013,8 @@ async function buildIndex(){
     }catch(e){ failed += batch.length; console.warn('batch fetch failed:', e.message); }
     if(wasCancelled) break;
   }
-  progEl.textContent = (wasCancelled?'Cancelled — ':'')+done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
+  progEl.textContent = (wasCancelled?'Cancelled — ':'')+done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).'
+    +(window._dinoColumnWarned ? ' ⚠️ dino_embedding column missing in Supabase — indexed WITHOUT DINO. See console for the SQL to run, then Full Rebuild again.' : '');
   statusEl.textContent = wasCancelled
     ? 'Cancelled — '+(existingSet.size+done)+' of '+library.length+' indexed so far. Progress made before cancelling is saved; run again to pick up where this left off.'
     : 'Index build complete — '+(existingSet.size+done)+' of '+library.length+' total item(s) indexed.';

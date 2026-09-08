@@ -264,7 +264,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-08-27e</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-09-07a</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -3717,6 +3717,41 @@ function manualAssignFd(matchIdx, recId){
   renderFdMatchList();
 }
 
+// NEW: resolves the typed text back to a record and assigns it. Backs
+// the searchable "Assign to AWB..." input added below — a plain
+// <select> doesn't scale to hundreds of AWBs (no way to search, only
+// scroll), so this is a text input + a single shared <datalist> that
+// every row's input points at, letting the browser filter by
+// substring as the operator types instead of loading a duplicate
+// options list per row.
+function handleFdAssignInput(inputEl, matchIdx){
+  const typed=inputEl.value.trim();
+  if(!typed) return;
+  // Datalist values are "AWB — id" (see buildFdUnlinkedDatalist) so the
+  // same AWB text appearing on two different records is still
+  // unambiguous — split off the id suffix rather than matching on the
+  // AWB text alone.
+  const idMatch=typed.match(/—\s*([^\s—]+)\s*$/);
+  const recId=idMatch ? idMatch[1] : null;
+  const rec = recId ? fdUnlinkedPool.find(r=>String(r.id)===recId) : fdUnlinkedPool.find(r=>r.awb===typed);
+  if(!rec){
+    toast('No unlinked AWB matches "'+typed+'" — pick one from the list','err');
+    inputEl.value='';
+    return;
+  }
+  manualAssignFd(matchIdx, rec.id);
+}
+// One shared datalist, rebuilt whenever fdUnlinkedPool changes (i.e.
+// every renderFdMatchList() call) rather than once per row — hundreds
+// of rows each carrying their own copy of the same few hundred options
+// would be exactly the kind of per-row bloat this page has already had
+// to fix once (see the makeThumb/compression history above).
+function buildFdUnlinkedDatalistHtml(){
+  return '<datalist id="fd-unlinked-datalist">'
+    +fdUnlinkedPool.map(r=>'<option value="'+r.awb+' — '+r.id+'">').join('')
+    +'</datalist>';
+}
+
 function renderFdMatchList(){
   const matches=pendingFd;
   const ok=matches.filter(m=>m.ok).length;
@@ -3762,7 +3797,8 @@ function renderFdMatchList(){
   const visible=capped?visibleAll.slice(0,RENDER_CAP):visibleAll;
 
   document.getElementById('fd-match-list').innerHTML=
-    '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
+    buildFdUnlinkedDatalistHtml()
+    +'<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">'
     +'<span class="pill pill-ok">✅ '+ok+'/'+matches.length+'</span>'
     +(byAwb?'<span class="pill pill-t1">AWB: '+byAwb+'</span>':'')
     +(byTime?'<span class="pill pill-t2">Time: '+byTime+'</span>':'')
@@ -3780,10 +3816,9 @@ function renderFdMatchList(){
       :visible.map(({m,idx})=>{
       const tc=m.method==='AWB in name'?'var(--t1)':m.method==='Time match'?'var(--t2)':(m.method&&(m.method.indexOf('Sequence match')===0||m.method.indexOf('AWB in name (courier code')===0))?'var(--warn)':m.manual?'var(--warn)':'var(--text3)';
       const assignPicker = (!m.ok && fdUnlinkedPool.length)
-        ? '<select onchange="if(this.value)manualAssignFd('+idx+',this.value)" style="width:auto;padding:2px 6px;font-size:10px;margin-left:6px;" onclick="event.stopPropagation()">'
-          +'<option value="">🔗 Assign to AWB...</option>'
-          +fdUnlinkedPool.map(r=>'<option value="'+r.id+'">'+r.awb+'</option>').join('')
-          +'</select>'
+        ? '<input type="text" list="fd-unlinked-datalist" placeholder="🔗 Assign to AWB..." autocomplete="off"'
+          +' onchange="handleFdAssignInput(this,'+idx+')" onclick="event.stopPropagation()"'
+          +' style="width:150px;padding:2px 6px;font-size:10px;margin-left:6px;">'
         : '';
       // Hover highlight on each row — makes it unambiguous which
       // filename lines up with which AWB when scanning down the list.

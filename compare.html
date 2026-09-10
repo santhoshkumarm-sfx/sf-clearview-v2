@@ -1045,9 +1045,42 @@ async function rebuildIndex(){
   const statusEl=document.getElementById('index-status');
   statusEl.textContent='Clearing existing index...';
   try{
-    const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb');
-    for(const e of existing){
-      await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(e.awb));
+    // FIX (2026-09-10): the previous version deleted one AWB at a time
+    // and never checked sbDelete's result — sbDelete returns false on
+    // failure rather than throwing, so a handful of the ~1800
+    // sequential DELETE requests silently failing (transient network
+    // blips, brief rate-limiting) left those rows behind with
+    // "Index cleared" still reported. Full Rebuild then hit a 409
+    // duplicate-key conflict re-inserting exactly those AWBs — this is
+    // the actual cause of the repeatable ~141 failures, not DINO or
+    // the schema. Fixed by: batching deletes (far fewer requests, so
+    // far less exposure to transient failures), checking each batch's
+    // result, retrying failed batches up to 3 times, and verifying
+    // the table is actually empty afterward instead of assuming it.
+    const existing = await sbGetAll('/rest/v1/library_embeddings?select=awb');
+    const BATCH = 50;
+    const failedAwbs = [];
+    for(let i=0;i<existing.length;i+=BATCH){
+      const batch = existing.slice(i,i+BATCH).map(e=>e.awb);
+      statusEl.textContent = 'Clearing existing index... ('+Math.min(i+BATCH,existing.length)+'/'+existing.length+')';
+      let ok = false;
+      for(let attempt=0; attempt<3 && !ok; attempt++){
+        const filter = 'awb=in.('+batch.map(a=>encodeURIComponent(a)).join(',')+')';
+        ok = await sbDelete('library_embeddings', filter);
+        if(!ok && attempt<2) await new Promise(r=>setTimeout(r,500)); // brief backoff before retry
+      }
+      if(!ok) failedAwbs.push(...batch);
+    }
+
+    // Verify — don't just trust the delete calls succeeded.
+    const remaining = await sbGetAll('/rest/v1/library_embeddings?select=awb');
+    if(remaining.length){
+      alert('Index clear incomplete: '+remaining.length+' item(s) could not be deleted after 3 attempts each '+
+        '(e.g. '+remaining.slice(0,5).map(r=>r.awb).join(', ')+'). '+
+        'Rebuild stopped here rather than proceeding and masking this as duplicate-key errors during the build step. '+
+        'Try Full Rebuild again — transient failures usually clear on retry.');
+      rebuildBtn.disabled=false; buildBtn.disabled=false;
+      return;
     }
   }catch(e){
     alert('Failed to clear index: '+e.message);

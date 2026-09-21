@@ -1248,15 +1248,45 @@ async function compareOneImage(q, lib, threshold, topK, statusEl){
 }
 
 const refImageCache = {};
+// FIX (2026-09-21): this used to fall back to the RAW Drive link as an
+// <img src> whenever the server-side fetch failed or returned nothing
+// for a reference — but a Drive ".../view" URL can NEVER load as an
+// image that way (it's an HTML viewer page requiring auth cookies, not
+// raw image bytes, regardless of sharing settings). That's exactly the
+// "view?usp=drivesdk (failed)" network request seen in DevTools — a
+// guaranteed-to-fail request with no useful error message, for every
+// reference image the server-side attempt couldn't fetch.
+//
+// Now: for an actual Drive link, there's no viable client-side
+// fallback at all — this surfaces the REAL reason Code.gs's
+// getImagesAsB64 already provides (via its per-ref errors map) and
+// throws, so the caller's existing try/catch (skip this candidate's
+// SSIM score, log a warning, continue) handles it the way it already
+// does for any other failure — just with an actual reason now instead
+// of a doomed network request. A genuinely non-Drive URL (some other
+// publicly-hosted image) still gets a real fallback attempt, since a
+// plain fetch has an actual chance of working there.
 async function resolveRefDataUrl(url){
   if(refImageCache[url]) return refImageCache[url];
+  const isDriveLink = /drive\.google\.com/.test(url) || /[?&]id=/.test(url);
   try{
     const res = await gsPost({action:'getImagesAsB64', refs:[url]});
     const dataUrl = res?.images?.[url];
     if(dataUrl){ refImageCache[url]=dataUrl; return dataUrl; }
-  }catch(e){}
-  refImageCache[url] = url;
-  return url;
+    if(isDriveLink){
+      throw new Error(res?.errors?.[url] || 'server could not fetch this Drive reference');
+    }
+  }catch(e){
+    if(isDriveLink) throw e; // no client-side fallback makes sense for a Drive link — rethrow with the real reason
+    console.warn('getImagesAsB64 failed for', url, '— trying a direct client-side fetch:', e.message);
+  }
+  // Only reached for a non-Drive URL — a plain fetch has an actual
+  // chance of succeeding here, unlike for a Drive "view" link.
+  const r = await fetch(url);
+  const blob = await r.blob();
+  const dUrl = await new Promise((res2,rej2)=>{ const fr=new FileReader(); fr.onload=e=>res2(e.target.result); fr.onerror=rej2; fr.readAsDataURL(blob); });
+  refImageCache[url] = dUrl;
+  return dUrl;
 }
 
 function cancelCompare(){

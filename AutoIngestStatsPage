@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<title>SF ClearView — Auto-Ingest Stats</title>
+<style>
+  :root {
+    --bg: #12172b;
+    --card-bg: #1b2140;
+    --border: #d4af37;
+    --gold: #e0b83c;
+    --text: #e8e8ef;
+    --subtext: #8a90ad;
+    --orange: #f2a340;
+    --green: #4caf7d;
+    --red: #e05d5d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    padding: 20px;
+  }
+  h1 {
+    font-size: 20px;
+    color: var(--gold);
+    margin: 0 0 4px 0;
+  }
+  .sub {
+    color: var(--subtext);
+    font-size: 13px;
+    margin-bottom: 18px;
+  }
+  .topbar {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  button {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    color: var(--gold);
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { background: #232a52; }
+  .grand {
+    background: var(--card-bg);
+    border-top: 3px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin-bottom: 22px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 12px;
+  }
+  .grand .label { color: var(--subtext); font-size: 12px; }
+  .grand .value { font-size: 22px; font-weight: 700; color: var(--gold); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--card-bg);
+    border-top: 3px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+  .card h2 {
+    margin: 0;
+    font-size: 17px;
+    color: var(--gold);
+    letter-spacing: 0.5px;
+  }
+  .card .row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 14px;
+  }
+  .card .row .k { color: var(--subtext); }
+  .card .row .v { font-weight: 600; }
+  .v.uploaded { color: var(--green); }
+  .v.nomatch { color: var(--red); }
+  .v.rate { color: var(--orange); }
+  .today-block {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid #2a3060;
+    font-size: 12px;
+    color: var(--subtext);
+  }
+  .empty, .err {
+    color: var(--subtext);
+    font-size: 14px;
+    padding: 20px 0;
+  }
+  .err { color: var(--red); }
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--subtext);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div>
+      <h1>🔍 SF ClearView — Auto-Ingest Stats</h1>
+      <div class="sub" id="status">Loading…</div>
+    </div>
+    <button onclick="loadStats()">↻ Refresh now</button>
+  </div>
+
+  <div id="grandWrap"></div>
+  <div id="grid" class="grid"></div>
+
+  <script>
+    var REFRESH_SECONDS = 30;
+
+    function fmtTime(iso) {
+      try {
+        var d = new Date(iso);
+        return d.toLocaleString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short' });
+      } catch (e) { return iso; }
+    }
+
+    function renderGrand(g) {
+      var wrap = document.getElementById('grandWrap');
+      if (!g) { wrap.innerHTML = ''; return; }
+      wrap.innerHTML =
+        '<div class="grand">' +
+          '<div><div class="label">TOTAL CHECKED (all time)</div><div class="value">' + g.total + '</div></div>' +
+          '<div><div class="label">AUTO-MATCHED</div><div class="value" style="color:var(--green)">' + g.uploaded + '</div></div>' +
+          '<div><div class="label">NO MATCH</div><div class="value" style="color:var(--red)">' + g.noMatch + '</div></div>' +
+          '<div><div class="label">MATCH RATE</div><div class="value" style="color:var(--orange)">' + g.matchRatePct + '%</div></div>' +
+          '<div><div class="label">TODAY: CHECKED</div><div class="value">' + g.todayChecked + '</div></div>' +
+          '<div><div class="label">TODAY: MATCHED</div><div class="value" style="color:var(--green)">' + g.todayUploaded + '</div></div>' +
+        '</div>';
+    }
+
+    function renderLocations(list) {
+      var grid = document.getElementById('grid');
+      if (!list || !list.length) {
+        grid.innerHTML = '<div class="empty">No auto-ingest activity logged yet.</div>';
+        return;
+      }
+      grid.innerHTML = list.map(function(b) {
+        return (
+          '<div class="card">' +
+            '<h2>' + b.location + '</h2>' +
+            '<div class="row"><span class="k">Total checked</span><span class="v">' + b.total + '</span></div>' +
+            '<div class="row"><span class="k">Auto-matched</span><span class="v uploaded">' + b.uploaded + '</span></div>' +
+            '<div class="row"><span class="k">No match</span><span class="v nomatch">' + b.noMatch + '</span></div>' +
+            '<div class="row"><span class="k">Match rate</span><span class="v rate">' + b.matchRatePct + '%</span></div>' +
+            '<div class="today-block">' +
+              'Today — checked: <b>' + b.todayChecked + '</b> &nbsp;|&nbsp; matched: <b>' + b.todayUploaded + '</b>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    function loadStats() {
+      document.getElementById('status').innerHTML = '<span class="spinner"></span>Refreshing…';
+      var url = window.location.pathname + window.location.search.replace(/([?&])page=stats/, '$1action=autoIngestStats');
+      // Fallback if the regex above didn't find page=stats for some reason
+      if (url.indexOf('action=autoIngestStats') === -1) {
+        url = window.location.href.split('?')[0] + '?action=autoIngestStats';
+      }
+      fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) throw new Error(data.error);
+          renderGrand(data.grandTotal);
+          renderLocations(data.byLocation);
+          document.getElementById('status').textContent = 'Last updated ' + fmtTime(data.generatedAt) + ' IST — auto-refreshing every ' + REFRESH_SECONDS + 's';
+        })
+        .catch(function(e) {
+          document.getElementById('status').innerHTML = '<span class="err">Could not load stats: ' + e.message + '</span>';
+        });
+    }
+
+    loadStats();
+    setInterval(loadStats, REFRESH_SECONDS * 1000);
+  </script>
+
+</body>
+</html>

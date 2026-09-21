@@ -245,10 +245,29 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 const isAdmin = new URLSearchParams(window.location.search).get('admin') === 'true';
 
-async function sbGet(path){
-  const r = await fetch(SB_URL+path, { headers: { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY }, cache: 'no-store' });
-  if(!r.ok) throw new Error('Supabase GET failed: '+r.status);
-  return r.json();
+// FIX (2026-09-21): the reference library index has grown to ~1800
+// items, each carrying FOUR large vector columns (embedding, dino_
+// embedding, histogram, shape) — at the default page size of 1000,
+// one page of this specific table can be a very large JSON payload,
+// which is the likely cause of the "Supabase GET failed: 500" errors
+// seen loading the comparison index (a genuine server-side response-
+// size/timeout issue, not a client bug — this doesn't happen on
+// smaller tables). Two mitigations: retry transient 5xx errors with
+// backoff instead of failing immediately, and (see ensureEmbeddingsLoaded
+// below) use a much smaller page size specifically for this heavy
+// table, so no single request's payload is anywhere near whatever
+// limit is actually being hit.
+async function sbGet(path, retries){
+  retries = retries==null ? 2 : retries;
+  for(let attempt=0; attempt<=retries; attempt++){
+    const r = await fetch(SB_URL+path, { headers: { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY }, cache: 'no-store' });
+    if(r.ok) return r.json();
+    if(r.status>=500 && attempt<retries){
+      await new Promise(res=>setTimeout(res, 800*(attempt+1)));
+      continue;
+    }
+    throw new Error('Supabase GET failed: '+r.status);
+  }
 }
 async function sbGetAll(path, pageSize){
   pageSize = pageSize || 1000;
@@ -756,7 +775,12 @@ async function runNameSearch(){
 
 async function ensureEmbeddingsLoaded(){
   if(libraryEmbeddings) return libraryEmbeddings;
-  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding,histogram,shape,dino_embedding');
+  // Small page size deliberately — see the FIX note on sbGet above.
+  // This table's rows are unusually heavy (4 vector columns each); a
+  // smaller page keeps every single request's payload well under
+  // whatever size/timeout limit was producing the 500s, at the cost of
+  // a few more round-trips total (paginated automatically by sbGetAll).
+  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding,histogram,shape,dino_embedding', 150);
   libraryEmbeddings = Array.isArray(data) ? data : [];
   return libraryEmbeddings;
 }

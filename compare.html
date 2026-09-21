@@ -73,7 +73,6 @@ select:focus,input:focus,textarea:focus{outline:none;border-color:var(--t1);}
 .pill{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:3px;background:var(--bg2);color:var(--text3);}
 label.lbl{display:block;font-size:11px;color:var(--text3);font-family:var(--mono);margin-bottom:5px;}
 .fg{margin-bottom:12px;}
-/* NEW — score breakdown, product-level result, benchmark table */
 .score-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin:10px 0;}
 .score-chip{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;text-align:center;}
 .score-chip .lbl2{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;}
@@ -109,12 +108,6 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
     </div>
     <div class="progbar-wrap" id="index-prog" style="display:none;"><div class="progbar" id="index-prog-bar"></div></div>
 
-    <!-- NEW: fusion layer — CLIP/DINO/SSIM/Color/Shape are ALWAYS kept
-         separate (never silently averaged) and combined via these
-         explicit, admin-tunable weights. Defaults are a reasonable
-         starting point, not a claim of correctness — see the Benchmark
-         panel below to actually tune these against real labelled data,
-         per the "don't assume DINO helps" requirement. -->
     <div class="row" style="margin-top:14px;gap:20px;flex-wrap:wrap;">
       <div class="fg" style="margin-bottom:0;max-width:220px;">
         <label class="lbl">Match threshold (%) — fused score for "Original"</label>
@@ -158,10 +151,6 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
     </div>
   </div>
 
-  <!-- NEW: benchmark/debug panel — run the SAME query set through
-       CLIP-only (old baseline) vs the new fused pipeline side by side,
-       against real labelled data, instead of assuming any new signal
-       helps. Admin only, same gating as the index card. -->
   <div class="card" id="benchmark-card" style="display:none;">
     <div class="card-head">📊 BENCHMARK MODE (ADMIN)</div>
     <div class="status" style="margin-top:0;margin-bottom:10px;">Upload a CSV with columns <code>image_url,expected_awb</code> (or <code>expected_product</code>) — each row is compared against the current index using BOTH the old CLIP-only scoring and the new fused pipeline, so you can see whether the new signals actually help before trusting them.</div>
@@ -189,13 +178,6 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
     <div class="row" style="margin-top:10px;">
       <div style="flex:1;"><input type="text" id="link-input" placeholder="...or paste an image link (Drive or any direct URL)"></div>
       <button class="btn" onclick="useLink()">Use Link</button>
-      <!-- ONE camera button — tries a live webcam view first (works for
-           both a desktop webcam and most phone browsers, letting the
-           person pick front/back camera right there); if that's not
-           available for any reason, it falls back automatically to the
-           device's native camera picker instead. Either way it's just
-           "take a photo," no need to make the person choose which path
-           up front. -->
       <input type="file" id="mobile-cam-input" accept="image/*" capture="environment" style="display:none;" onchange="onFileInput(this)">
       <button class="btn" onclick="openCamera()">📷 Camera</button>
     </div>
@@ -235,7 +217,6 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
 
 </div>
 
-<!-- Live webcam capture modal -->
 <div class="cam-modal" id="cam-modal">
   <video id="cam-video" autoplay playsinline></video>
   <div class="row">
@@ -244,8 +225,6 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
   </div>
 </div>
 
-<!-- Match-result image preview — view/download in place instead of
-     navigating away to a new tab. -->
 <div class="cam-modal" id="preview-modal" onclick="if(event.target===this)closePreview()">
   <img id="preview-img" src="" style="max-width:90vw;max-height:65vh;border-radius:var(--r);object-fit:contain;background:#0f1117;" onclick="event.stopPropagation()">
   <div class="card" style="max-width:90vw;width:600px;" onclick="event.stopPropagation()">
@@ -264,17 +243,8 @@ const GS_URL = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5
 const SB_URL = 'https://ckmfixhyuklzqkggzudb.supabase.co';
 const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
 
-// FIX (2026-07-27): this used to read a shared localStorage flag,
-// which meant on any shared device whichever role logged in most
-// recently leaked into every subsequent tab-open of this page,
-// regardless of who's actually using it right now — a real reported
-// bug (admin controls showing up for operators). The role is now
-// passed as a URL query param at the exact moment index.html opens
-// this tab, tied to whoever is actually logged in at that click —
-// no stale state possible, since a fresh param is set every time.
 const isAdmin = new URLSearchParams(window.location.search).get('admin') === 'true';
 
-// ── Minimal fetch helpers (standalone — no dependency on index.html) ──
 async function sbGet(path){
   const r = await fetch(SB_URL+path, { headers: { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY }, cache: 'no-store' });
   if(!r.ok) throw new Error('Supabase GET failed: '+r.status);
@@ -299,10 +269,6 @@ async function sbPost(table, body){
     headers:{ apikey:SB_KEY, Authorization:'Bearer '+SB_KEY, 'Content-Type':'application/json', Prefer:'return=minimal' },
     body: JSON.stringify(body)
   });
-  // FIX: this used to throw just the HTTP status code, which is why a
-  // total indexing failure showed as "failed" with no visible reason —
-  // the actual cause (e.g. an unknown column) was in the response body,
-  // which was being discarded. Now surfaces the real message.
   if(!r.ok){
     let detail = '';
     try{ detail = (await r.json()).message || ''; }catch(e){}
@@ -326,14 +292,13 @@ async function gsPost(body){
   return r.json();
 }
 
-// ── State ──
 let mode = 'category';
-let queue = []; // [{name, dataUrl}]
-let extractor = null;        // CLIP {processor, model}
-let dinoExtractor = null;    // DINOv2 {processor, model} — lazy, may fail gracefully
-let dinoLoadFailed = false;  // if DINO ever fails to load this session, stop retrying and fall back silently
-let cvReady = null;          // Promise resolving once OpenCV.js is loaded
-let libraryEmbeddings = null; // cached in memory only, per session
+let queue = [];
+let extractor = null;
+let dinoExtractor = null;
+let dinoLoadFailed = false;
+let cvReady = null;
+let libraryEmbeddings = null;
 let currentIdx = null;
 
 function setMode(m){
@@ -349,10 +314,6 @@ function saveThreshold(){
 function saveTopK(){
   localStorage.setItem('cv_libcmp_topk', document.getElementById('topk-n').value);
 }
-// NEW fusion weights — CLIP/DINO/SSIM/Color/Shape, always kept as
-// separate scores and combined explicitly here, never silently
-// averaged. Renormalized to sum to 100 if the admin's inputs don't,
-// rather than silently under/over-weighting.
 function saveWeights(){
   const ids=['w-clip','w-dino','w-ssim','w-color','w-shape'];
   const keys=['cv_libcmp_w_clip','cv_libcmp_w_dino','cv_libcmp_w_ssim','cv_libcmp_w_color','cv_libcmp_w_shape'];
@@ -382,10 +343,9 @@ function getWeights(){
   return norm;
 }
 function isDebugMode(){ return localStorage.getItem('cv_libcmp_debug')==='1'; }
-function isDinoEnabled(){ return localStorage.getItem('cv_libcmp_dino_enabled') !== '0'; } // default ON
+function isDinoEnabled(){ return localStorage.getItem('cv_libcmp_dino_enabled') !== '0'; }
 function getTopK(){ return parseInt(localStorage.getItem('cv_libcmp_topk'))||8; }
 
-// ── Model loading (lazy — only on first Compare/Build Index click) ──
 async function ensureModel(){
   if(extractor) return extractor;
   const statusEl = document.getElementById('model-status');
@@ -399,19 +359,6 @@ async function ensureModel(){
   return extractor;
 }
 
-// NEW: DINOv2 — a second, independently-trained vision backbone
-// alongside CLIP. CLIP is trained to match images to TEXT descriptions,
-// which makes it good at "what kind of object is this" but sometimes
-// loose on fine structural detail. DINOv2 is trained purely on visual
-// self-supervision (no text), which tends to make it more sensitive to
-// exact structural/textural similarity — a genuinely different signal,
-// not a bigger/better CLIP. That's the whole point of keeping it
-// separate rather than assuming it's strictly better (see the
-// Benchmark panel — this is meant to be verified, not assumed).
-// Loads lazily, same as CLIP, and fails SOFTLY: if the model can't load
-// (network issue, browser incompatibility), comparison continues using
-// CLIP+Color+Shape only rather than breaking the whole page — see
-// isDinoEnabled()/dinoLoadFailed checks in computeFullSignature().
 async function ensureDinoModel(){
   if(dinoExtractor) return dinoExtractor;
   if(dinoLoadFailed) return null;
@@ -433,12 +380,6 @@ async function ensureDinoModel(){
   }
 }
 
-// NEW: OpenCV.js — used ONLY for aligning the top-K shortlist before
-// SSIM (rotation/scale normalization via image moments — see
-// alignForSsim() below). Deliberately NOT run against the whole
-// library: alignment + SSIM are comparatively expensive per-pair
-// operations, so they only ever run on the handful of candidates CLIP/
-// DINO/Color/Shape already narrowed things down to (see getTopK()).
 function ensureOpenCV(){
   if(cvReady) return cvReady;
   cvReady = new Promise((resolve, reject)=>{
@@ -459,42 +400,11 @@ function ensureOpenCV(){
   return cvReady;
 }
 
-// Grayscale + contrast-normalize BEFORE embedding — both when building
-// the reference index AND when comparing a live capture. This matters
-// specifically because reference images are clean digital exports from
-// the X-ray machine, while a photo taken of the machine's monitor
-// (phone or webcam) picks up screen glare, white-balance shifts, and
-// contrast differences that have nothing to do with the actual shape
-// of what's inside the shipment — which is the only thing that should
-// actually matter for a match. Flattening both sides to the same
-// grayscale/contrast treatment makes the comparison judge shape and
-// structure, not color, which is exactly what was asked for.
-// FIX (2026-07-24): this used to desaturate + contrast-stretch every
-// image before comparison. That was actively hurting accuracy — X-ray
-// security imagery uses false-color intentionally (different colors
-// typically indicate different material densities/types), so stripping
-// color was throwing away one of the most genuinely discriminating
-// signals available, which is very likely why completely unrelated
-// objects (a watch vs earbuds, a shirt vs a power bank) were scoring
-// 85-100% against each other. Now just resizes — color is preserved
-// all the way through to the model.
-// NEW (2026-07-24): most of the frame in this fleet's raw X-ray
-// captures is black padding around a narrow strip actually containing
-// the product (confirmed directly from real screenshots — the actual
-// object often occupies well under half the frame width). That padding
-// was diluting BOTH the visual thumbnails (product barely visible even
-// at reasonable sizes) AND the model's signal (most of what CLIP and
-// the histogram were "looking at" was empty padding, not the product).
-// This detects the actual content region (anything that isn't
-// near-black padding or near-white background) and crops to it, used
-// for the image fed to the model AND the thumbnails shown to a person.
 function autoCropToContent(img, marginPct){
   marginPct = marginPct==null ? 0.05 : marginPct;
   const srcW = img.naturalWidth||img.width, srcH = img.naturalHeight||img.height;
   if(!srcW || !srcH) return img;
 
-  // Detect on a small downscaled sample for speed — the bounding box
-  // scales back up to full resolution for the actual crop.
   const sampleMax = 300;
   const scale = Math.min(1, sampleMax / Math.max(srcW, srcH));
   const sw = Math.max(1, Math.round(srcW*scale)), sh = Math.max(1, Math.round(srcH*scale));
@@ -504,18 +414,6 @@ function autoCropToContent(img, marginPct){
   sctx.drawImage(img,0,0,sw,sh);
   const d = sctx.getImageData(0,0,sw,sh).data;
 
-  // FIX (2026-08-07): this used to assume padding was always pure black
-  // or pure white (a fixed brightness range) — real images confirmed
-  // this fails silently for a tan/beige X-ray backdrop (very common),
-  // whose brightness falls just inside the old "content" range. That
-  // meant the crop did nothing at all for those images — the padding
-  // stayed in, diluting every comparison signal exactly the way this
-  // feature was built to prevent, which is why genuinely close matches
-  // were being missed. Now detects the ACTUAL background color by
-  // sampling a thin strip around the frame's edge (always background in
-  // every real capture, whatever color it happens to be) and flags
-  // anything meaningfully different from THAT as content — adapts to
-  // black, white, tan, or any other backdrop automatically.
   const borderPx = Math.max(2, Math.round(Math.min(sw,sh)*0.03));
   let sr=0,sg=0,sb=0,sn=0;
   function sampleBorder(x,y){ const i=(y*sw+x)*4; sr+=d[i]; sg+=d[i+1]; sb+=d[i+2]; sn++; }
@@ -529,7 +427,7 @@ function autoCropToContent(img, marginPct){
   }
   const bgR = sn?sr/sn:255, bgG = sn?sg/sn:255, bgB = sn?sb/sn:255;
 
-  const COLOR_DIST_THRESHOLD = 28; // tuned to catch real product edges without flagging JPEG noise in flat background as "content"
+  const COLOR_DIST_THRESHOLD = 28;
   function isContent(r,g,b){
     const dr=r-bgR, dg=g-bgG, db=b-bgB;
     return Math.sqrt(dr*dr+dg*dg+db*db) > COLOR_DIST_THRESHOLD;
@@ -546,7 +444,7 @@ function autoCropToContent(img, marginPct){
       }
     }
   }
-  if(!found) return img; // nothing detected as content — fall back to the original rather than a zero-size crop
+  if(!found) return img;
 
   const realScale = 1/scale;
   const bw=(maxX-minX)*realScale, bh=(maxY-minY)*realScale;
@@ -560,9 +458,6 @@ function autoCropToContent(img, marginPct){
   return c;
 }
 
-// Crops a data URL for DISPLAY purposes (queue thumbnails, the "what
-// you searched" image in results) — separate from the model pipeline
-// below, but uses the same autoCropToContent utility.
 async function cropForDisplay(dataUrl){
   try{
     const img = await loadImageFromDataUrl(dataUrl);
@@ -589,17 +484,6 @@ function preprocessToDataUrl(img, maxDim){
   return c.toDataURL('image/jpeg', 0.9);
 }
 
-// SECOND SIGNAL (new): a plain color histogram, computed classically —
-// no model, practically free. CLIP's embedding is a general semantic
-// "what kind of object is this" signal; it can miss the fact that two
-// objects have completely different material compositions if their
-// overall silhouette is similar (a rectangular blob is a rectangular
-// blob to a model trained on natural photos). A color histogram
-// captures exactly what CLIP tends to blur past — the actual color/
-// material-density distribution — and combining the two catches false
-// positives that either signal alone would miss. 6 bins per channel
-// (216 total) computed on a small 48x48 downscale, normalized to sum
-// to 1 so histogram intersection naturally lands in [0,1].
 function computeHistogram(img){
   const size=48;
   const c=document.createElement('canvas');
@@ -624,19 +508,9 @@ function histogramSimilarity(h1,h2){
   if(!h1||!h2||h1.length!==h2.length) return 0;
   let inter=0;
   for(let i=0;i<h1.length;i++) inter+=Math.min(h1[i],h2[i]);
-  return inter; // histogram intersection — already in [0,1] when both normalized to sum 1
+  return inter;
 }
 
-// THIRD SIGNAL (new): a block-based edge/shape descriptor — exactly
-// the "consider images in blocks, find shape, then color" approach
-// asked for. Splits the image into a 4x4 grid, and within each block
-// computes a histogram of edge directions (a simplified version of the
-// same idea behind HOG — Histogram of Oriented Gradients). This is
-// computed from LUMINANCE GRADIENTS ONLY, not color values, which is
-// exactly why it's the right tool for the phone/webcam-vs-digital
-// color-shift problem: a shape/edge signature doesn't care what hue
-// the object was rendered in, only where its actual edges are. Cheap,
-// classical, no model involved.
 function computeShapeDescriptor(img, gridSize){
   gridSize = gridSize || 4;
   const size = 128;
@@ -667,16 +541,16 @@ function computeShapeDescriptor(img, gridSize){
           const gx=lum[idx+1]-lum[idx-1];
           const gy=lum[idx+size]-lum[idx-size];
           const mag=Math.sqrt(gx*gx+gy*gy);
-          if(mag>10){ // skip near-flat regions — background/padding, not a real edge
+          if(mag>10){
             let angle=Math.atan2(gy,gx);
-            if(angle<0) angle+=Math.PI; // fold to 0..PI — gradient direction, not polarity
+            if(angle<0) angle+=Math.PI;
             const bin=Math.min(ORIENT_BINS-1,Math.floor(angle/Math.PI*ORIENT_BINS));
             hist[bin]+=mag;
             total+=mag;
           }
         }
       }
-      if(total>0) for(let i=0;i<ORIENT_BINS;i++) hist[i]/=total; // normalize per block — robust to overall brightness/contrast differences between capture devices
+      if(total>0) for(let i=0;i<ORIENT_BINS;i++) hist[i]/=total;
       descriptor.push(...hist);
     }
   }
@@ -689,11 +563,6 @@ function shapeSimilarity(d1,d2){
   const denom=Math.sqrt(n1)*Math.sqrt(n2);
   return denom>0 ? Math.max(0,dot/denom) : 0;
 }
-// NOTE: the old blendedScore()/color-weight/shape-weight (CLIP+Color+
-// Shape only, always-average) logic has been superseded by fuseScores()
-// + getWeights() further down (5 independently-weighted signals,
-// including DINO+SSIM, never blindly averaged). Removed here to avoid
-// two competing "how do we combine scores" functions existing at once.
 
 function loadImageFromDataUrl(dataUrl){
   return new Promise((resolve,reject)=>{
@@ -714,24 +583,18 @@ function cosineSim(a,b){
   return dot;
 }
 
-// EXTENDED: now also computes the DINOv2 embedding (when enabled/
-// available) alongside CLIP+Color+Shape — same crop, same preprocessing
-// pipeline shared by every signal, so they're all reasoning about the
-// exact same content region. Returns the cropped canvas too, since
-// alignment+SSIM (computed later, only for the top-K shortlist) need
-// pixel access, not just embeddings.
 async function computeSignature(dataUrl){
   const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
   const img = await loadImageFromDataUrl(dataUrl);
-  const cropped = autoCropToContent(img); // one crop, shared by every signal below
-  const preppedUrl = preprocessToDataUrl(cropped); // re-crops a no-op on an already-tight region — harmless
+  const cropped = autoCropToContent(img);
+  const preppedUrl = preprocessToDataUrl(cropped);
   const { processor, model } = await ensureModel();
   const image = await RawImage.fromURL(preppedUrl);
   const inputs = await processor(image);
   const { image_embeds } = await model(inputs);
   const embedding = l2normalize(Array.from(image_embeds.data));
-  const histogram = computeHistogram(cropped); // full color, cropped region — not the padding-heavy original frame
-  const shape = computeShapeDescriptor(cropped); // luminance-only, color-invariant — robust to phone/webcam color shift
+  const histogram = computeHistogram(cropped);
+  const shape = computeShapeDescriptor(cropped);
 
   let dino = null;
   if(isDinoEnabled()){
@@ -741,10 +604,6 @@ async function computeSignature(dataUrl){
         const dImage = await RawImage.fromURL(preppedUrl);
         const dInputs = await dinoEx.processor(dImage);
         const out = await dinoEx.model(dInputs);
-        // DINOv2's last_hidden_state: [batch, tokens, dim] — token 0 is
-        // the CLS token, the standard whole-image representation used
-        // for retrieval/similarity (same convention as CLIP's pooled
-        // output, different underlying training objective).
         const hidden = out.last_hidden_state;
         const dim = hidden.dims[2];
         const cls = Array.from(hidden.data.slice(0, dim));
@@ -755,7 +614,6 @@ async function computeSignature(dataUrl){
 
   return { embedding, histogram, shape, dino, croppedCanvas: toCanvas(cropped) };
 }
-// Kept for anywhere that only needs the CLIP embedding on its own.
 async function computeEmbeddingFromDataUrl(dataUrl){
   return (await computeSignature(dataUrl)).embedding;
 }
@@ -763,19 +621,10 @@ function toCanvas(imgOrCanvas){
   if(imgOrCanvas instanceof HTMLCanvasElement) return imgOrCanvas;
   const w=imgOrCanvas.naturalWidth||imgOrCanvas.width, h=imgOrCanvas.naturalHeight||imgOrCanvas.height;
   const c=document.createElement('canvas'); c.width=w; c.height=h;
-  c.getContext('2d').drawImage(imgOrCanvas,0,0,w,h);
+  c.getContext('2d').drawImage(imgOrCanvas,0,0);
   return c;
 }
 
-// NEW: SSIM (structural similarity) — classic single-scale SSIM on
-// grayscale, 8x8 sliding windows, standard Wang et al. constants. This
-// is a PIXEL-level signal (unlike CLIP/DINO's learned embeddings or the
-// classical Color/Shape descriptors), which is exactly why it only runs
-// after alignment — SSIM without alignment would just measure "are these
-// two images positioned/rotated the same way," not "is the actual
-// content structurally similar," which isn't useful here. Computed on
-// a shared canvas size (both images resized to the same 128x128) so
-// window comparisons are meaningful.
 function toGrayscaleArray(canvas, size){
   size = size||128;
   const c=document.createElement('canvas'); c.width=size; c.height=size;
@@ -813,16 +662,6 @@ function computeSSIM(canvasA, canvasB){
   return count>0 ? Math.max(0,Math.min(1,total/count)) : 0;
 }
 
-// NEW: alignment before SSIM — normalizes rotation using image moments
-// (OpenCV.js), NOT feature-matching (ORB/SIFT). Deliberate choice: flat
-// X-ray silhouettes often lack the distinctive keypoints feature
-// matching needs, but every solid region has a well-defined principal
-// axis via its moments regardless of texture — much more robust for
-// this specific kind of imagery. Rotates the QUERY to match the
-// REFERENCE's orientation; scale is already normalized since both get
-// resized to the same canvas size for SSIM. Fails soft: if OpenCV.js
-// isn't available or alignment errors out, SSIM just runs unaligned
-// rather than blocking the whole comparison.
 async function alignForSsim(queryCanvas, refCanvas){
   try{
     const cv = await ensureOpenCV();
@@ -843,10 +682,6 @@ async function alignForSsim(queryCanvas, refCanvas){
     const qAngle = angleOf(queryCanvas);
     const rAngle = angleOf(refCanvas);
     let delta = qAngle - rAngle;
-    // Moments-based angle is only defined mod 180° (no "which end is
-    // up" info) — snap to whichever of the two equivalent corrections
-    // is smaller, since a near-180° "correction" would just flip the
-    // image needlessly.
     if(delta>90) delta-=180; if(delta<-90) delta+=180;
 
     const size=128;
@@ -867,8 +702,6 @@ async function alignForSsim(queryCanvas, refCanvas){
   }
 }
 
-// ── Categories (from already-indexed embeddings — no need to hit the
-//    Sheet again just to list categories) ──
 async function loadCategories(){
   const sel = document.getElementById('cat-select');
   try{
@@ -882,11 +715,6 @@ async function loadCategories(){
   }
 }
 
-// Product-name lookup — a direct search of the reference library itself
-// (not the image-comparison flow). Reuses the same library data
-// runCompare() uses, lazy-loaded on first actual use so this page stays
-// light until someone actually needs it. Debounced so it doesn't
-// re-search on every single keystroke.
 let nameSearchTimer = null;
 function onNameSearchInput(){
   clearTimeout(nameSearchTimer);
@@ -906,7 +734,7 @@ async function runNameSearch(){
   const matches = lib.filter(item=>{
     const name = ((item.clean_name||'')+' '+(item.product_name||'')+' '+(item.awb||'')).toLowerCase();
     return name.includes(q);
-  }).slice(0, 24); // cap the display — this is a quick lookup, not a full browse
+  }).slice(0, 24);
 
   if(!matches.length){
     resultsEl.innerHTML = '';
@@ -933,7 +761,6 @@ async function ensureEmbeddingsLoaded(){
   return libraryEmbeddings;
 }
 
-// ── Admin: build/update index ──
 let buildCancelled = false;
 async function buildIndex(){
   if(!isAdmin){ alert('Admin only'); return; }
@@ -967,53 +794,93 @@ async function buildIndex(){
 
   progWrap.style.display='block'; progEl.style.display='inline';
   let done=0, failed=0, wasCancelled=false;
+  const failedDetail=[];
   const BATCH=6;
+  // FIX (2026-09-20): CONFIRMED root cause of the browser tab freezing
+  // into Chrome's "Page Unresponsive" dialog during index build/rebuild
+  // (and of the main SF ClearView v2 tab freezing WITH it, since same-
+  // origin tabs opened via window.open can share a renderer process).
+  // computeSignature() below runs CLIP + DINOv2 model inference via
+  // WASM (ONNX Runtime) — that inference is genuinely CPU-bound
+  // synchronous work for its whole duration, even though the JS API
+  // wrapping it is Promise-based. Awaiting a promise only yields to
+  // OTHER MICROTASKS, not to the browser's rendering/input pipeline —
+  // that requires an actual macrotask boundary (setTimeout, etc). With
+  // zero such boundary anywhere in this per-item loop, ~1800 back-to-
+  // back inference calls (plus histogram/shape descriptor computation)
+  // added up to long enough continuous main-thread work for Chrome's
+  // responsiveness watchdog to trip — which is exactly what "not
+  // detecting, page unresponsive" loofoked like from the outside, even
+  // though the computation itself was actually still progressing
+  // (1719/1796 by the time it was captured). Inserting a real macrotask
+  // yield after every single item gives the browser a chance to paint/
+  // handle input between each one, at negligible cost to total runtime.
   for(let i=0;i<todo.length;i+=BATCH){
     if(buildCancelled){ wasCancelled=true; break; }
     const batch = todo.slice(i,i+BATCH);
     progEl.textContent = done+'/'+todo.length+' indexed'+(failed?(' · '+failed+' failed'):'');
+    let res;
     try{
-      const res = await gsPost({action:'getImagesAsB64', refs: batch.map(it=>it.image_url)});
-      const imagesMap = res?.images || {};
-      for(const it of batch){
-        if(buildCancelled){ wasCancelled=true; break; }
-        const dataUrl = imagesMap[it.image_url];
-        if(!dataUrl){ failed++; continue; }
-        try{
-          const {embedding, histogram, shape, dino} = await computeSignature(dataUrl);
-          const payload = {
-            awb: it.awb, product_name: it.product_name, clean_name: it.clean_name||'',
-            category: it.category, image_url: it.image_url, embedding: embedding, histogram: histogram, shape: shape,
-            dino_embedding: dino || null
-          };
-          try{
-            await sbPost('library_embeddings', payload);
-          }catch(postErr){
-            // FIX: if the DB rejects dino_embedding specifically (most
-            // likely cause: the one-time `ALTER TABLE ... ADD COLUMN
-            // dino_embedding` migration hasn't been run yet), retry
-            // without it rather than failing the whole item — the item
-            // still gets indexed on CLIP+Color+Shape, and picks up DINO
-            // automatically on the next rebuild once the column exists.
-            if(/dino_embedding/i.test(postErr.message)){
-              delete payload.dino_embedding;
-              await sbPost('library_embeddings', payload);
-              if(!window._dinoColumnWarned){
-                window._dinoColumnWarned = true;
-                console.warn('dino_embedding column not found in Supabase — indexing without it. Run: ALTER TABLE library_embeddings ADD COLUMN IF NOT EXISTS dino_embedding jsonb;  then Full Rebuild again.');
-              }
-            } else {
-              throw postErr;
-            }
-          }
-          done++;
-        }catch(e){ failed++; console.warn('embed failed for', it.awb, e.message); }
-        progBar.style.width = Math.round(((done+failed)/todo.length)*100)+'%';
+      res = await gsPost({action:'getImagesAsB64', refs: batch.map(it=>it.image_url)});
+    }catch(e){
+      failed += batch.length;
+      batch.forEach(it=>failedDetail.push({awb:it.awb, reason:'network/fetch error: '+e.message}));
+      console.warn('batch fetch failed:', e.message);
+      continue;
+    }
+    const imagesMap = res?.images || {};
+    const errorsMap = res?.errors || {}; // FIX: now actually read — Code.gs's getImagesAsB64 returns a real reason per failed ref instead of a bare null
+    for(const it of batch){
+      if(buildCancelled){ wasCancelled=true; break; }
+      const dataUrl = imagesMap[it.image_url];
+      if(!dataUrl){
+        failed++;
+        failedDetail.push({awb:it.awb, reason: errorsMap[it.image_url] || 'no image returned for this reference'});
+        // Still yield here — a failed item is cheap, but skipping the
+        // yield on the failure path would reintroduce the same kind of
+        // unbroken-run risk if many refs fail in a row.
+        await new Promise(r=>setTimeout(r,0));
+        continue;
       }
-    }catch(e){ failed += batch.length; console.warn('batch fetch failed:', e.message); }
+      try{
+        const {embedding, histogram, shape, dino} = await computeSignature(dataUrl);
+        const payload = {
+          awb: it.awb, product_name: it.product_name, clean_name: it.clean_name||'',
+          category: it.category, image_url: it.image_url, embedding: embedding, histogram: histogram, shape: shape,
+          dino_embedding: dino || null
+        };
+        try{
+          await sbPost('library_embeddings', payload);
+        }catch(postErr){
+          if(/dino_embedding/i.test(postErr.message)){
+            delete payload.dino_embedding;
+            await sbPost('library_embeddings', payload);
+            if(!window._dinoColumnWarned){
+              window._dinoColumnWarned = true;
+              console.warn('dino_embedding column not found in Supabase — indexing without it. Run: ALTER TABLE library_embeddings ADD COLUMN IF NOT EXISTS dino_embedding jsonb;  then Full Rebuild again.');
+            }
+          } else {
+            throw postErr;
+          }
+        }
+        done++;
+      }catch(e){
+        failed++;
+        failedDetail.push({awb:it.awb, reason: e.message});
+        console.warn('embed failed for', it.awb, e.message);
+      }
+      progBar.style.width = Math.round(((done+failed)/todo.length)*100)+'%';
+      // THE FIX: a real macrotask yield after EVERY item, not just
+      // between batches of 6 — see the comment above the loop.
+      await new Promise(r=>setTimeout(r,0));
+    }
     if(wasCancelled) break;
   }
+  if(failedDetail.length){
+    console.table(failedDetail); // full per-AWB reason list — check the browser console (F12) for exactly why any item failed
+  }
   progEl.textContent = (wasCancelled?'Cancelled — ':'')+done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).'
+    +(failed ? ' (see browser console for the reason behind each failure)' : '')
     +(window._dinoColumnWarned ? ' ⚠️ dino_embedding column missing in Supabase — indexed WITHOUT DINO. See console for the SQL to run, then Full Rebuild again.' : '');
   statusEl.textContent = wasCancelled
     ? 'Cancelled — '+(existingSet.size+done)+' of '+library.length+' indexed so far. Progress made before cancelling is saved; run again to pick up where this left off.'
@@ -1028,14 +895,6 @@ function cancelBuild(){
   buildCancelled = true;
 }
 
-// Wipes library_embeddings completely and rebuilds from scratch. Needed
-// once right now: existing entries were embedded under the OLD
-// grayscale pipeline and have no histogram at all, so they're not on
-// equal footing with anything indexed after this fix — mixing old and
-// new entries would give inconsistent scores. This also naturally
-// fixes stale category labels (point 1) as a side effect, since it
-// re-reads the Sheet fresh for every item rather than only adding what
-// wasn't there before.
 async function rebuildIndex(){
   if(!isAdmin){ alert('Admin only'); return; }
   if(!confirm('This deletes the ENTIRE search index and rebuilds it from scratch. This can take several minutes for a large library. Continue?')) return;
@@ -1045,18 +904,6 @@ async function rebuildIndex(){
   const statusEl=document.getElementById('index-status');
   statusEl.textContent='Clearing existing index...';
   try{
-    // FIX (2026-09-10): the previous version deleted one AWB at a time
-    // and never checked sbDelete's result — sbDelete returns false on
-    // failure rather than throwing, so a handful of the ~1800
-    // sequential DELETE requests silently failing (transient network
-    // blips, brief rate-limiting) left those rows behind with
-    // "Index cleared" still reported. Full Rebuild then hit a 409
-    // duplicate-key conflict re-inserting exactly those AWBs — this is
-    // the actual cause of the repeatable ~141 failures, not DINO or
-    // the schema. Fixed by: batching deletes (far fewer requests, so
-    // far less exposure to transient failures), checking each batch's
-    // result, retrying failed batches up to 3 times, and verifying
-    // the table is actually empty afterward instead of assuming it.
     const existing = await sbGetAll('/rest/v1/library_embeddings?select=awb');
     const BATCH = 50;
     const failedAwbs = [];
@@ -1067,12 +914,14 @@ async function rebuildIndex(){
       for(let attempt=0; attempt<3 && !ok; attempt++){
         const filter = 'awb=in.('+batch.map(a=>encodeURIComponent(a)).join(',')+')';
         ok = await sbDelete('library_embeddings', filter);
-        if(!ok && attempt<2) await new Promise(r=>setTimeout(r,500)); // brief backoff before retry
+        if(!ok && attempt<2) await new Promise(r=>setTimeout(r,500));
       }
       if(!ok) failedAwbs.push(...batch);
+      // Same yield principle as buildIndex — a delete-batch loop over a
+      // large library is itself many iterations; keep the tab responsive.
+      await new Promise(r=>setTimeout(r,0));
     }
 
-    // Verify — don't just trust the delete calls succeeded.
     const remaining = await sbGetAll('/rest/v1/library_embeddings?select=awb');
     if(remaining.length){
       alert('Index clear incomplete: '+remaining.length+' item(s) could not be deleted after 3 attempts each '+
@@ -1102,7 +951,6 @@ async function refreshIndexStatus(){
   }catch(e){ statusEl.textContent = 'Could not check index status.'; }
 }
 
-// ── Upload / paste / camera queue ──
 function fileToDataUrl(file){
   return new Promise((resolve,reject)=>{
     const fr = new FileReader();
@@ -1151,16 +999,8 @@ async function useLink(){
   renderQueue();
 }
 
-// Live webcam capture
 let camStream = null;
 async function openCamera(){
-  // Single button covers both paths: try a live in-browser camera view
-  // first (works for a desktop webcam and most phone browsers, letting
-  // the person choose front/back camera right there); if that's not
-  // available at all (older browser, permission blocked, no camera
-  // API), fall back automatically to the device's native camera/photo
-  // picker instead — no separate button needed, either way just gets a
-  // photo into the queue.
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
     document.getElementById('mobile-cam-input').click();
     return;
@@ -1170,8 +1010,6 @@ async function openCamera(){
     document.getElementById('cam-video').srcObject = camStream;
     document.getElementById('cam-modal').style.display = 'flex';
   }catch(e){
-    // Permission denied or no live camera available — fall back to the
-    // native picker rather than just showing an error.
     document.getElementById('mobile-cam-input').click();
   }
 }
@@ -1180,9 +1018,6 @@ function closeCamera(){
   document.getElementById('cam-modal').style.display='none';
 }
 
-// View/download a match result in place instead of navigating away to
-// a new tab — keeps the comparison results on screen for side-by-side
-// checking against other matches.
 function openMatchPreview(imageUrl, label, awb){
   const id = fileId(imageUrl);
   document.getElementById('preview-img').src = id ? ('https://drive.google.com/thumbnail?id='+id+'&sz=w1200') : imageUrl;
@@ -1228,21 +1063,7 @@ function thumbUrl(url){
   return id ? ('https://drive.google.com/thumbnail?id='+id+'&sz=w300') : '';
 }
 
-// ══════════════════════════════════════════════════════════════
-//  NEW: VECTOR INDEX — brute-force in-memory top-K now, structured so
-//  swapping to Supabase pgvector later is a ONE-FUNCTION change, not a
-//  rewrite. True FAISS cannot run in a browser (native C++ library, no
-//  WASM build) — brute-force cosine similarity over a library this size
-//  (hundreds to low-thousands of items) is already sub-second, so this
-//  isn't a shortfall for now, just an honest substitution for what was
-//  asked. When the library grows enough to matter, swap searchTopK()'s
-//  body for a Supabase RPC call to a pgvector `<=>` query — see the SQL
-//  stub in the comment below.
-// ══════════════════════════════════════════════════════════════
 const VectorIndex = {
-  // items: the full library_embeddings array. signalKey: 'embedding' or
-  // 'dino'. Returns the top K items by cosine similarity, each tagged
-  // with that similarity as `_firstPassScore`.
   searchTopK(items, queryVec, signalKey, k){
     if(!queryVec) return items.slice(0,k).map(it=>({...it, _firstPassScore:0}));
     return items
@@ -1250,30 +1071,8 @@ const VectorIndex = {
       .sort((a,b)=>b._firstPassScore-a._firstPassScore)
       .slice(0,k);
   }
-  // FUTURE (pgvector): once enabled on the Supabase project —
-  //   create extension if not exists vector;
-  //   alter table library_embeddings add column embedding_vec vector(512);
-  //   -- (backfill embedding_vec from the existing jsonb `embedding` column)
-  //   create index on library_embeddings using ivfflat (embedding_vec vector_cosine_ops);
-  // then expose a Postgres function, e.g.:
-  //   create function match_library_embeddings(query vector(512), match_count int)
-  //   returns setof library_embeddings language sql as $$
-  //     select * from library_embeddings order by embedding_vec <=> query limit match_count;
-  //   $$;
-  // and call it here via sbPost-style RPC:
-  //   POST /rest/v1/rpc/match_library_embeddings  { query: queryVec, match_count: k }
-  // — searchTopK() above is the only place that needs to change.
 };
 
-// NEW: product-level grouping. Multiple reference images of the SAME
-// product (different angles/lighting/units) are grouped by a product
-// key — clean_name if curated, falling back to product_name or the
-// item's own AWB if neither exists — so the final decision is made
-// about the PRODUCT, not any single reference photo. Each signal is
-// aggregated as the MAX across that product's images (the
-// best-matching angle/photo represents the product's score for that
-// signal), and the representative image shown is whichever single item
-// scored highest overall for that product.
 function productKeyOf(item){
   return ((item.clean_name||item.product_name||item.awb||'')+'').trim().toLowerCase() || item.awb;
 }
@@ -1295,13 +1094,6 @@ function groupByProduct(scoredItems){
   }).sort((a,b)=>b.fused-a.fused);
 }
 
-// NEW: fusion layer — explicit weighted combination, every signal kept
-// visible/stored separately (never collapsed before this point). Missing
-// signals (e.g. DINO disabled, or an older-indexed item with no
-// histogram) are excluded from the weighted sum AND the weights of the
-// remaining signals are renormalized, rather than silently counting a
-// missing signal as zero (which would unfairly penalize items that are
-// otherwise good matches just because one signal wasn't computed).
 function fuseScores(scores){
   const w = getWeights();
   let sum=0, wsum=0;
@@ -1312,29 +1104,19 @@ function fuseScores(scores){
   return wsum>0 ? sum/wsum : 0;
 }
 
-// NEW: confidence — distinct from similarity. Similarity says "how
-// close is the best match"; confidence says "how much do we trust that
-// call." Built from two things: (a) the MARGIN between the top-ranked
-// product and the runner-up (a big gap = confident; a near-tie = not),
-// and (b) AGREEMENT across signals for the top product (if CLIP says
-// 95% but DINO says 40%, that disagreement itself is a reason for
-// caution, even if the fused score looks fine on average).
 function computeConfidence(topGroup, secondGroup){
   const margin = secondGroup ? Math.max(0, topGroup.fused - secondGroup.fused) : topGroup.fused;
-  const marginScore = Math.min(1, margin / 0.25); // a 25%+ gap is already "fully confident" on this component
+  const marginScore = Math.min(1, margin / 0.25);
   const vals = ['clip','dino','ssim','color','shape'].map(k=>topGroup.scores[k]).filter(v=>v>0);
   let agreementScore = 1;
   if(vals.length>1){
     const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
     const variance = vals.reduce((a,b)=>a+(b-mean)**2,0)/vals.length;
-    agreementScore = Math.max(0, 1 - Math.sqrt(variance)*2.5); // tuned so ~20pp stddev across signals meaningfully dents confidence
+    agreementScore = Math.max(0, 1 - Math.sqrt(variance)*2.5);
   }
   return Math.max(0, Math.min(1, 0.5*marginScore + 0.5*agreementScore));
 }
 
-// NEW: short auto-generated remark — plain-language summary of WHY the
-// verdict came out the way it did, using the actual signal values,
-// rather than a generic templated line.
 function generateRemark(verdict, topGroup, confidence){
   const s = topGroup.scores;
   const parts = [];
@@ -1352,14 +1134,6 @@ function generateRemark(verdict, topGroup, confidence){
   return parts.join(' ');
 }
 
-// ── Run comparison — NEW pipeline ──
-// Stage 1 (cheap, whole library): CLIP + DINO cosine similarity, plus
-//          Color/Shape (also cheap, classical) — get top-K candidates.
-// Stage 2 (expensive, top-K only): align each candidate to the query,
-//          compute SSIM.
-// Stage 3: fuse all 5 signals (explicit weights, never blind-averaged),
-//          group by product, pick the winner, compute confidence,
-//          generate a remark. Runtime measured end to end.
 let compareCancelled = false;
 async function runCompare(){
   if(!queue.length){ alert('Add at least one image first'); return; }
@@ -1371,7 +1145,7 @@ async function runCompare(){
   cancelBtn.style.display = 'inline-flex';
   try{
     await ensureModel();
-    if(isDinoEnabled()) await ensureDinoModel(); // soft-fails internally, doesn't throw
+    if(isDinoEnabled()) await ensureDinoModel();
     if(compareCancelled) throw new Error('CANCELLED');
     statusEl.textContent = 'Loading reference index...';
     let lib = await ensureEmbeddingsLoaded();
@@ -1405,19 +1179,10 @@ async function runCompare(){
   btn.disabled=false; btn.textContent='▶ COMPARE'; cancelBtn.style.display='none';
 }
 
-// Runs the full pipeline for ONE query image against the (already
-// filtered-by-mode) library. Factored out so both runCompare() and
-// benchmark mode (see runBenchmarkOne below) share exactly the same
-// logic — a benchmark that used different code than production
-// wouldn't actually tell you anything useful about production.
 async function compareOneImage(q, lib, threshold, topK, statusEl){
   const t0 = performance.now();
   const sig = await computeSignature(q.dataUrl);
 
-  // Stage 1: cheap whole-library pass — CLIP cosine (primary retrieval
-  // signal), plus Color/Shape (classical, cheap). DINO cosine also
-  // computed here if available — still cheap (just a dot product per
-  // item, the expensive part was loading the model once).
   const stage1 = lib.map(item=>{
     const clip = cosineSim(sig.embedding, item.embedding);
     const dino = (sig.dino && item.dino_embedding) ? cosineSim(sig.dino, item.dino_embedding) : null;
@@ -1426,8 +1191,6 @@ async function compareOneImage(q, lib, threshold, topK, statusEl){
     return { item, scores:{clip, dino, ssim:null, color, shape} };
   }).sort((a,b)=>b.scores.clip-a.scores.clip).slice(0, topK);
 
-  // Stage 2: alignment + SSIM — ONLY for this shortlist, not the whole
-  // library (this is the expensive per-pair step).
   if(statusEl) statusEl.textContent = 'Aligning top '+stage1.length+' candidate(s) for structural comparison...';
   for(const cand of stage1){
     if(compareCancelled) throw new Error('CANCELLED');
@@ -1439,9 +1202,15 @@ async function compareOneImage(q, lib, threshold, topK, statusEl){
     }catch(e){
       console.warn('SSIM failed for', cand.item.awb, '— continuing without it:', e.message);
     }
+    // FIX (2026-09-20): same macrotask-yield principle as buildIndex —
+    // alignForSsim's OpenCV.js Mat operations are also synchronous CPU
+    // work per candidate. topK defaults to 8 so this loop is short in
+    // normal use, but Benchmark Mode calls this once per CSV row, and a
+    // large benchmark set could otherwise reintroduce the same kind of
+    // unbroken run this fix addresses in buildIndex.
+    await new Promise(r=>setTimeout(r,0));
   }
 
-  // Stage 3: fuse, group by product, decide.
   for(const cand of stage1) cand.fused = fuseScores(cand.scores);
   const groups = groupByProduct(stage1);
   const top = groups[0];
@@ -1454,10 +1223,6 @@ async function compareOneImage(q, lib, threshold, topK, statusEl){
   return { query:q, groups, top, verdict, confidence, remark, runtimeMs };
 }
 
-// Reference images are Drive links, not data URLs — fetched via the
-// same getImagesAsB64 GAS action already used elsewhere on this page,
-// with a small in-memory cache so re-comparing the same shortlist
-// across multiple query images in one run doesn't re-fetch repeatedly.
 const refImageCache = {};
 async function resolveRefDataUrl(url){
   if(refImageCache[url]) return refImageCache[url];
@@ -1466,7 +1231,7 @@ async function resolveRefDataUrl(url){
     const dataUrl = res?.images?.[url];
     if(dataUrl){ refImageCache[url]=dataUrl; return dataUrl; }
   }catch(e){}
-  refImageCache[url] = url; // fall back to the raw URL — loadImageFromDataUrl will fail gracefully if it's not directly loadable
+  refImageCache[url] = url;
   return url;
 }
 
@@ -1474,10 +1239,6 @@ function cancelCompare(){
   compareCancelled = true;
 }
 
-// NEW output format: ORIGINAL / PRODUCT MISMATCH, matched product,
-// similarity, confidence, per-model score breakdown, remark, runtime —
-// all per spec. Debug mode additionally shows every group's scores
-// (not just the winner) and per-stage detail.
 function renderResults(results){
   document.getElementById('results').innerHTML = results.map((r,ri)=>{
     const debug = isDebugMode();
@@ -1540,18 +1301,11 @@ function toggleMore(ri){
   const wrap = document.getElementById('more-'+ri);
   const btn = document.getElementById('more-btn-'+ri);
   const showing = wrap.style.display !== 'none';
-  if(!showing && !btn.dataset.label) btn.dataset.label = btn.textContent; // save the original "Show N more" text once, before it ever gets overwritten
+  if(!showing && !btn.dataset.label) btn.dataset.label = btn.textContent;
   wrap.style.display = showing ? 'none' : 'grid';
   btn.textContent = showing ? btn.dataset.label : 'Hide';
 }
 
-// ══════════════════════════════════════════════════════════════
-//  NEW: BENCHMARK MODE — run the SAME labelled set through the OLD
-//  CLIP-only scoring and the NEW fused pipeline side by side, so
-//  whether the new signals actually help is measured, not assumed.
-//  CSV columns: image_url,expected_awb (or expected_product — matched
-//  against clean_name/product_name/awb, whichever is present).
-// ══════════════════════════════════════════════════════════════
 let benchmarkCancelled = false;
 function parseCsvSimple(text){
   const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
@@ -1601,21 +1355,19 @@ async function runBenchmark(rows){
     statusEl.textContent = 'Testing '+(i+1)+'/'+rows.length+'...';
     progBar.style.width = Math.round(((i+1)/rows.length)*100)+'%';
     const expected = (row.expected_awb || row.expected_product || '').trim().toLowerCase();
-    if(!row.image_url || !expected) continue;
+    if(!row.image_url || !expected){ await new Promise(r=>setTimeout(r,0)); continue; }
 
     let dataUrl;
     try{ dataUrl = await resolveRefDataUrl(row.image_url); }
-    catch(e){ results.push({row, error:'Could not load image'}); continue; }
+    catch(e){ results.push({row, error:'Could not load image'}); await new Promise(r=>setTimeout(r,0)); continue; }
 
     try{
-      // OLD baseline: CLIP-only top-1, same library.
       const sig = await computeSignature(dataUrl);
       const clipOnly = lib.map(item=>({item, score:cosineSim(sig.embedding, item.embedding)}))
         .sort((a,b)=>b.score-a.score)[0];
       const clipOnlyKey = clipOnly ? productKeyOf(clipOnly.item) : '';
       const clipOnlyHit = clipOnlyKey.includes(expected) || expected.includes(clipOnlyKey) || (clipOnly && clipOnly.item.awb && clipOnly.item.awb.toLowerCase()===expected);
 
-      // NEW fused pipeline — same compareOneImage() path production uses.
       const full = await compareOneImage({name:row.image_url, dataUrl}, lib, threshold, topK, statusEl);
       const fusedKey = full.top ? productKeyOf(full.top.representative) : '';
       const fusedHit = fusedKey.includes(expected) || expected.includes(fusedKey) || (full.top && full.top.representative.awb && full.top.representative.awb.toLowerCase()===expected);
@@ -1633,6 +1385,10 @@ async function runBenchmark(rows){
     }catch(e){
       results.push({row, error:e.message});
     }
+    // FIX (2026-09-20): same yield principle — a large benchmark CSV
+    // runs the full pipeline (CLIP+DINO inference, alignment+SSIM) per
+    // row with zero macrotask boundary between rows otherwise.
+    await new Promise(r=>setTimeout(r,0));
   }
 
   const tested = results.filter(r=>!r.error).length;
@@ -1668,7 +1424,6 @@ async function runBenchmark(rows){
   progWrap.style.display='none';
 }
 
-// ── Init ──
 (async function init(){
   if(isAdmin){
     document.getElementById('admin-card').style.display='block';

@@ -301,14 +301,42 @@ async function sbDelete(table, query){
   });
   return r.ok;
 }
+// FIX (2026-09-21): "<!DOCTYPE ... is not valid JSON" in the console —
+// this endpoint is shared with EVERY other live thing hitting this
+// same Apps Script project (operator uploads, dashboard refreshes,
+// the Drive-poll cron) at the same time a rebuild runs. When Apps
+// Script's shared execution quota is under pressure, Google can serve
+// back a plain HTML "busy" page instead of the script's own JSON
+// response — r.json() throws on that HTML, and the whole 6-item batch
+// this call was for gets counted as a permanent failure, even though
+// nothing was actually wrong with those specific images. Both gsGet
+// and gsPost now read the response as text first and retry with
+// backoff if it doesn't look like JSON, instead of failing immediately
+// — this absorbs exactly this kind of transient quota-contention
+// response instead of letting it inflate the failed count.
+async function fetchJsonWithRetry_(url, options, retries){
+  retries = retries==null ? 2 : retries;
+  for(let attempt=0; attempt<=retries; attempt++){
+    const r = await fetch(url, options);
+    const text = await r.text();
+    const trimmed = text.trimStart();
+    if(trimmed.startsWith('{') || trimmed.startsWith('[')){
+      return JSON.parse(text);
+    }
+    if(attempt<retries){
+      console.warn('Non-JSON response from Apps Script (likely busy) — retrying:', text.slice(0,80));
+      await new Promise(res=>setTimeout(res, 1000*(attempt+1)));
+      continue;
+    }
+    throw new Error('Apps Script returned a non-JSON response after ' + (retries+1) + ' attempt(s) — likely busy/quota-limited: ' + text.slice(0,120));
+  }
+}
 async function gsGet(params){
   const q = new URLSearchParams(params).toString();
-  const r = await fetch(GS_URL+'?'+q+'&_cb='+Date.now(), { cache: 'no-store' });
-  return r.json();
+  return fetchJsonWithRetry_(GS_URL+'?'+q+'&_cb='+Date.now(), { cache: 'no-store' });
 }
 async function gsPost(body){
-  const r = await fetch(GS_URL, { method:'POST', body: JSON.stringify(body), cache: 'no-store' });
-  return r.json();
+  return fetchJsonWithRetry_(GS_URL, { method:'POST', body: JSON.stringify(body), cache: 'no-store' });
 }
 
 let mode = 'category';

@@ -1,10 +1,22 @@
 <!DOCTYPE html>
-<!-- SF ClearView — Image Compare (standalone)
+<!-- SF ClearView — Image Compare (standalone, CLIP-ONLY)
      Deliberately a SEPARATE page from index.html, opened in a new tab.
-     The ~90MB CLIP model and its WASM runtime only ever load here, on
+     Only the CLIP model (~90MB) and its WASM runtime load here, on
      user action — this file being completely separate is what
-     guarantees Scan AWB / End of Shift can never be slowed down by any
-     of this, since their code never even sees this file exists. -->
+     guarantees Scan AWB / End of Shift can never be slowed down by
+     any of this, since their code never even sees this file exists.
+
+     SIMPLIFIED 2026-09-22: this used to fuse FOUR signals per
+     comparison — CLIP, DINOv2 (a second ~90MB model), SSIM after
+     OpenCV.js-based rotation alignment, plus hand-rolled color-
+     histogram and HOG-ish shape descriptors — all loaded/run together.
+     That combined footprint (two WASM ML runtimes + OpenCV.js, all
+     doing synchronous CPU work) was the most likely cause of the tab
+     crashing. This version uses CLIP alone: one model, one embedding
+     per image, one cosine-similarity ranking pass. Nothing else loads,
+     nothing else runs. Index builds and searches are now just "embed
+     with CLIP, compare vectors" — no OpenCV, no alignment, no second
+     model, no per-candidate second pass. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -91,7 +103,7 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
 <div class="wrap">
 
   <h1>🔍 SF ClearView — Image Compare</h1>
-  <div class="sub">Compare a suspicious image against the reference library</div>
+  <div class="sub">Compare a suspicious image against the reference library (CLIP-only)</div>
 
   <!-- ADMIN ONLY — index management. Gated by a flag the main app
        mirrors into localStorage on login (localStorage is shared
@@ -102,7 +114,7 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
     <div class="row" style="margin-bottom:10px;">
       <span id="index-status" class="pill">—</span>
       <button class="btn btn-t1 btn-sm" onclick="buildIndex()" id="build-btn">🔄 Build / Update Index</button>
-      <button class="btn btn-danger btn-sm" onclick="rebuildIndex()" id="rebuild-btn" title="Wipes the index and rebuilds everything from scratch — needed any time the embedding pipeline changes (e.g. adding DINOv2) so every item is on equal footing">🗑 Full Rebuild</button>
+      <button class="btn btn-danger btn-sm" onclick="rebuildIndex()" id="rebuild-btn" title="Wipes the index and rebuilds everything from scratch">🗑 Full Rebuild</button>
       <button class="btn btn-sm" onclick="cancelBuild()" id="build-cancel-btn" style="display:none;">✕ Cancel</button>
       <span id="index-progress" class="status" style="display:none;"></span>
     </div>
@@ -110,50 +122,15 @@ table.bench td{padding:6px 8px;border-bottom:1px solid rgba(58,68,104,.4);white-
 
     <div class="row" style="margin-top:14px;gap:20px;flex-wrap:wrap;">
       <div class="fg" style="margin-bottom:0;max-width:220px;">
-        <label class="lbl">Match threshold (%) — fused score for "Original"</label>
+        <label class="lbl">Match threshold (%) — CLIP similarity for "Original"</label>
         <input type="number" id="threshold" min="50" max="99" value="85" onchange="saveThreshold()">
       </div>
-      <div class="fg" style="margin-bottom:0;max-width:220px;">
-        <label class="lbl">Top-K candidates (before alignment+SSIM)</label>
-        <input type="number" id="topk-n" min="3" max="30" value="8" onchange="saveTopK()">
-      </div>
-    </div>
-    <div class="row" style="margin-top:10px;gap:20px;flex-wrap:wrap;">
-      <div class="fg" style="margin-bottom:0;max-width:160px;">
-        <label class="lbl">CLIP weight (%)</label>
-        <input type="number" id="w-clip" min="0" max="100" value="30" onchange="saveWeights()">
-      </div>
-      <div class="fg" style="margin-bottom:0;max-width:160px;">
-        <label class="lbl">DINOv2 weight (%)</label>
-        <input type="number" id="w-dino" min="0" max="100" value="30" onchange="saveWeights()">
-      </div>
-      <div class="fg" style="margin-bottom:0;max-width:160px;">
-        <label class="lbl">SSIM weight (%)</label>
-        <input type="number" id="w-ssim" min="0" max="100" value="15" onchange="saveWeights()">
-      </div>
-      <div class="fg" style="margin-bottom:0;max-width:160px;">
-        <label class="lbl">Color weight (%)</label>
-        <input type="number" id="w-color" min="0" max="100" value="15" onchange="saveWeights()">
-      </div>
-      <div class="fg" style="margin-bottom:0;max-width:160px;">
-        <label class="lbl">Shape weight (%)</label>
-        <input type="number" id="w-shape" min="0" max="100" value="10" onchange="saveWeights()">
-      </div>
-    </div>
-    <div class="status" id="weight-sum-status" style="margin-top:0;">Weights should sum to 100 — normalized automatically if they don't.</div>
-    <div class="row" style="margin-top:10px;">
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;">
-        <input type="checkbox" id="debug-mode" onchange="saveDebugMode()" style="width:auto;"> Debug mode — show every signal's raw score + runtime for every result
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;margin-left:16px;">
-        <input type="checkbox" id="dino-enabled" onchange="saveDinoEnabled()" style="width:auto;"> Use DINOv2 (extra ~90MB model load, on top of CLIP's own ~90MB — off by default to keep the browser tab's memory footprint low; enable deliberately for extra accuracy)
-      </label>
     </div>
   </div>
 
   <div class="card" id="benchmark-card" style="display:none;">
     <div class="card-head">📊 BENCHMARK MODE (ADMIN)</div>
-    <div class="status" style="margin-top:0;margin-bottom:10px;">Upload a CSV with columns <code>image_url,expected_awb</code> (or <code>expected_product</code>) — each row is compared against the current index using BOTH the old CLIP-only scoring and the new fused pipeline, so you can see whether the new signals actually help before trusting them.</div>
+    <div class="status" style="margin-top:0;margin-bottom:10px;">Upload a CSV with columns <code>image_url,expected_awb</code> (or <code>expected_product</code>) — each row is compared against the current index with CLIP so you can sanity-check accuracy.</div>
     <div class="row">
       <input type="file" id="benchmark-file" accept=".csv" style="display:none;" onchange="onBenchmarkFile(this)">
       <button class="btn btn-t1 btn-sm" onclick="document.getElementById('benchmark-file').click()">📁 Upload Labelled CSV</button>
@@ -245,18 +222,9 @@ const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 const isAdmin = new URLSearchParams(window.location.search).get('admin') === 'true';
 
-// FIX (2026-09-21): the reference library index has grown to ~1800
-// items, each carrying FOUR large vector columns (embedding, dino_
-// embedding, histogram, shape) — at the default page size of 1000,
-// one page of this specific table can be a very large JSON payload,
-// which is the likely cause of the "Supabase GET failed: 500" errors
-// seen loading the comparison index (a genuine server-side response-
-// size/timeout issue, not a client bug — this doesn't happen on
-// smaller tables). Two mitigations: retry transient 5xx errors with
-// backoff instead of failing immediately, and (see ensureEmbeddingsLoaded
-// below) use a much smaller page size specifically for this heavy
-// table, so no single request's payload is anywhere near whatever
-// limit is actually being hit.
+// The reference library index carries ONE vector column now
+// (embedding, CLIP only) instead of four — so pages are much smaller
+// and this can safely use a larger page size than before.
 async function sbGet(path, retries){
   retries = retries==null ? 2 : retries;
   for(let attempt=0; attempt<=retries; attempt++){
@@ -301,19 +269,10 @@ async function sbDelete(table, query){
   });
   return r.ok;
 }
-// FIX (2026-09-21): "<!DOCTYPE ... is not valid JSON" in the console —
-// this endpoint is shared with EVERY other live thing hitting this
-// same Apps Script project (operator uploads, dashboard refreshes,
-// the Drive-poll cron) at the same time a rebuild runs. When Apps
-// Script's shared execution quota is under pressure, Google can serve
-// back a plain HTML "busy" page instead of the script's own JSON
-// response — r.json() throws on that HTML, and the whole 6-item batch
-// this call was for gets counted as a permanent failure, even though
-// nothing was actually wrong with those specific images. Both gsGet
-// and gsPost now read the response as text first and retry with
-// backoff if it doesn't look like JSON, instead of failing immediately
-// — this absorbs exactly this kind of transient quota-contention
-// response instead of letting it inflate the failed count.
+// If Apps Script's shared execution quota is under pressure, Google
+// can serve back a plain HTML "busy" page instead of the script's own
+// JSON response — read the response as text first and retry with
+// backoff if it doesn't look like JSON, instead of failing immediately.
 async function fetchJsonWithRetry_(url, options, retries){
   retries = retries==null ? 2 : retries;
   for(let attempt=0; attempt<=retries; attempt++){
@@ -342,11 +301,7 @@ async function gsPost(body){
 let mode = 'category';
 let queue = [];
 let extractor = null;
-let dinoExtractor = null;
-let dinoLoadFailed = false;
-let cvReady = null;
 let libraryEmbeddings = null;
-let currentIdx = null;
 
 function setMode(m){
   mode = m;
@@ -358,52 +313,6 @@ function setMode(m){
 function saveThreshold(){
   localStorage.setItem('cv_libcmp_threshold', document.getElementById('threshold').value);
 }
-function saveTopK(){
-  localStorage.setItem('cv_libcmp_topk', document.getElementById('topk-n').value);
-}
-function saveWeights(){
-  const ids=['w-clip','w-dino','w-ssim','w-color','w-shape'];
-  const keys=['cv_libcmp_w_clip','cv_libcmp_w_dino','cv_libcmp_w_ssim','cv_libcmp_w_color','cv_libcmp_w_shape'];
-  ids.forEach((id,i)=>localStorage.setItem(keys[i], document.getElementById(id).value));
-  const sum=ids.reduce((s,id)=>s+(parseFloat(document.getElementById(id).value)||0),0);
-  const statusEl=document.getElementById('weight-sum-status');
-  if(statusEl) statusEl.textContent = Math.abs(sum-100)<0.01
-    ? 'Weights sum to 100.'
-    : 'Weights sum to '+sum+' — normalized automatically at compare time (relative proportions are what matter).';
-}
-function saveDebugMode(){
-  localStorage.setItem('cv_libcmp_debug', document.getElementById('debug-mode').checked ? '1':'0');
-}
-function saveDinoEnabled(){
-  localStorage.setItem('cv_libcmp_dino_enabled', document.getElementById('dino-enabled').checked ? '1':'0');
-}
-function getWeights(){
-  const raw={
-    clip: parseFloat(localStorage.getItem('cv_libcmp_w_clip'))||30,
-    dino: parseFloat(localStorage.getItem('cv_libcmp_w_dino'))||30,
-    ssim: parseFloat(localStorage.getItem('cv_libcmp_w_ssim'))||15,
-    color: parseFloat(localStorage.getItem('cv_libcmp_w_color'))||15,
-    shape: parseFloat(localStorage.getItem('cv_libcmp_w_shape'))||10,
-  };
-  const sum = Object.values(raw).reduce((a,b)=>a+b,0) || 1;
-  const norm={}; for(const k in raw) norm[k]=raw[k]/sum;
-  return norm;
-}
-function isDebugMode(){ return localStorage.getItem('cv_libcmp_debug')==='1'; }
-// FIX (2026-09-22): previously defaulted to ON for anyone with no
-// saved preference yet (i.e. every fresh browser/profile) — meaning
-// CLIP (~90MB WASM) AND DINOv2 (~90MB more) AND OpenCV.js both got
-// loaded into the tab on every single compare or build, by default,
-// for everyone, whether or not they'd ever touched the checkbox. That
-// combined WASM+model memory footprint is a real, concrete candidate
-// for a silent renderer-process crash under memory pressure — exactly
-// the "browser itself crashes, console stays empty" symptom, since a
-// crash at that level happens below where any JS error handler can
-// catch it. Now defaults OFF until a person explicitly turns it on —
-// cuts the baseline memory floor roughly in half for everyone who
-// hasn't deliberately opted in to the extra accuracy.
-function isDinoEnabled(){ return localStorage.getItem('cv_libcmp_dino_enabled') === '1'; }
-function getTopK(){ return parseInt(localStorage.getItem('cv_libcmp_topk'))||8; }
 
 async function ensureModel(){
   if(extractor) return extractor;
@@ -416,47 +325,6 @@ async function ensureModel(){
   extractor = { processor, model };
   if(statusEl) statusEl.textContent = 'Model ready.';
   return extractor;
-}
-
-async function ensureDinoModel(){
-  if(dinoExtractor) return dinoExtractor;
-  if(dinoLoadFailed) return null;
-  const statusEl = document.getElementById('model-status');
-  try{
-    if(statusEl) statusEl.textContent = 'Loading DINOv2 model (first time only, ~90MB more, cached after)...';
-    const { AutoProcessor, AutoModel, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-    env.allowLocalModels = false;
-    const processor = await AutoProcessor.from_pretrained('Xenova/dinov2-small');
-    const model = await AutoModel.from_pretrained('Xenova/dinov2-small', { quantized:true });
-    dinoExtractor = { processor, model };
-    if(statusEl) statusEl.textContent = 'Models ready.';
-    return dinoExtractor;
-  }catch(e){
-    console.warn('DINOv2 failed to load — continuing with CLIP+Color+Shape only:', e.message);
-    dinoLoadFailed = true;
-    if(statusEl) statusEl.textContent = 'DINOv2 unavailable (continuing without it) — '+e.message;
-    return null;
-  }
-}
-
-function ensureOpenCV(){
-  if(cvReady) return cvReady;
-  cvReady = new Promise((resolve, reject)=>{
-    if(window.cv && window.cv.Mat){ resolve(window.cv); return; }
-    const script = document.createElement('script');
-    script.src = 'https://docs.opencv.org/4.9.0/opencv.js';
-    script.onload = ()=>{
-      const check = ()=>{
-        if(window.cv && window.cv.Mat) resolve(window.cv);
-        else if(window.cv) window.cv['onRuntimeInitialized'] = ()=>resolve(window.cv);
-        else setTimeout(check, 50);
-      };
-      check();
-    };
-    script.onerror = ()=>reject(new Error('Failed to load OpenCV.js'));
-    document.head.appendChild(script);
-  });
-  return cvReady;
 }
 
 function autoCropToContent(img, marginPct){
@@ -543,86 +411,6 @@ function preprocessToDataUrl(img, maxDim){
   return c.toDataURL('image/jpeg', 0.9);
 }
 
-function computeHistogram(img){
-  const size=48;
-  const c=document.createElement('canvas');
-  c.width=size; c.height=size;
-  const ctx=c.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
-  ctx.drawImage(img,0,0,size,size);
-  const d=ctx.getImageData(0,0,size,size).data;
-  const BINS=6;
-  const hist=new Array(BINS*BINS*BINS).fill(0);
-  let total=0;
-  for(let i=0;i<d.length;i+=4){
-    const rb=Math.min(BINS-1,Math.floor(d[i]/256*BINS));
-    const gb=Math.min(BINS-1,Math.floor(d[i+1]/256*BINS));
-    const bb=Math.min(BINS-1,Math.floor(d[i+2]/256*BINS));
-    hist[rb*BINS*BINS+gb*BINS+bb]++;
-    total++;
-  }
-  return total>0 ? hist.map(v=>v/total) : hist;
-}
-function histogramSimilarity(h1,h2){
-  if(!h1||!h2||h1.length!==h2.length) return 0;
-  let inter=0;
-  for(let i=0;i<h1.length;i++) inter+=Math.min(h1[i],h2[i]);
-  return inter;
-}
-
-function computeShapeDescriptor(img, gridSize){
-  gridSize = gridSize || 4;
-  const size = 128;
-  const c=document.createElement('canvas');
-  c.width=size; c.height=size;
-  const ctx=c.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
-  ctx.drawImage(img,0,0,size,size);
-  const d=ctx.getImageData(0,0,size,size).data;
-
-  const lum=new Float32Array(size*size);
-  for(let i=0;i<size*size;i++){
-    lum[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
-  }
-
-  const blockSize=size/gridSize;
-  const ORIENT_BINS=8;
-  const descriptor=[];
-  for(let by=0;by<gridSize;by++){
-    for(let bx=0;bx<gridSize;bx++){
-      const hist=new Array(ORIENT_BINS).fill(0);
-      let total=0;
-      const y0=Math.max(1,Math.floor(by*blockSize)), y1=Math.min(size-1,Math.floor((by+1)*blockSize));
-      const x0=Math.max(1,Math.floor(bx*blockSize)), x1=Math.min(size-1,Math.floor((bx+1)*blockSize));
-      for(let y=y0;y<y1;y++){
-        for(let x=x0;x<x1;x++){
-          const idx=y*size+x;
-          const gx=lum[idx+1]-lum[idx-1];
-          const gy=lum[idx+size]-lum[idx-size];
-          const mag=Math.sqrt(gx*gx+gy*gy);
-          if(mag>10){
-            let angle=Math.atan2(gy,gx);
-            if(angle<0) angle+=Math.PI;
-            const bin=Math.min(ORIENT_BINS-1,Math.floor(angle/Math.PI*ORIENT_BINS));
-            hist[bin]+=mag;
-            total+=mag;
-          }
-        }
-      }
-      if(total>0) for(let i=0;i<ORIENT_BINS;i++) hist[i]/=total;
-      descriptor.push(...hist);
-    }
-  }
-  return descriptor;
-}
-function shapeSimilarity(d1,d2){
-  if(!d1||!d2||d1.length!==d2.length) return 0;
-  let dot=0,n1=0,n2=0;
-  for(let i=0;i<d1.length;i++){ dot+=d1[i]*d2[i]; n1+=d1[i]*d1[i]; n2+=d2[i]*d2[i]; }
-  const denom=Math.sqrt(n1)*Math.sqrt(n2);
-  return denom>0 ? Math.max(0,dot/denom) : 0;
-}
-
 function loadImageFromDataUrl(dataUrl){
   return new Promise((resolve,reject)=>{
     const img = new Image();
@@ -642,6 +430,9 @@ function cosineSim(a,b){
   return dot;
 }
 
+// CLIP-only signature: one embedding, nothing else. No histogram, no
+// shape descriptor, no DINOv2, no cropped-canvas kept around for SSIM
+// (there is no SSIM step anymore).
 async function computeSignature(dataUrl){
   const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
   const img = await loadImageFromDataUrl(dataUrl);
@@ -652,113 +443,7 @@ async function computeSignature(dataUrl){
   const inputs = await processor(image);
   const { image_embeds } = await model(inputs);
   const embedding = l2normalize(Array.from(image_embeds.data));
-  const histogram = computeHistogram(cropped);
-  const shape = computeShapeDescriptor(cropped);
-
-  let dino = null;
-  if(isDinoEnabled()){
-    const dinoEx = await ensureDinoModel();
-    if(dinoEx){
-      try{
-        const dImage = await RawImage.fromURL(preppedUrl);
-        const dInputs = await dinoEx.processor(dImage);
-        const out = await dinoEx.model(dInputs);
-        const hidden = out.last_hidden_state;
-        const dim = hidden.dims[2];
-        const cls = Array.from(hidden.data.slice(0, dim));
-        dino = l2normalize(cls);
-      }catch(e){ console.warn('DINO embedding failed for this image, continuing without it:', e.message); }
-    }
-  }
-
-  return { embedding, histogram, shape, dino, croppedCanvas: toCanvas(cropped) };
-}
-async function computeEmbeddingFromDataUrl(dataUrl){
-  return (await computeSignature(dataUrl)).embedding;
-}
-function toCanvas(imgOrCanvas){
-  if(imgOrCanvas instanceof HTMLCanvasElement) return imgOrCanvas;
-  const w=imgOrCanvas.naturalWidth||imgOrCanvas.width, h=imgOrCanvas.naturalHeight||imgOrCanvas.height;
-  const c=document.createElement('canvas'); c.width=w; c.height=h;
-  c.getContext('2d').drawImage(imgOrCanvas,0,0);
-  return c;
-}
-
-function toGrayscaleArray(canvas, size){
-  size = size||128;
-  const c=document.createElement('canvas'); c.width=size; c.height=size;
-  const ctx=c.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,size,size);
-  ctx.drawImage(canvas,0,0,size,size);
-  const d=ctx.getImageData(0,0,size,size).data;
-  const gray=new Float64Array(size*size);
-  for(let i=0;i<size*size;i++) gray[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
-  return {gray, size};
-}
-function computeSSIM(canvasA, canvasB){
-  const size=128;
-  const {gray:ga}=toGrayscaleArray(canvasA,size);
-  const {gray:gb}=toGrayscaleArray(canvasB,size);
-  const C1=(0.01*255)**2, C2=(0.03*255)**2;
-  const win=8, stride=4;
-  let total=0, count=0;
-  for(let y=0;y<=size-win;y+=stride){
-    for(let x=0;x<=size-win;x+=stride){
-      let sa=0,sb=0,saa=0,sbb=0,sab=0,n=win*win;
-      for(let j=0;j<win;j++){
-        for(let i=0;i<win;i++){
-          const idx=(y+j)*size+(x+i);
-          const va=ga[idx], vb=gb[idx];
-          sa+=va; sb+=vb; saa+=va*va; sbb+=vb*vb; sab+=va*vb;
-        }
-      }
-      const ma=sa/n, mb=sb/n;
-      const va=saa/n-ma*ma, vb=sbb/n-mb*mb, cov=sab/n-ma*mb;
-      const ssim=((2*ma*mb+C1)*(2*cov+C2)) / ((ma*ma+mb*mb+C1)*(va+vb+C2));
-      total+=ssim; count++;
-    }
-  }
-  return count>0 ? Math.max(0,Math.min(1,total/count)) : 0;
-}
-
-async function alignForSsim(queryCanvas, refCanvas){
-  try{
-    const cv = await ensureOpenCV();
-    const angleOf = (canvas)=>{
-      const size=128;
-      const c=document.createElement('canvas'); c.width=size; c.height=size;
-      c.getContext('2d').drawImage(canvas,0,0,size,size);
-      const src = cv.imread(c);
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      const thresh = new cv.Mat();
-      cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY+cv.THRESH_OTSU);
-      const moments = cv.moments(thresh, true);
-      src.delete(); gray.delete(); thresh.delete();
-      if(Math.abs(moments.mu20-moments.mu02)<1e-6 && Math.abs(moments.mu11)<1e-6) return 0;
-      return 0.5*Math.atan2(2*moments.mu11, moments.mu20-moments.mu02) * (180/Math.PI);
-    };
-    const qAngle = angleOf(queryCanvas);
-    const rAngle = angleOf(refCanvas);
-    let delta = qAngle - rAngle;
-    if(delta>90) delta-=180; if(delta<-90) delta+=180;
-
-    const size=128;
-    const c=document.createElement('canvas'); c.width=size; c.height=size;
-    c.getContext('2d').drawImage(queryCanvas,0,0,size,size);
-    const src = cv.imread(c);
-    const dst = new cv.Mat();
-    const center = new cv.Point(size/2, size/2);
-    const M = cv.getRotationMatrix2D(center, delta, 1);
-    cv.warpAffine(src, dst, M, new cv.Size(size,size), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255,255,255,255));
-    const outCanvas=document.createElement('canvas'); outCanvas.width=size; outCanvas.height=size;
-    cv.imshow(outCanvas, dst);
-    src.delete(); dst.delete(); M.delete();
-    return outCanvas;
-  }catch(e){
-    console.warn('Alignment failed, using unaligned image for SSIM:', e.message);
-    return queryCanvas;
-  }
+  return { embedding };
 }
 
 async function loadCategories(){
@@ -813,14 +498,12 @@ async function runNameSearch(){
   }).join('');
 }
 
+// Only ever selects/loads the embedding column now — a much smaller
+// payload than the old 4-vector-per-row table, so this can use a
+// bigger page size and still be fast.
 async function ensureEmbeddingsLoaded(){
   if(libraryEmbeddings) return libraryEmbeddings;
-  // Small page size deliberately — see the FIX note on sbGet above.
-  // This table's rows are unusually heavy (4 vector columns each); a
-  // smaller page keeps every single request's payload well under
-  // whatever size/timeout limit was producing the 500s, at the cost of
-  // a few more round-trips total (paginated automatically by sbGetAll).
-  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding,histogram,shape,dino_embedding', 150);
+  const data = await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,clean_name,category,image_url,embedding', 500);
   libraryEmbeddings = Array.isArray(data) ? data : [];
   return libraryEmbeddings;
 }
@@ -838,7 +521,7 @@ async function buildIndex(){
   const progBar = document.getElementById('index-prog-bar');
   btn.disabled = true; rebuildBtn.disabled = true;
   if(buildCancelBtn) buildCancelBtn.style.display='inline-flex';
-  try{ await ensureModel(); if(isDinoEnabled()) await ensureDinoModel(); }
+  try{ await ensureModel(); }
   catch(e){ alert('Failed to load model: '+e.message); btn.disabled=false; rebuildBtn.disabled=false; if(buildCancelBtn) buildCancelBtn.style.display='none'; return; }
 
   let library;
@@ -860,25 +543,13 @@ async function buildIndex(){
   let done=0, failed=0, wasCancelled=false;
   const failedDetail=[];
   const BATCH=6;
-  // FIX (2026-09-20): CONFIRMED root cause of the browser tab freezing
-  // into Chrome's "Page Unresponsive" dialog during index build/rebuild
-  // (and of the main SF ClearView v2 tab freezing WITH it, since same-
-  // origin tabs opened via window.open can share a renderer process).
-  // computeSignature() below runs CLIP + DINOv2 model inference via
-  // WASM (ONNX Runtime) — that inference is genuinely CPU-bound
-  // synchronous work for its whole duration, even though the JS API
-  // wrapping it is Promise-based. Awaiting a promise only yields to
-  // OTHER MICROTASKS, not to the browser's rendering/input pipeline —
-  // that requires an actual macrotask boundary (setTimeout, etc). With
-  // zero such boundary anywhere in this per-item loop, ~1800 back-to-
-  // back inference calls (plus histogram/shape descriptor computation)
-  // added up to long enough continuous main-thread work for Chrome's
-  // responsiveness watchdog to trip — which is exactly what "not
-  // detecting, page unresponsive" loofoked like from the outside, even
-  // though the computation itself was actually still progressing
-  // (1719/1796 by the time it was captured). Inserting a real macrotask
-  // yield after every single item gives the browser a chance to paint/
-  // handle input between each one, at negligible cost to total runtime.
+  // A real macrotask yield after every item keeps the browser tab
+  // responsive during a large build — CLIP inference via WASM is
+  // CPU-bound synchronous work for its duration even though the JS
+  // wrapper is Promise-based, and awaiting a promise alone only
+  // yields to other microtasks, not to rendering/input. With only
+  // ONE model doing inference now (not two, plus OpenCV alignment),
+  // each item is also considerably cheaper than before.
   for(let i=0;i<todo.length;i+=BATCH){
     if(buildCancelled){ wasCancelled=true; break; }
     const batch = todo.slice(i,i+BATCH);
@@ -893,40 +564,23 @@ async function buildIndex(){
       continue;
     }
     const imagesMap = res?.images || {};
-    const errorsMap = res?.errors || {}; // FIX: now actually read — Code.gs's getImagesAsB64 returns a real reason per failed ref instead of a bare null
+    const errorsMap = res?.errors || {};
     for(const it of batch){
       if(buildCancelled){ wasCancelled=true; break; }
       const dataUrl = imagesMap[it.image_url];
       if(!dataUrl){
         failed++;
         failedDetail.push({awb:it.awb, reason: errorsMap[it.image_url] || 'no image returned for this reference'});
-        // Still yield here — a failed item is cheap, but skipping the
-        // yield on the failure path would reintroduce the same kind of
-        // unbroken-run risk if many refs fail in a row.
         await new Promise(r=>setTimeout(r,0));
         continue;
       }
       try{
-        const {embedding, histogram, shape, dino} = await computeSignature(dataUrl);
+        const {embedding} = await computeSignature(dataUrl);
         const payload = {
           awb: it.awb, product_name: it.product_name, clean_name: it.clean_name||'',
-          category: it.category, image_url: it.image_url, embedding: embedding, histogram: histogram, shape: shape,
-          dino_embedding: dino || null
+          category: it.category, image_url: it.image_url, embedding: embedding
         };
-        try{
-          await sbPost('library_embeddings', payload);
-        }catch(postErr){
-          if(/dino_embedding/i.test(postErr.message)){
-            delete payload.dino_embedding;
-            await sbPost('library_embeddings', payload);
-            if(!window._dinoColumnWarned){
-              window._dinoColumnWarned = true;
-              console.warn('dino_embedding column not found in Supabase — indexing without it. Run: ALTER TABLE library_embeddings ADD COLUMN IF NOT EXISTS dino_embedding jsonb;  then Full Rebuild again.');
-            }
-          } else {
-            throw postErr;
-          }
-        }
+        await sbPost('library_embeddings', payload);
         done++;
       }catch(e){
         failed++;
@@ -934,8 +588,6 @@ async function buildIndex(){
         console.warn('embed failed for', it.awb, e.message);
       }
       progBar.style.width = Math.round(((done+failed)/todo.length)*100)+'%';
-      // THE FIX: a real macrotask yield after EVERY item, not just
-      // between batches of 6 — see the comment above the loop.
       await new Promise(r=>setTimeout(r,0));
     }
     if(wasCancelled) break;
@@ -944,8 +596,7 @@ async function buildIndex(){
     console.table(failedDetail); // full per-AWB reason list — check the browser console (F12) for exactly why any item failed
   }
   progEl.textContent = (wasCancelled?'Cancelled — ':'')+done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).'
-    +(failed ? ' (see browser console for the reason behind each failure)' : '')
-    +(window._dinoColumnWarned ? ' ⚠️ dino_embedding column missing in Supabase — indexed WITHOUT DINO. See console for the SQL to run, then Full Rebuild again.' : '');
+    +(failed ? ' (see browser console for the reason behind each failure)' : '');
   statusEl.textContent = wasCancelled
     ? 'Cancelled — '+(existingSet.size+done)+' of '+library.length+' indexed so far. Progress made before cancelling is saved; run again to pick up where this left off.'
     : 'Index build complete — '+(existingSet.size+done)+' of '+library.length+' total item(s) indexed.';
@@ -961,7 +612,7 @@ function cancelBuild(){
 
 async function rebuildIndex(){
   if(!isAdmin){ alert('Admin only'); return; }
-  if(!confirm('This deletes the ENTIRE search index and rebuilds it from scratch. This can take several minutes for a large library. Continue?')) return;
+  if(!confirm('This deletes the ENTIRE search index and rebuilds it from scratch. This can take a few minutes for a large library. Continue?')) return;
   const rebuildBtn=document.getElementById('rebuild-btn');
   const buildBtn=document.getElementById('build-btn');
   rebuildBtn.disabled=true; buildBtn.disabled=true;
@@ -981,8 +632,6 @@ async function rebuildIndex(){
         if(!ok && attempt<2) await new Promise(r=>setTimeout(r,500));
       }
       if(!ok) failedAwbs.push(...batch);
-      // Same yield principle as buildIndex — a delete-batch loop over a
-      // large library is itself many iterations; keep the tab responsive.
       await new Promise(r=>setTimeout(r,0));
     }
 
@@ -1127,75 +776,42 @@ function thumbUrl(url){
   return id ? ('https://drive.google.com/thumbnail?id='+id+'&sz=w300') : '';
 }
 
-const VectorIndex = {
-  searchTopK(items, queryVec, signalKey, k){
-    if(!queryVec) return items.slice(0,k).map(it=>({...it, _firstPassScore:0}));
-    return items
-      .map(it=>({...it, _firstPassScore: it[signalKey] ? cosineSim(queryVec, it[signalKey]) : 0}))
-      .sort((a,b)=>b._firstPassScore-a._firstPassScore)
-      .slice(0,k);
-  }
-};
-
 function productKeyOf(item){
   return ((item.clean_name||item.product_name||item.awb||'')+'').trim().toLowerCase() || item.awb;
 }
+// Group candidates by product and keep each product's BEST (max)
+// CLIP score across its reference photos — a product can have more
+// than one reference image.
 function groupByProduct(scoredItems){
   const groups = {};
   for(const s of scoredItems){
     const key = productKeyOf(s.item);
-    if(!groups[key]) groups[key] = { key, items:[], best:null };
+    if(!groups[key]) groups[key] = { key, items:[] };
     groups[key].items.push(s);
   }
   return Object.values(groups).map(g=>{
-    const agg = {clip:0, dino:0, ssim:0, color:0, shape:0};
-    let bestFused=-1, bestItem=null;
-    for(const s of g.items){
-      for(const k in agg) if(s.scores[k]!=null) agg[k]=Math.max(agg[k], s.scores[k]);
-      if(s.fused>bestFused){ bestFused=s.fused; bestItem=s; }
-    }
-    return { productKey:g.key, representative:bestItem.item, scores:agg, fused:bestFused, memberCount:g.items.length };
-  }).sort((a,b)=>b.fused-a.fused);
-}
-
-function fuseScores(scores){
-  const w = getWeights();
-  let sum=0, wsum=0;
-  for(const k of ['clip','dino','ssim','color','shape']){
-    if(scores[k]==null) continue;
-    sum += w[k]*scores[k]; wsum += w[k];
-  }
-  return wsum>0 ? sum/wsum : 0;
+    let best = g.items[0];
+    for(const s of g.items) if(s.score > best.score) best = s;
+    return { productKey:g.key, representative:best.item, score:best.score, memberCount:g.items.length };
+  }).sort((a,b)=>b.score-a.score);
 }
 
 function computeConfidence(topGroup, secondGroup){
-  const margin = secondGroup ? Math.max(0, topGroup.fused - secondGroup.fused) : topGroup.fused;
-  const marginScore = Math.min(1, margin / 0.25);
-  const vals = ['clip','dino','ssim','color','shape'].map(k=>topGroup.scores[k]).filter(v=>v>0);
-  let agreementScore = 1;
-  if(vals.length>1){
-    const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
-    const variance = vals.reduce((a,b)=>a+(b-mean)**2,0)/vals.length;
-    agreementScore = Math.max(0, 1 - Math.sqrt(variance)*2.5);
-  }
-  return Math.max(0, Math.min(1, 0.5*marginScore + 0.5*agreementScore));
+  const margin = secondGroup ? Math.max(0, topGroup.score - secondGroup.score) : topGroup.score;
+  const marginScore = Math.min(1, margin / 0.15);
+  return Math.max(0, Math.min(1, 0.5*marginScore + 0.5*topGroup.score));
 }
 
 function generateRemark(verdict, topGroup, confidence){
-  const s = topGroup.scores;
-  const parts = [];
   const pct = v => Math.round(v*100)+'%';
+  let msg;
   if(verdict==='ORIGINAL'){
-    parts.push('Matches '+(topGroup.representative.clean_name||topGroup.representative.product_name||topGroup.representative.awb)+' at '+pct(topGroup.fused)+' fused similarity.');
+    msg = 'Matches '+(topGroup.representative.clean_name||topGroup.representative.product_name||topGroup.representative.awb)+' at '+pct(topGroup.score)+' CLIP similarity.';
   } else {
-    parts.push('Closest reference is only '+pct(topGroup.fused)+' similar — below threshold.');
+    msg = 'Closest reference is only '+pct(topGroup.score)+' similar — below threshold.';
   }
-  const disagreements = [];
-  if(s.clip>0 && s.dino>0 && Math.abs(s.clip-s.dino)>0.25) disagreements.push('CLIP and DINOv2 disagree notably ('+pct(s.clip)+' vs '+pct(s.dino)+')');
-  if(s.ssim>0 && s.ssim<0.4 && topGroup.fused>0.7) disagreements.push('structural (SSIM) similarity is low despite a high overall score — worth a visual check');
-  if(disagreements.length) parts.push(disagreements.join('; ')+'.');
-  if(confidence<0.5) parts.push('Confidence is low — recommend manual review regardless of the verdict.');
-  return parts.join(' ');
+  if(confidence<0.5) msg += ' Confidence is low — recommend manual review regardless of the verdict.';
+  return msg;
 }
 
 let compareCancelled = false;
@@ -1209,7 +825,6 @@ async function runCompare(){
   cancelBtn.style.display = 'inline-flex';
   try{
     await ensureModel();
-    if(isDinoEnabled()) await ensureDinoModel();
     if(compareCancelled) throw new Error('CANCELLED');
     statusEl.textContent = 'Loading reference index...';
     let lib = await ensureEmbeddingsLoaded();
@@ -1222,12 +837,11 @@ async function runCompare(){
       btn.disabled=false; btn.textContent='▶ COMPARE'; cancelBtn.style.display='none'; return;
     }
     const threshold = (parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
-    const topK = getTopK();
     statusEl.textContent = 'Comparing '+queue.length+' image(s) against '+lib.length+' reference item(s)...';
     const results = [];
     for(const q of queue){
       if(compareCancelled) throw new Error('CANCELLED');
-      const result = await compareOneImage(q, lib, threshold, topK, statusEl);
+      const result = await compareOneImage(q, lib, threshold);
       results.push(result);
     }
     renderResults(results);
@@ -1243,90 +857,28 @@ async function runCompare(){
   btn.disabled=false; btn.textContent='▶ COMPARE'; cancelBtn.style.display='none';
 }
 
-async function compareOneImage(q, lib, threshold, topK, statusEl){
+// CLIP-only comparison: one embedding for the query, one cosine
+// similarity per library item, no second pass. This is what makes it
+// fast — a few thousand cosine similarities over ~512-d vectors is
+// negligible compared to the model inference itself.
+async function compareOneImage(q, lib, threshold){
   const t0 = performance.now();
   const sig = await computeSignature(q.dataUrl);
 
-  const stage1 = lib.map(item=>{
-    const clip = cosineSim(sig.embedding, item.embedding);
-    const dino = (sig.dino && item.dino_embedding) ? cosineSim(sig.dino, item.dino_embedding) : null;
-    const color = item.histogram ? histogramSimilarity(sig.histogram, item.histogram) : null;
-    const shape = item.shape ? shapeSimilarity(sig.shape, item.shape) : null;
-    return { item, scores:{clip, dino, ssim:null, color, shape} };
-  }).sort((a,b)=>b.scores.clip-a.scores.clip).slice(0, topK);
+  const scored = lib.map(item=>({
+    item,
+    score: cosineSim(sig.embedding, item.embedding)
+  }));
 
-  if(statusEl) statusEl.textContent = 'Aligning top '+stage1.length+' candidate(s) for structural comparison...';
-  for(const cand of stage1){
-    if(compareCancelled) throw new Error('CANCELLED');
-    try{
-      let refImg = await loadImageFromDataUrl(await resolveRefDataUrl(cand.item.image_url));
-      const refCanvas = toCanvas(autoCropToContent(refImg));
-      const aligned = await alignForSsim(sig.croppedCanvas, refCanvas);
-      cand.scores.ssim = computeSSIM(aligned, refCanvas);
-    }catch(e){
-      console.warn('SSIM failed for', cand.item.awb, '— continuing without it:', e.message);
-    }
-    // FIX (2026-09-20): same macrotask-yield principle as buildIndex —
-    // alignForSsim's OpenCV.js Mat operations are also synchronous CPU
-    // work per candidate. topK defaults to 8 so this loop is short in
-    // normal use, but Benchmark Mode calls this once per CSV row, and a
-    // large benchmark set could otherwise reintroduce the same kind of
-    // unbroken run this fix addresses in buildIndex.
-    await new Promise(r=>setTimeout(r,0));
-  }
-
-  for(const cand of stage1) cand.fused = fuseScores(cand.scores);
-  const groups = groupByProduct(stage1);
+  const groups = groupByProduct(scored);
   const top = groups[0];
   const second = groups[1] || null;
-  const verdict = (top && top.fused>=threshold) ? 'ORIGINAL' : 'PRODUCT MISMATCH';
+  const verdict = (top && top.score>=threshold) ? 'ORIGINAL' : 'PRODUCT MISMATCH';
   const confidence = top ? computeConfidence(top, second) : 0;
   const remark = top ? generateRemark(verdict, top, confidence) : 'No reference items to compare against.';
   const runtimeMs = Math.round(performance.now()-t0);
 
   return { query:q, groups, top, verdict, confidence, remark, runtimeMs };
-}
-
-const refImageCache = {};
-// FIX (2026-09-21): this used to fall back to the RAW Drive link as an
-// <img src> whenever the server-side fetch failed or returned nothing
-// for a reference — but a Drive ".../view" URL can NEVER load as an
-// image that way (it's an HTML viewer page requiring auth cookies, not
-// raw image bytes, regardless of sharing settings). That's exactly the
-// "view?usp=drivesdk (failed)" network request seen in DevTools — a
-// guaranteed-to-fail request with no useful error message, for every
-// reference image the server-side attempt couldn't fetch.
-//
-// Now: for an actual Drive link, there's no viable client-side
-// fallback at all — this surfaces the REAL reason Code.gs's
-// getImagesAsB64 already provides (via its per-ref errors map) and
-// throws, so the caller's existing try/catch (skip this candidate's
-// SSIM score, log a warning, continue) handles it the way it already
-// does for any other failure — just with an actual reason now instead
-// of a doomed network request. A genuinely non-Drive URL (some other
-// publicly-hosted image) still gets a real fallback attempt, since a
-// plain fetch has an actual chance of working there.
-async function resolveRefDataUrl(url){
-  if(refImageCache[url]) return refImageCache[url];
-  const isDriveLink = /drive\.google\.com/.test(url) || /[?&]id=/.test(url);
-  try{
-    const res = await gsPost({action:'getImagesAsB64', refs:[url]});
-    const dataUrl = res?.images?.[url];
-    if(dataUrl){ refImageCache[url]=dataUrl; return dataUrl; }
-    if(isDriveLink){
-      throw new Error(res?.errors?.[url] || 'server could not fetch this Drive reference');
-    }
-  }catch(e){
-    if(isDriveLink) throw e; // no client-side fallback makes sense for a Drive link — rethrow with the real reason
-    console.warn('getImagesAsB64 failed for', url, '— trying a direct client-side fetch:', e.message);
-  }
-  // Only reached for a non-Drive URL — a plain fetch has an actual
-  // chance of succeeding here, unlike for a Drive "view" link.
-  const r = await fetch(url);
-  const blob = await r.blob();
-  const dUrl = await new Promise((res2,rej2)=>{ const fr=new FileReader(); fr.onload=e=>res2(e.target.result); fr.onerror=rej2; fr.readAsDataURL(blob); });
-  refImageCache[url] = dUrl;
-  return dUrl;
 }
 
 function cancelCompare(){
@@ -1335,17 +887,13 @@ function cancelCompare(){
 
 function renderResults(results){
   document.getElementById('results').innerHTML = results.map((r,ri)=>{
-    const debug = isDebugMode();
     const pct = v => Math.round((v||0)*100)+'%';
     const top = r.top;
     const verdictHtml = r.verdict==='ORIGINAL'
-      ? '<span class="verdict-ok">✅ ORIGINAL — '+(top?pct(top.fused):'0%')+' MATCH</span>'
-      : '<span class="verdict-warn">⚠️ PRODUCT MISMATCH — '+(top?pct(top.fused):'0%')+' best</span>';
+      ? '<span class="verdict-ok">✅ ORIGINAL — '+(top?pct(top.score):'0%')+' MATCH</span>'
+      : '<span class="verdict-warn">⚠️ PRODUCT MISMATCH — '+(top?pct(top.score):'0%')+' best</span>';
     const confColor = r.confidence>=0.7?'var(--success)':r.confidence>=0.4?'var(--warn)':'var(--danger)';
     const qName = (r.query.name||'').replace(/'/g,"\\'");
-
-    const scoreChip = (label,val)=> val==null ? '' :
-      '<div class="score-chip"><div class="lbl2">'+label+'</div><div class="val">'+pct(val)+'</div></div>';
 
     const groupCard = (g, isTop)=>{
       const thumb = thumbUrl(g.representative.image_url);
@@ -1353,14 +901,13 @@ function renderResults(results){
       return '<div class="match-card" onclick="openMatchPreview(\''+g.representative.image_url.replace(/'/g,"\\'")+'\',\''+(label||'').replace(/'/g,"\\'")+'\',\''+g.representative.awb+'\')" style="'+(isTop?'border-color:var(--t1);':'')+'">'
         +(thumb?'<img src="'+thumb+'">':'')
         +'<div class="match-body">'
-          +'<div class="match-pct" style="color:'+(g.fused>=0.85?'var(--success)':g.fused>=0.7?'var(--warn)':'var(--danger)')+';">'+pct(g.fused)+'</div>'
+          +'<div class="match-pct" style="color:'+(g.score>=0.85?'var(--success)':g.score>=0.7?'var(--warn)':'var(--danger)')+';">'+pct(g.score)+'</div>'
           +'<div class="match-name">'+label+(g.memberCount>1?' <span style="color:var(--text3);">('+g.memberCount+' ref photos)</span>':'')+'</div>'
           +'<div class="match-awb">'+g.representative.awb+'</div>'
-          +(debug ? '<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:4px;">CLIP '+pct(g.scores.clip)+' · DINO '+pct(g.scores.dino)+' · SSIM '+pct(g.scores.ssim)+' · Color '+pct(g.scores.color)+' · Shape '+pct(g.scores.shape)+'</div>' : '')
         +'</div></div>';
     };
 
-    const rest = r.groups.slice(1, debug ? r.groups.length : 6);
+    const rest = r.groups.slice(1, 6);
 
     return '<div class="result-card">'
       +'<div class="result-head">'
@@ -1371,15 +918,8 @@ function renderResults(results){
         +'</div>'
         +'<div style="font-family:var(--mono);font-size:10px;color:var(--text3);white-space:nowrap;">⏱ '+r.runtimeMs+'ms</div>'
       +'</div>'
-      +(top ? '<div class="score-grid">'
-          +scoreChip('CLIP', top.scores.clip)
-          +scoreChip('DINOv2', top.scores.dino)
-          +scoreChip('SSIM', top.scores.ssim)
-          +scoreChip('Color', top.scores.color)
-          +scoreChip('Shape', top.scores.shape)
-        +'</div>' : '')
       +'<div class="remark">💬 '+r.remark+'</div>'
-      +'<div class="closest-lbl" style="margin-top:12px;">'+(debug?'ALL CANDIDATE PRODUCTS':'CLOSEST MATCH')+'</div>'
+      +'<div class="closest-lbl" style="margin-top:12px;">CLOSEST MATCH</div>'
       +'<div class="match-row" style="grid-template-columns:repeat(auto-fill,minmax(190px,220px));">'
         +(top?groupCard(top,true):'')
       +'</div>'
@@ -1398,6 +938,34 @@ function toggleMore(ri){
   if(!showing && !btn.dataset.label) btn.dataset.label = btn.textContent;
   wrap.style.display = showing ? 'none' : 'grid';
   btn.textContent = showing ? btn.dataset.label : 'Hide';
+}
+
+const refImageCache = {};
+// For an actual Drive link there is no viable client-side fallback if
+// the server-side fetch fails — a Drive ".../view" URL can never load
+// as an <img src> (it's an HTML viewer page, not raw image bytes), so
+// this surfaces the real reason from Code.gs's per-ref errors map
+// instead of attempting a doomed network request. A genuinely
+// non-Drive URL still gets a real client-side fallback fetch.
+async function resolveRefDataUrl(url){
+  if(refImageCache[url]) return refImageCache[url];
+  const isDriveLink = /drive\.google\.com/.test(url) || /[?&]id=/.test(url);
+  try{
+    const res = await gsPost({action:'getImagesAsB64', refs:[url]});
+    const dataUrl = res?.images?.[url];
+    if(dataUrl){ refImageCache[url]=dataUrl; return dataUrl; }
+    if(isDriveLink){
+      throw new Error(res?.errors?.[url] || 'server could not fetch this Drive reference');
+    }
+  }catch(e){
+    if(isDriveLink) throw e;
+    console.warn('getImagesAsB64 failed for', url, '— trying a direct client-side fetch:', e.message);
+  }
+  const r = await fetch(url);
+  const blob = await r.blob();
+  const dUrl = await new Promise((res2,rej2)=>{ const fr=new FileReader(); fr.onload=e=>res2(e.target.result); fr.onerror=rej2; fr.readAsDataURL(blob); });
+  refImageCache[url] = dUrl;
+  return dUrl;
 }
 
 let benchmarkCancelled = false;
@@ -1432,16 +1000,15 @@ async function runBenchmark(rows){
   cancelBtn.style.display = 'inline-flex';
   progWrap.style.display = 'block';
 
-  try{ await ensureModel(); if(isDinoEnabled()) await ensureDinoModel(); }
+  try{ await ensureModel(); }
   catch(e){ alert('Model load failed: '+e.message); cancelBtn.style.display='none'; return; }
 
   const lib = await ensureEmbeddingsLoaded();
   if(!lib.length){ alert('No indexed items — build the index first.'); cancelBtn.style.display='none'; return; }
 
   const threshold = (parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
-  const topK = getTopK();
   const results = [];
-  let clipOnlyCorrect=0, fusedCorrect=0;
+  let correct=0;
 
   for(let i=0;i<rows.length;i++){
     if(benchmarkCancelled) break;
@@ -1456,32 +1023,20 @@ async function runBenchmark(rows){
     catch(e){ results.push({row, error:'Could not load image'}); await new Promise(r=>setTimeout(r,0)); continue; }
 
     try{
-      const sig = await computeSignature(dataUrl);
-      const clipOnly = lib.map(item=>({item, score:cosineSim(sig.embedding, item.embedding)}))
-        .sort((a,b)=>b.score-a.score)[0];
-      const clipOnlyKey = clipOnly ? productKeyOf(clipOnly.item) : '';
-      const clipOnlyHit = clipOnlyKey.includes(expected) || expected.includes(clipOnlyKey) || (clipOnly && clipOnly.item.awb && clipOnly.item.awb.toLowerCase()===expected);
+      const full = await compareOneImage({name:row.image_url, dataUrl}, lib, threshold);
+      const key = full.top ? productKeyOf(full.top.representative) : '';
+      const hit = key.includes(expected) || expected.includes(key) || (full.top && full.top.representative.awb && full.top.representative.awb.toLowerCase()===expected);
 
-      const full = await compareOneImage({name:row.image_url, dataUrl}, lib, threshold, topK, statusEl);
-      const fusedKey = full.top ? productKeyOf(full.top.representative) : '';
-      const fusedHit = fusedKey.includes(expected) || expected.includes(fusedKey) || (full.top && full.top.representative.awb && full.top.representative.awb.toLowerCase()===expected);
-
-      if(clipOnlyHit) clipOnlyCorrect++;
-      if(fusedHit) fusedCorrect++;
+      if(hit) correct++;
       results.push({
         row, expected,
-        clipOnlyLabel: clipOnly ? (clipOnly.item.clean_name||clipOnly.item.product_name||clipOnly.item.awb) : '—',
-        clipOnlyScore: clipOnly ? clipOnly.score : 0, clipOnlyHit,
-        fusedLabel: full.top ? (full.top.representative.clean_name||full.top.representative.product_name||full.top.representative.awb) : '—',
-        fusedScore: full.top ? full.top.fused : 0, fusedHit,
+        label: full.top ? (full.top.representative.clean_name||full.top.representative.product_name||full.top.representative.awb) : '—',
+        score: full.top ? full.top.score : 0, hit,
         runtimeMs: full.runtimeMs
       });
     }catch(e){
       results.push({row, error:e.message});
     }
-    // FIX (2026-09-20): same yield principle — a large benchmark CSV
-    // runs the full pipeline (CLIP+DINO inference, alignment+SSIM) per
-    // row with zero macrotask boundary between rows otherwise.
     await new Promise(r=>setTimeout(r,0));
   }
 
@@ -1489,25 +1044,20 @@ async function runBenchmark(rows){
   document.getElementById('benchmark-summary').innerHTML = tested ? (
     '<div class="score-grid">'
     +'<div class="score-chip"><div class="lbl2">Tested</div><div class="val">'+tested+'</div></div>'
-    +'<div class="score-chip"><div class="lbl2">CLIP-only accuracy</div><div class="val">'+Math.round(clipOnlyCorrect/tested*100)+'%</div></div>'
-    +'<div class="score-chip"><div class="lbl2">Fused accuracy</div><div class="val" style="color:'+(fusedCorrect>=clipOnlyCorrect?'var(--success)':'var(--danger)')+';">'+Math.round(fusedCorrect/tested*100)+'%</div></div>'
-    +'<div class="score-chip"><div class="lbl2">Difference</div><div class="val">'+(fusedCorrect>=clipOnlyCorrect?'+':'')+Math.round((fusedCorrect-clipOnlyCorrect)/tested*100)+'pp</div></div>'
+    +'<div class="score-chip"><div class="lbl2">Accuracy</div><div class="val">'+Math.round(correct/tested*100)+'%</div></div>'
     +'</div>'
-    +'<div class="status">'+(fusedCorrect>clipOnlyCorrect?'✅ Fused pipeline outperforms CLIP-only on this set.':fusedCorrect<clipOnlyCorrect?'⚠️ CLIP-only currently outperforms the fused pipeline on this set — worth adjusting weights before trusting it in production.':'No difference on this set yet — try more/harder examples.')+'</div>'
   ) : '<div class="status">No valid rows tested.</div>';
 
   document.getElementById('benchmark-results').innerHTML = '<table class="bench"><thead><tr>'
-    +'<th>Image</th><th>Expected</th><th>CLIP-only</th><th>Score</th><th>Fused</th><th>Score</th><th>ms</th>'
+    +'<th>Image</th><th>Expected</th><th>Match</th><th>Score</th><th>ms</th>'
     +'</tr></thead><tbody>'
     +results.map(r=>{
-      if(r.error) return '<tr><td colspan="7" style="color:var(--danger);">'+r.row.image_url+' — '+r.error+'</td></tr>';
+      if(r.error) return '<tr><td colspan="5" style="color:var(--danger);">'+r.row.image_url+' — '+r.error+'</td></tr>';
       return '<tr>'
         +'<td>'+(r.row.image_url||'').slice(0,40)+'</td>'
         +'<td>'+r.expected+'</td>'
-        +'<td class="'+(r.clipOnlyHit?'tag-agree':'tag-disagree')+'">'+r.clipOnlyLabel+' '+(r.clipOnlyHit?'✓':'✗')+'</td>'
-        +'<td>'+Math.round(r.clipOnlyScore*100)+'%</td>'
-        +'<td class="'+(r.fusedHit?'tag-agree':'tag-disagree')+'">'+r.fusedLabel+' '+(r.fusedHit?'✓':'✗')+'</td>'
-        +'<td>'+Math.round(r.fusedScore*100)+'%</td>'
+        +'<td class="'+(r.hit?'tag-agree':'tag-disagree')+'">'+r.label+' '+(r.hit?'✓':'✗')+'</td>'
+        +'<td>'+Math.round(r.score*100)+'%</td>'
         +'<td>'+r.runtimeMs+'</td>'
         +'</tr>';
     }).join('')
@@ -1525,14 +1075,6 @@ async function runBenchmark(rows){
     refreshIndexStatus();
   }
   document.getElementById('threshold').value = localStorage.getItem('cv_libcmp_threshold') || 85;
-  document.getElementById('topk-n').value = localStorage.getItem('cv_libcmp_topk') || 8;
-  document.getElementById('w-clip').value = localStorage.getItem('cv_libcmp_w_clip') || 30;
-  document.getElementById('w-dino').value = localStorage.getItem('cv_libcmp_w_dino') || 30;
-  document.getElementById('w-ssim').value = localStorage.getItem('cv_libcmp_w_ssim') || 15;
-  document.getElementById('w-color').value = localStorage.getItem('cv_libcmp_w_color') || 15;
-  document.getElementById('w-shape').value = localStorage.getItem('cv_libcmp_w_shape') || 10;
-  document.getElementById('debug-mode').checked = isDebugMode();
-  document.getElementById('dino-enabled').checked = isDinoEnabled();
   await loadCategories();
 })();
 </script>

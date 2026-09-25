@@ -922,6 +922,7 @@ const SCAN_LIMIT = 2000; // warn operator at this count
 // ══════════════════════════════════════════════════════════════
 let CU=null, isAdmin=false, isSupervisor=false, isPoc=false;
 let dashAutoRefreshTimer=null; // only runs while Dashboard is the active tab — see show()
+let opAutoRefreshTimer=null; // only runs while Scan AWB or End of Shift is the active tab (operator side) — see show()
 let DB = {records:[], users:[], locations:[], awbMaster:{}};
 let camStream=null, captured=[null,null,null,null], nlMT=1;
 let pendingXl=[], pendingFd=[];
@@ -1489,6 +1490,10 @@ function show(id){
   // it never keeps polling in the background after leaving, and never
   // stacks multiple timers if Dashboard gets opened more than once.
   if(dashAutoRefreshTimer){ clearInterval(dashAutoRefreshTimer); dashAutoRefreshTimer=null; }
+  // FIX (2026-09-25): same reasoning as dashAutoRefreshTimer above,
+  // applied to the operator side — see the opAutoRefreshTimer start
+  // below for why this exists at all.
+  if(opAutoRefreshTimer){ clearInterval(opAutoRefreshTimer); opAutoRefreshTimer=null; }
 
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
   document.getElementById(id)?.classList.add('on');
@@ -1509,6 +1514,19 @@ function show(id){
     setTimeout(()=>document.getElementById('awb-inp')?.focus(),50);
   }
   if(id==='v-shift')  renderShift();
+  // FIX (2026-09-25): Scan AWB / End of Shift never refreshed their own
+  // stat cards except after THIS operator's own save/upload — so
+  // another upload finishing (or this same operator's own folder-apply)
+  // never showed up here until a manual reload. Same auto-refresh
+  // pattern as the Admin Dashboard, pulling fresh data straight from
+  // Supabase every 30s while either of these two screens is on screen.
+  if(id==='v-scan' || id==='v-shift'){
+    opAutoRefreshTimer=setInterval(async function(){
+      try{ await loadRecords(); }catch(e){ console.warn('opAutoRefresh failed:', e.message); return; }
+      if(id==='v-scan') updateStats();
+      else renderShift();
+    }, 30000);
+  }
   if(id==='v-shiftlog'){
     var sld=document.getElementById('shiftlog-date');
     if(sld&&!sld.value) sld.value=todayStr();
@@ -1714,6 +1732,7 @@ async function enterApp(){
 function doLogout(){
   if(camStream)stopCam();
   if(dashAutoRefreshTimer){ clearInterval(dashAutoRefreshTimer); dashAutoRefreshTimer=null; }
+  if(opAutoRefreshTimer){ clearInterval(opAutoRefreshTimer); opAutoRefreshTimer=null; }
   CU=null; isAdmin=false; isSupervisor=false; isPoc=false;
   clearSession();
   document.getElementById('app').style.display='none';

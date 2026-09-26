@@ -1521,11 +1521,17 @@ function show(id){
   // pattern as the Admin Dashboard, pulling fresh data straight from
   // Supabase every 30s while either of these two screens is on screen.
   if(id==='v-scan' || id==='v-shift'){
+    // FIX (2026-09-26, urgent): same reasoning as dashAutoRefreshTimer
+    // above — 30s, synchronized across every operator session at every
+    // location, is sustained load competing with real image uploads for
+    // the same Supabase/Apps Script capacity. Widened to 120-180s,
+    // randomized per session.
+    var opJitter=120000+Math.floor(Math.random()*60000);
     opAutoRefreshTimer=setInterval(async function(){
       try{ await loadRecords(); }catch(e){ console.warn('opAutoRefresh failed:', e.message); return; }
       if(id==='v-scan') updateStats();
       else renderShift();
-    }, 30000);
+    }, opJitter);
   }
   if(id==='v-shiftlog'){
     var sld=document.getElementById('shiftlog-date');
@@ -1553,7 +1559,19 @@ function show(id){
   // clearInterval at the top of this function).
   if(id==='v-adash'){
     refreshDashboard();
-    dashAutoRefreshTimer=setInterval(refreshDashboard, 45000);
+    // FIX (2026-09-26, urgent): 45s was too aggressive combined with
+    // opAutoRefreshTimer below — every admin/operator session polling
+    // Supabase on its own fixed clock meant dozens of sessions across
+    // 13+ locations tending to fire in near-lockstep (a "thundering
+    // herd"), competing directly with actual image-upload traffic for
+    // the same capacity. Leading suspect for the system-wide "images
+    // uploading issue, ~10% pending" pattern reported starting right
+    // after this auto-refresh shipped. Widened to a 90-120s randomized
+    // interval (jitter per session) — still auto-refreshes without a
+    // manual reload, at a fraction of the load, desynchronized across
+    // sessions instead of clustering.
+    var dashJitter=90000+Math.floor(Math.random()*30000);
+    dashAutoRefreshTimer=setInterval(refreshDashboard, dashJitter);
   }
   if(id==='v-ausers') renderUsers();
   if(id==='v-aloc')   renderLocs();

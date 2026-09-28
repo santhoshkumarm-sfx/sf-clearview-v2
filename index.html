@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- SF ClearView v3.0 - 2026-09-28 - REBUILD FOR SPEED. (1) FAST UPLOAD ENGINE: image bytes no longer travel through Apps Script (which allows only ~30 executions at once for the whole system, shared by every DC — the reason 700 images took 2.5h). The browser now gets Drive upload sessions in batches of 24 per Apps Script call, uploads straight to Google Drive 8 at a time, and writes the Drive link to Supabase itself. Automatic per-image fallback to the old uploadImageDrive path + a circuit breaker; kill switch: ?fast=0 or localStorage cv_fast_upload=0. (2) "Retry failed" for End-of-Shift uploads (only redoes what failed, and a link-only retry never re-uploads). (3) Dashboards read Supabase first and fetch only the columns they show — no more Apps Script sheet read on every refresh; older-day fallback to the Sheet kept. (4) Polling skips hidden tabs and never runs mid-upload. (5) Dead embedded Image Compare code removed (compare.html is the real one). (6) Library cached 30 min. Nothing in the database schema changed. -->
 <!-- SF ClearView v2.45 - 2026-08-07 - (1) X-Ray Reference library now actually displays clean_name — Code.gs already sent it (added several rounds back), but the card, modal, delete-confirmation, and search filter in index.html never read it, always showing the full raw product_name instead. Fixed all four spots to prefer clean_name, falling back to product_name if a row hasn't been cleaned yet. compare.html already used clean_name correctly for match labels — if it's still not showing there, the comparison model's own index has stale/blank clean_name values from before names were cleaned; run Force Refresh (admin) to sync it in, no code fix needed for that side. (2) Finished the product-name search in Image Compare that was left mid-build earlier — a dedicated "Lookup by Product Name" card, debounced search, reuses the same reference data the comparison flow already loads (lazy — doesn't fetch anything until first used), results open in the existing preview modal. No Code.gs changes. -->
 <!-- REMINDER: every time you create a NEW Apps Script deployment/version, this URL must be updated here too, or all GAS-backed actions (manualSync, image upload, EOS sync, tolerance requests, etc.) will silently fail. -->
 <html lang="en">
@@ -165,22 +166,6 @@ video{width:100%;height:100%;object-fit:cover;}
 .lib-card-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.35;margin-bottom:6px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:32px;}
 .lib-card-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10px;color:var(--text3);font-family:var(--mono);}
 .lib-card-meta span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-/* ── Image Compare — same theme vars, additive only ── */
-.libcmp-qitem{position:relative;width:90px;height:70px;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);background:#0f1117;}
-.libcmp-qitem img{width:100%;height:100%;object-fit:cover;display:block;}
-.libcmp-qitem .rm{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;border:none;border-radius:2px;font-size:10px;width:16px;height:16px;cursor:pointer;line-height:1;}
-.libcmp-result-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:14px;}
-.libcmp-result-head{display:flex;gap:14px;align-items:center;margin-bottom:12px;}
-.libcmp-result-img{width:90px;height:70px;border-radius:var(--r);overflow:hidden;background:#0f1117;flex-shrink:0;}
-.libcmp-result-img img{width:100%;height:100%;object-fit:cover;display:block;}
-.libcmp-verdict-ok{background:rgba(0,229,160,.12);color:var(--success);border:1px solid rgba(0,229,160,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
-.libcmp-verdict-warn{background:rgba(255,51,85,.12);color:var(--danger);border:1px solid rgba(255,51,85,.3);padding:4px 10px;border-radius:3px;font-family:var(--mono);font-size:11px;font-weight:700;display:inline-block;}
-.libcmp-match-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
-.libcmp-match-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;}
-.libcmp-match-card img{width:100%;height:90px;object-fit:cover;display:block;}
-.libcmp-match-body{padding:8px;}
-.libcmp-match-pct{font-family:var(--mono);font-weight:700;font-size:12px;}
-.libcmp-match-name{font-size:10px;color:var(--text2);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
 </style>
 </head>
 <body>
@@ -264,7 +249,7 @@ video{width:100%;height:100%;object-fit:cover;}
       <a class="nav-item" href="#" onclick="openImageCompare();return false;" style="text-decoration:none;"><span class="nav-icon">🔍</span>Image Compare <span style="font-size:9px;color:var(--text3);margin-left:4px;">↗ opens in new tab</span></a>
     </div>
     <div class="sb-foot">
-      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-09-07a</div>
+      <div style="font-family:var(--mono);font-size:8px;color:var(--text3);text-align:center;margin-bottom:8px;letter-spacing:1px;">BUILD 2026-09-28a</div>
       <button class="btn btn-ghost btn-sm btn-block" onclick="doLogout()">LOGOUT</button>
     </div>
   </div>
@@ -397,7 +382,7 @@ video{width:100%;height:100%;object-fit:cover;}
         </div>
         <div id="eos-t2" style="display:none;">
           <div class="card">
-            <div class="card-head"><span class="card-head-icon">📁</span><span class="card-head-title">TYPE 2 — IMAGE FOLDER</span></div>
+            <div class="card-head"><span class="card-head-icon">📁</span><span class="card-head-title">TYPE 2 — IMAGE FOLDER</span><span class="card-head-right"><span id="fast-badge" class="pill pill-ok" title="Images upload straight to Google Drive">⚡ FAST UPLOAD</span> <button id="fd-retry-btn" class="btn btn-warn btn-xs" style="display:none;" onclick="retryFailedUploads()"></button></span></div>
             <div class="card-body">
               <!-- Time tolerance — visible readonly, change requires admin approval -->
               <!-- REVERTED (2026-07-23): cutting this to 45s was a mistake —
@@ -502,6 +487,7 @@ video{width:100%;height:100%;object-fit:cover;}
         <div class="fbar" style="margin-bottom:14px;" id="dash-lib-admin-bar">
           <a class="btn btn-ghost btn-sm" href="https://docs.google.com/spreadsheets/d/177bzU6wRnqK1YfLHZTpYk3gfAuA7GQAZk40xGQrMdyo/edit" target="_blank" style="letter-spacing:1px;text-decoration:none;">📊 Edit Reference Sheet</a>
           <a class="btn btn-ghost btn-sm" href="https://drive.google.com/drive/folders/1HouXx6-D024TFHV2paipHa_yVwNflRc8" target="_blank" style="letter-spacing:1px;text-decoration:none;">📁 Reference Images Folder</a>
+          <button class="btn btn-ghost btn-sm" onclick="fastUploadSelfTest()" style="letter-spacing:1px;" title="Uploads one tiny test file through the whole fast route and reports each step">🧪 Test Fast Upload</button>
         </div>
         <!-- Date picker -->
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;">
@@ -653,49 +639,6 @@ video{width:100%;height:100%;object-fit:cover;}
           <div class="lib-sidebar" id="lib-cat-list"></div>
           <div class="lib-main"><div id="lib-subcat-row" style="display:none;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div><div class="lib-grid" id="lib-grid"></div></div>
         </div>
-      </div>
-
-      <!-- ── IMAGE COMPARE (every role — build/manage index is admin-only) ── -->
-      <div class="view" id="v-libcompare">
-
-        <div class="card" id="libcmp-admin-card" style="display:none;">
-          <div class="card-head"><span class="card-head-icon">🧠</span><span class="card-head-title">SEARCH INDEX (ADMIN)</span></div>
-          <div class="card-body">
-            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
-              <span id="libcmp-index-status" style="font-family:var(--mono);font-size:12px;color:var(--text2);">—</span>
-              <button class="btn btn-t1 btn-sm" onclick="buildLibraryIndex()" id="libcmp-build-btn">🔄 Build / Update Index</button>
-              <span id="libcmp-index-progress" style="font-family:var(--mono);font-size:11px;color:var(--t2);display:none;"></span>
-            </div>
-            <div class="prog-wrap" id="libcmp-index-prog" style="display:none;"><div class="prog-bar" id="libcmp-index-prog-bar" style="width:0%;"></div></div>
-            <div class="fg" style="margin-top:14px;margin-bottom:0;max-width:340px;">
-              <label class="lbl">Match threshold (%) — how close counts as "Original"</label>
-              <input id="libcmp-threshold" type="number" min="50" max="99" value="85" onchange="saveLibCmpThreshold()">
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><span class="card-head-icon">🔍</span><span class="card-head-title">COMPARE IMAGES</span><span style="margin-left:auto;font-size:10px;color:var(--text3);font-family:var(--mono);">up to 5 at once</span></div>
-          <div class="card-body">
-            <div class="dropzone" id="libcmp-drop" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="libCmpDrop(event)" onclick="document.getElementById('libcmp-file').click()">
-              <input type="file" id="libcmp-file" multiple accept="image/*" style="display:none;" onchange="libCmpUpload(this)">
-              <div class="dz-icon">🖼</div><div class="dz-text">CLICK OR DRAG UP TO 5 IMAGES</div><div class="dz-sub">.jpg · .png · .webp</div>
-            </div>
-            <div class="g2" style="margin-top:10px;align-items:end;">
-              <div class="fg" style="margin-bottom:0;"><label class="lbl">...or paste image link(s), one per line</label><textarea id="libcmp-links" placeholder="https://..." style="min-height:44px;"></textarea></div>
-              <button class="btn btn-ghost" onclick="libCmpUseLinks()">Use Link(s)</button>
-            </div>
-            <div id="libcmp-queue" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;"></div>
-            <div style="display:flex;gap:8px;margin-top:14px;">
-              <button class="btn btn-t1" onclick="runLibCompare()" id="libcmp-run-btn">▶ COMPARE</button>
-              <button class="btn btn-ghost btn-sm" onclick="clearLibCmpQueue()">CLEAR</button>
-            </div>
-            <div id="libcmp-model-status" style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;"></div>
-          </div>
-        </div>
-
-        <div id="libcmp-results"></div>
-
       </div>
 
     </div>
@@ -1345,6 +1288,328 @@ function isDriveStorageError(msg){
   return /Service error: Drive/i.test(msg||'') || /Limit Exceeded:\s*Drive/i.test(msg||'');
 }
 
+// ══════════════════════════════════════════════════════════════
+//  FAST UPLOAD ENGINE (v3, 2026-09-28) — FAST_ENGINE_BEGIN
+//
+//  WHY THIS EXISTS: every image used to travel browser → Apps Script →
+//  Drive, one Apps Script execution per image, each doing ~12 Drive and
+//  Sheet operations. Apps Script only runs ~30 executions at once for
+//  the WHOLE script, shared by all 13+ DCs, dashboards, pollers and
+//  agents — so at end-of-shift peaks uploads just queue behind each
+//  other (700 images ≈ 2.5 hours).
+//
+//  NOW: Apps Script is out of the image path. The browser
+//    1. asks Apps Script for a batch of Drive upload sessions in ONE
+//       call (24 images per call, requested one chunk ahead),
+//    2. PUTs the compressed JPEG straight to Google Drive (8 at once —
+//       limited by the DC's own internet, not by Apps Script),
+//    3. writes the Drive link into Supabase itself.
+//  If anything about the direct route fails, that image automatically
+//  falls back to the old uploadImageDrive path, and after a few
+//  consecutive failures this tab stops trying the direct route at all.
+// ══════════════════════════════════════════════════════════════
+const FAST_UPLOAD={
+  concurrency:8,        // images uploading at once, straight to Google
+  sessionChunk:24,      // upload sessions requested from Apps Script per call
+  maxAttempts:3,        // direct attempts per image before the standard path
+  breakerThreshold:4,   // consecutive direct failures before this tab gives up on direct
+  putTimeoutMs:90000,   // one image should never take this long
+  compressParallel:3    // images being resized at once (keeps the tab responsive)
+};
+let fastConsecutiveFails=0, fastBreakerTripped=false;
+const fastSleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+// Kill switches: ?fast=0 in the URL, or localStorage cv_fast_upload='0'.
+function fastUploadEnabled(){
+  try{ if(new URLSearchParams(location.search).get('fast')==='0') return false; }catch(e){}
+  try{ if(localStorage.getItem('cv_fast_upload')==='0') return false; }catch(e){}
+  return !fastBreakerTripped;
+}
+function fastTripBreaker(why){
+  if(fastBreakerTripped) return;
+  fastBreakerTripped=true;
+  console.warn('Fast upload switched off for this tab — using the standard upload instead. Reason:', why);
+  try{ toast('⚠️ Fast upload unavailable — using the standard (slower) upload','err'); }catch(e){}
+  updateFastBadge();
+}
+function updateFastBadge(){
+  const el=document.getElementById('fast-badge');
+  if(!el) return;
+  const on=fastUploadEnabled();
+  el.className='pill '+(on?'pill-ok':'pill-warn');
+  el.textContent=on?'⚡ FAST UPLOAD':'STANDARD UPLOAD';
+}
+// Errors that will fail identically for every image — trip immediately
+// instead of burning retries (e.g. new Code.gs not deployed yet, or the
+// Drive API service not added in Apps Script).
+function fastIsConfigError(msg){
+  return /Unknown action|Drive API|accessNotConfigured|has not been used|is disabled|insufficient|not authorized|invalid_grant/i.test(msg||'');
+}
+
+// Strict JSON call to Apps Script: an HTML "busy" page is an ERROR here
+// (the older gsPost() treats it as success, which hides failures).
+async function gsPostStrict(data, retries){
+  retries=(retries==null)?2:retries;
+  let lastErr='';
+  for(let a=0;a<=retries;a++){
+    try{
+      const resp=await fetch(GS_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify(data),redirect:'follow',cache:'no-store'});
+      const text=await resp.text();
+      const t=text.trimStart();
+      if(t.startsWith('{')||t.startsWith('[')) return JSON.parse(text);
+      lastErr='non-JSON reply (Apps Script busy?): '+text.slice(0,80);
+    }catch(e){ lastErr=e.message; }
+    if(a<retries) await fastSleep(800*(a+1));
+  }
+  throw new Error(lastErr);
+}
+
+async function fastRequestSessions(items){
+  const res=await gsPostStrict({
+    action:'getUploadSessions', location:myLoc(), origin:location.origin,
+    items:items.map(it=>({awb:it.awb,type:it.type||'xray',forced:!!it.forced}))
+  },2);
+  if(res&&res.error) throw new Error(res.error);
+  if(!res||!Array.isArray(res.sessions)||res.sessions.length!==items.length) throw new Error('Apps Script returned the wrong number of upload sessions');
+  return res.sessions;
+}
+
+// Straight to Google. One PUT carries the whole (small) file.
+async function fastPut(uri, blob){
+  const ctrl=new AbortController();
+  const to=setTimeout(()=>ctrl.abort(), FAST_UPLOAD.putTimeoutMs);
+  try{
+    const r=await fetch(uri,{method:'PUT',body:blob,signal:ctrl.signal});
+    if(!r.ok) throw new Error('Drive upload HTTP '+r.status);
+    let meta=null; try{ meta=await r.json(); }catch(e){}
+    if(!meta||!meta.id) throw new Error('Drive accepted the upload but returned no file id');
+    return meta;
+  } finally { clearTimeout(to); }
+}
+
+// Same columns/flags the old server-side patch wrote.
+async function fastLink(item, url){
+  const colMap={label:'label_image_url',front:'front_image_url',back:'back_image_url',xray:'xray_image_url',product:'product_image_url'};
+  const col=colMap[item.type||'xray']||'xray_image_url';
+  const payload={}; payload[col]=url;
+  if((item.type||'xray')==='xray') payload.image_linked=true;
+  if(item.forced){
+    payload.manually_corrected=true;
+    payload.corrected_by=item.operatorEmail||'';
+    payload.corrected_at=new Date().toISOString();
+  }
+  for(let a=0;a<4;a++){
+    try{ if(await sbPatch('scans','id=eq.'+encodeURIComponent(item.scanId),payload)) return true; }catch(e){}
+    await fastSleep(400*(a+1));
+  }
+  return false;
+}
+
+// Standard (old) route — used only as the fallback.
+async function legacyUploadOne(item, blob){
+  try{
+    const b64=await blobToB64(blob);
+    const fn=todayStr().replace(/-/g,'')+'_'+item.awb+'_'+(item.type||'xray')+'.jpg';
+    const body={action:'uploadImageDrive',fileName:fn,base64:b64,mimeType:'image/jpeg',location:myLoc(),awb:item.awb,type:item.type||'xray',scanId:item.scanId,forced:!!item.forced,operatorEmail:item.operatorEmail||''};
+    let res=await gsPost(body);
+    if(!(res&&res.ok&&res.url) && !isDriveStorageError(res&&res.error)){
+      await fastSleep(800);
+      res=await gsPost(body);
+    }
+    return res||{};
+  }catch(e){ return {error:e.message}; }
+}
+
+// Small counting gate: at most N images are being decoded/resized at once.
+const fastGate={active:0,queue:[]};
+async function fastGateAcquire(){
+  if(fastGate.active<FAST_UPLOAD.compressParallel){ fastGate.active++; return; }
+  await new Promise(r=>fastGate.queue.push(r));   // slot is handed over on release
+}
+function fastGateRelease(){
+  const n=fastGate.queue.shift();
+  if(n) n(); else fastGate.active--;
+}
+async function fastGetBlob(item){
+  await fastGateAcquire();
+  try{
+    let b=null;
+    if(item.blob) b=item.blob;
+    else if(item.file) b=await compressFileForUpload(item.file);
+    else if(item.dataUrl) b=await (await fetch(item.dataUrl)).blob();
+    if(!b) throw new Error('could not read/resize this image');
+    await fastSleep(0);   // let the browser paint between images
+    return b;
+  } finally { fastGateRelease(); }
+}
+
+// One image, start to finish. Never throws for upload problems — returns
+// {ok, url, fileId, path:'direct'|'legacy', error}.
+async function fastProcessOne(item, getSession){
+  let url=item.url||'', fileId=item.fileId||'', directErr='';
+  if(!url){
+    let blob;
+    try{ blob=await fastGetBlob(item); }
+    catch(e){ return {ok:false,error:e.message,path:'none'}; }
+
+    if(fastUploadEnabled()){
+      for(let attempt=0; attempt<FAST_UPLOAD.maxAttempts; attempt++){
+        if(!fastUploadEnabled()) break;                     // breaker tripped meanwhile
+        try{
+          const sess=(attempt===0)?await getSession():(await fastRequestSessions([item]))[0];
+          if(!sess||!sess.ok||!sess.uri) throw new Error((sess&&sess.error)||'no upload session');
+          const meta=await fastPut(sess.uri, blob);
+          fileId=meta.id;
+          url='https://drive.google.com/uc?export=view&id='+fileId;
+          fastConsecutiveFails=0;
+          break;
+        }catch(e){
+          directErr=e.message;
+          if(fastIsConfigError(directErr)){ fastTripBreaker(directErr); break; }
+          if(attempt<FAST_UPLOAD.maxAttempts-1) await fastSleep(500*(attempt+1));
+        }
+      }
+      if(!url && fastUploadEnabled()){
+        fastConsecutiveFails++;
+        if(fastConsecutiveFails>=FAST_UPLOAD.breakerThreshold) fastTripBreaker(directErr||'repeated failures');
+      }
+    }
+
+    if(!url){   // fall back to the standard route (it also writes Supabase + the Sheet itself)
+      const res=await legacyUploadOne(item, blob);
+      if(res&&res.ok&&res.url) return {ok:true,url:res.url,fileId:res.fileId||'',path:'legacy'};
+      return {ok:false,error:(directErr?('fast: '+directErr+' | '):'')+'standard: '+((res&&res.error)||'no url returned'),path:'legacy',url:(res&&res.url)||''};
+    }
+  }
+  item.url=url; item.fileId=fileId;   // remembered so a retry only re-does the link step
+  if(!(await fastLink(item,url))) return {ok:false,url,fileId,path:'direct',uploadedOnly:true,error:'uploaded to Drive but the link could not be saved to the database'};
+  return {ok:true,url,fileId,path:'direct'};
+}
+
+// items: [{key, awb, scanId, type, forced, operatorEmail, file | dataUrl | blob, synced}]
+// opts : {concurrency, onProgress({total,done,ok,failed,direct,legacy,elapsedMs})}
+// returns results[] aligned with items.
+async function fastUploadBatch(items, opts){
+  opts=opts||{};
+  const total=items.length, results=new Array(total);
+  if(!total) return results;
+  window._uploading=(window._uploading||0)+1;
+  const conc=Math.max(1,Math.min(opts.concurrency||FAST_UPLOAD.concurrency,total));
+  const CH=FAST_UPLOAD.sessionChunk;
+
+  // Only images that still need a Drive upload need a session.
+  const needs=[], pos=new Map();
+  items.forEach((it,i)=>{ if(!it.url){ pos.set(i,needs.length); needs.push(i); } });
+  const chunkPromises=[];
+  const chunkCount=Math.ceil(needs.length/CH);
+  function chunkFor(ci){
+    if(!chunkPromises[ci]){
+      const idxs=needs.slice(ci*CH,(ci+1)*CH);
+      const p=fastRequestSessions(idxs.map(k=>items[k]));
+      p.catch(()=>{});                    // awaited per item below; avoid a duplicate unhandled warning
+      chunkPromises[ci]=p;
+    }
+    return chunkPromises[ci];
+  }
+  async function sessionFor(i){
+    const p=pos.get(i), ci=Math.floor(p/CH);
+    const arr=await chunkFor(ci);
+    if(ci+1<chunkCount && (p%CH)>=Math.floor(CH/2)) chunkFor(ci+1);   // request the next chunk while this one uploads
+    return arr[p%CH];
+  }
+
+  let next=0, done=0, okCount=0, failCount=0, direct=0, legacy=0;
+  const t0=Date.now();
+  const report=()=>{ if(opts.onProgress){ try{ opts.onProgress({total,done,ok:okCount,failed:failCount,direct,legacy,elapsedMs:Date.now()-t0}); }catch(e){} } };
+  async function worker(){
+    while(true){
+      const i=next++;
+      if(i>=total) return;
+      let r;
+      try{ r=await fastProcessOne(items[i], ()=>sessionFor(i)); }
+      catch(e){ r={ok:false,error:e.message,path:'none'}; }
+      results[i]=r; done++;
+      if(r.ok){ okCount++; if(r.path==='legacy') legacy++; else direct++; } else failCount++;
+      report();
+    }
+  }
+  try{
+    if(needs.length && fastUploadEnabled()) chunkFor(0);      // sessions for the first chunk start immediately
+    await Promise.all(Array.from({length:conc},worker));
+  } finally {
+    window._uploading=Math.max(0,(window._uploading||1)-1);
+  }
+  return results;
+}
+
+// Records-sheet stragglers (scans already synced before their image
+// arrived): ONE call per 200 images instead of one sheet search each.
+// Non-blocking and non-fatal — Supabase already has the link.
+function fastReconcileSheet(items, results){
+  const patch=[];
+  items.forEach((it,i)=>{
+    const r=results[i];
+    if(r&&r.ok&&r.path==='direct'&&it.synced) patch.push({scanId:it.scanId,type:it.type||'xray',url:r.url,forced:!!it.forced,operatorEmail:it.operatorEmail||''});
+  });
+  for(let i=0;i<patch.length;i+=200){
+    gsPostStrict({action:'patchRecordImagesBatch',items:patch.slice(i,i+200)},1)
+      .catch(e=>console.warn('Records-sheet reconcile failed (non-fatal, Supabase already has the link):',e.message));
+  }
+}
+
+function fastFmtEta(ms){
+  if(!isFinite(ms)||ms<0) return '…';
+  const s=Math.round(ms/1000);
+  return s<60?(s+'s'):(Math.floor(s/60)+'m '+String(s%60).padStart(2,'0')+'s');
+}
+
+// Admin go/no-go check: creates one real test file through the whole
+// direct route and reports each step in plain language.
+async function fastUploadSelfTest(){
+  const lines=[]; let allOk=true;
+  const add=(ok,msg)=>{ lines.push((ok?'✅ ':'❌ ')+msg); if(!ok) allOk=false; };
+  showLoad('Testing the fast upload path...');
+  try{
+    let t=performance.now(), sess=null;
+    try{
+      const res=await gsPostStrict({action:'getUploadSessions',location:'SELFTEST',origin:location.origin,selftest:true,items:[{awb:'SELFTEST',type:'xray'}]},1);
+      if(res.error) throw new Error(res.error);
+      sess=res.sessions&&res.sessions[0];
+      if(!sess||!sess.ok) throw new Error((sess&&sess.error)||'no session returned');
+      add(true,'Apps Script created a Drive upload session ('+Math.round(performance.now()-t)+' ms)');
+    }catch(e){
+      add(false,'Session creation failed: '+e.message
+        +(/Unknown action/i.test(e.message)?'\n     → the new Code.gs version is not deployed yet.':'')
+        +(/Drive API|not been used|disabled|accessNotConfigured/i.test(e.message)?'\n     → Apps Script editor: Services (+) → Drive API → Add, then run testDriveSessionAuth().':''));
+      throw new Error('__stop');
+    }
+    const c=document.createElement('canvas'); c.width=48; c.height=48;
+    const g=c.getContext('2d'); g.fillStyle='#00c853'; g.fillRect(0,0,48,48); g.fillStyle='#fff'; g.fillRect(12,12,24,24);
+    const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',0.8));
+    let meta=null; t=performance.now();
+    try{
+      meta=await fastPut(sess.uri, blob);
+      add(true,'Browser uploaded straight to Google Drive ('+Math.round(performance.now()-t)+' ms)');
+    }catch(e){
+      add(false,'Direct upload to Drive failed: '+e.message
+        +'\n     → "Failed to fetch" here means the browser was blocked (CORS). Operators keep working on the standard upload.');
+      throw new Error('__stop');
+    }
+    try{
+      const v=await gsPostStrict({action:'verifyPublicFiles',ids:[meta.id]},1);
+      const r0=v.results&&v.results[0];
+      if(r0&&r0.publicImage) add(true,'The file is viewable by operators (public image, HTTP '+r0.status+')');
+      else add(false,'File uploaded but is NOT publicly viewable (HTTP '+(r0&&r0.status)+', '+(r0&&r0.contentType)+').\n     → Share the "SF ClearView v2 Images" folder as "Anyone with the link → Viewer".');
+    }catch(e){ add(false,'Could not verify public access: '+e.message); }
+  }catch(e){ if(e.message!=='__stop') add(false,'Unexpected error: '+e.message); }
+  hideLoad();
+  if(allOk){ fastBreakerTripped=false; fastConsecutiveFails=0; }
+  updateFastBadge();
+  alert('FAST UPLOAD SELF-TEST\n\n'+lines.join('\n')+'\n\n'+(allOk?'ALL GOOD — fast upload is ready.':'NOT READY — see the ❌ above. Operators are not affected: they automatically use the standard upload.'));
+  return allOk;
+}
+// FAST_ENGINE_END
+
 // FIX (2026-07-21): the folder-match list used to embed the FULL
 // original photo as the <img src> for every row, even though it only
 // ever displays at 28×22px — meaning selecting a 300-600 file folder
@@ -1501,11 +1766,11 @@ function show(id){
   const nm={'v-scan':'ni-scan','v-shift':'ni-shift','v-rec':'ni-rec','v-shiftlog':'ni-shiftlog',
             'v-adash':'ni-adash','v-ausers':'ni-ausers','v-aloc':'ni-aloc',
             'v-aawb':'ni-aawb','v-arec':'ni-arec','v-adhere':'ni-adhere','v-shifts':'ni-shifts',
-            'v-xraylib':'ni-xraylib','v-libcompare':'ni-libcompare'};
+            'v-xraylib':'ni-xraylib'};
   const tm={'v-scan':'SCAN AWB','v-shift':'END OF SHIFT','v-rec':'MY RECORDS','v-shiftlog':'SHIFT LOG',
             'v-adash':'DASHBOARD','v-ausers':'USERS','v-aloc':'LOCATIONS',
             'v-aawb':'AWB MASTER','v-arec':'ALL RECORDS','v-adhere':'ADHERENCE','v-shifts':'SHIFT LOGS',
-            'v-xraylib':'X-RAY REFERENCE','v-libcompare':'IMAGE COMPARE'};
+            'v-xraylib':'X-RAY REFERENCE'};
   if(nm[id]) document.getElementById(nm[id])?.classList.add('on');
   document.getElementById('tb-title').textContent=tm[id]||id;
   if(id==='v-scan'){
@@ -1521,13 +1786,13 @@ function show(id){
   // pattern as the Admin Dashboard, pulling fresh data straight from
   // Supabase every 30s while either of these two screens is on screen.
   if(id==='v-scan' || id==='v-shift'){
-    // FIX (2026-09-26, urgent): same reasoning as dashAutoRefreshTimer
-    // above — 30s, synchronized across every operator session at every
-    // location, is sustained load competing with real image uploads for
-    // the same Supabase/Apps Script capacity. Widened to 120-180s,
-    // randomized per session.
+    // 120-180s, randomised per session so 40+ open sessions never fire in
+    // lock-step; skipped while the tab is hidden and while ANY upload is in
+    // flight (a refresh mid-upload could briefly show old "pending" state).
     var opJitter=120000+Math.floor(Math.random()*60000);
     opAutoRefreshTimer=setInterval(async function(){
+      if(document.hidden) return;
+      if((window._uploading||0)>0) return;
       try{ await loadRecords(); }catch(e){ console.warn('opAutoRefresh failed:', e.message); return; }
       if(id==='v-scan') updateStats();
       else renderShift();
@@ -1559,19 +1824,9 @@ function show(id){
   // clearInterval at the top of this function).
   if(id==='v-adash'){
     refreshDashboard();
-    // FIX (2026-09-26, urgent): 45s was too aggressive combined with
-    // opAutoRefreshTimer below — every admin/operator session polling
-    // Supabase on its own fixed clock meant dozens of sessions across
-    // 13+ locations tending to fire in near-lockstep (a "thundering
-    // herd"), competing directly with actual image-upload traffic for
-    // the same capacity. Leading suspect for the system-wide "images
-    // uploading issue, ~10% pending" pattern reported starting right
-    // after this auto-refresh shipped. Widened to a 90-120s randomized
-    // interval (jitter per session) — still auto-refreshes without a
-    // manual reload, at a fraction of the load, desynchronized across
-    // sessions instead of clustering.
+    // 90-120s randomised per session; skipped in a hidden tab.
     var dashJitter=90000+Math.floor(Math.random()*30000);
-    dashAutoRefreshTimer=setInterval(refreshDashboard, dashJitter);
+    dashAutoRefreshTimer=setInterval(function(){ if(!document.hidden) refreshDashboard(); }, dashJitter);
   }
   if(id==='v-ausers') renderUsers();
   if(id==='v-aloc')   renderLocs();
@@ -1593,13 +1848,7 @@ function show(id){
     if(!DB.xrayLib.length) loadXrayLibrary(false);
     else { renderXrayLibCategories(); renderXrayLibGrid(); }
   }
-  if(id==='v-libcompare'){
-    const adminCard=document.getElementById('libcmp-admin-card');
-    if(adminCard) adminCard.style.display=isAdmin?'block':'none';
-    const th=document.getElementById('libcmp-threshold');
-    if(th) th.value=localStorage.getItem('cv_libcmp_threshold')||85;
-    if(isAdmin) refreshLibIndexStatus();
-  }
+
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1753,6 +2002,7 @@ function doLogout(){
   if(opAutoRefreshTimer){ clearInterval(opAutoRefreshTimer); opAutoRefreshTimer=null; }
   CU=null; isAdmin=false; isSupervisor=false; isPoc=false;
   clearSession();
+  lastFailedItems=[];
   document.getElementById('app').style.display='none';
   document.getElementById('loginScreen').style.display='flex';
   document.getElementById('l-email').value='';
@@ -1784,51 +2034,68 @@ async function loadLocs(){
     try{ sessionStorage.setItem('cv_locs_v2',JSON.stringify(DB.locations)); }catch(e){}
   }catch(e){ console.warn('loadLocs GAS:',e.message); }
 }
+// ══════════════════════════════════════════════════════════════
+//  DAY LOADER (v3, 2026-09-28)
+//  Supabase is the live source of truth and still holds every scan
+//  (cleanup is paused), so dashboards no longer ask Apps Script to read
+//  the whole Records sheet on every refresh. The Sheet is only consulted
+//  for an older day Supabase has nothing for. Set
+//  SUPABASE_IS_AUTHORITATIVE=false to go back to always merging both.
+//  Dashboards also fetch only the ~9 columns they display (All Records
+//  and CSV still fetch everything).
+// ══════════════════════════════════════════════════════════════
+const SUPABASE_IS_AUTHORITATIVE=true;
+const DASH_COLS='id,awb,scanned_at,location_code,operator_email,result,xray_image_url,product_image_url,manually_corrected';
+let allRecView=[];   // exactly what All Records is showing — used by CSV export and the image viewer
+
+function nextDateStr(d){
+  const b=new Date(d+'T12:00:00Z'); b.setUTCDate(b.getUTCDate()+1);
+  return b.toISOString().split('T')[0];
+}
+function normalizeSheetRecord(r){
+  return {
+    id:r.id||'', awb:r.awb||r.AWB||'',
+    scanned_at:r.scanned_at||r.Date||'',
+    location_code:r.location_code||r.Location||'',
+    operator_email:r.operator_email||r.Operator||'',
+    result:r.result||r['X-Ray Result']||'',
+    tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
+    shoe_box:r.shoe_box||r.Shoe||'N/A',
+    remarks:r.remarks||r.Remarks||'',
+    xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
+    product_image_url:r.product_image_url||r['Product Image']||'',
+    product_name:r.product_name||r['Product Name']||'',
+    product_category:r.product_category||r.Category||'',
+    image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
+    synced_to_sheet:true
+  };
+}
+async function fetchDayRecords(date, full){
+  const cols=full?'*':DASH_COLS;
+  const sb=await sbGetAll('/rest/v1/scans?select='+cols+'&scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lt.'+nextDateStr(date)+'T00:00:00%2B05:30&order=scanned_at.desc');
+  const sbRecs=Array.isArray(sb)?sb:[];
+  const isToday=(date===todayStr());
+  const needSheet=!SUPABASE_IS_AUTHORITATIVE || (!isToday && sbRecs.length===0);
+  if(!needSheet) return sbRecs;
+  let gsRecs=[];
+  try{
+    const gsData=await gsGet({action:'records',date:date});
+    gsRecs=Array.isArray(gsData)?gsData.map(normalizeSheetRecord):[];
+  }catch(e){ console.warn('GSheet skipped:',e.message); }
+  const sbIds=new Set(sbRecs.map(r=>r.id));
+  const merged=sbRecs.slice();
+  gsRecs.forEach(function(gr){
+    if(gr.id&&sbIds.has(gr.id)) return;
+    const dup=merged.find(r=>r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at));
+    if(!dup) merged.push(gr);
+  });
+  return merged.sort((a,b)=>new Date(b.scanned_at)-new Date(a.scanned_at));
+}
+
 async function loadRecords(){
   const today=todayStr();
   if(isAdmin||isSupervisor||isPoc){
-    // Admin/Supervisor/POC: Supabase (live unsynced) + GSheet (already synced) merged
-    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+today+'T00:00:00%2B05:30&order=scanned_at.desc');
-    const sbRecs=Array.isArray(sbData)?sbData:[];
-
-    // Load today's synced records from GSheet via GAS
-    let gsRecs=[];
-    try{
-      const gsData=await gsGet({action:'records',date:today});
-      console.log('GSheet returned', Array.isArray(gsData)?gsData.length:0, 'records for', today);
-      // Normalize GSheet field names to match Supabase schema
-      gsRecs=Array.isArray(gsData)?gsData.map(function(r){
-        return {
-          id:           r.id||'',
-          awb:          r.awb||r.AWB||'',
-          scanned_at:   r.scanned_at||r.Date||'',
-          location_code:r.location_code||r.Location||'',
-          operator_email:r.operator_email||r.Operator||'',
-          result:       r.result||r['X-Ray Result']||'',
-          tamper_status:r.tamper_status||r['Tamper Status']||'',
-          shoe_box:     r.shoe_box||r.Shoe||'',
-          remarks:      r.remarks||r.Remarks||'',
-          xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
-          product_name: r.product_name||r['Product Name']||'',
-          product_category:r.product_category||r.Category||'',
-          image_linked: !!(r.xray_image_url||r['X-Ray Image']||''),
-          synced_to_sheet:true
-        };
-      }):[];
-    }catch(e){ console.warn('GSheet load skipped:',e.message); }
-
-    // Merge — dedupe by id first, then awb+time
-    const merged=[...sbRecs];
-    const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
-    gsRecs.forEach(function(gr){
-      if(gr.id&&sbIds.has(gr.id)) return; // already in Supabase set
-      const exists=merged.find(function(r){
-        return r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at);
-      });
-      if(!exists) merged.push(gr);
-    });
-    // Sort by time desc
-    DB.records=scopeRecs(merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);}));
+    DB.records=scopeRecs(await fetchDayRecords(today,false));
   } else {
     // Operator: check sessionStorage for post-EOS records first
     const cacheKey='cv_synced_records_'+today+'_'+myLoc();
@@ -1877,20 +2144,25 @@ let libActiveCat = '';
 let libActiveSubcat = '';
 let libCurrentIdx = null;
 
+// v3: cached for 30 minutes across tabs (localStorage) instead of per-tab
+// sessionStorage — the reference library changes rarely, and every fresh
+// tab used to cost an Apps Script call. ↻ Refresh always bypasses it.
+const LIB_CACHE_KEY='cv_xraylib_v2', LIB_CACHE_TTL_MS=30*60*1000;
+function libCacheGet(){ try{ const o=JSON.parse(localStorage.getItem(LIB_CACHE_KEY)||'null'); if(o&&Array.isArray(o.d)&&(Date.now()-o.t)<LIB_CACHE_TTL_MS) return o.d; }catch(e){} return null; }
+function libCacheSet(d){ try{ localStorage.setItem(LIB_CACHE_KEY,JSON.stringify({t:Date.now(),d:d})); }catch(e){} }
+function libCacheClear(){ try{ localStorage.removeItem(LIB_CACHE_KEY); }catch(e){} try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){} }
+
 async function loadXrayLibrary(forceRefresh){
-  const cacheKey='cv_xraylib_v1';
   if(!forceRefresh){
-    const cached=sessionStorage.getItem(cacheKey);
-    if(cached){
-      try{ DB.xrayLib=JSON.parse(cached); renderXrayLibCategories(); renderXrayLibGrid(); return; }catch(e){}
-    }
+    const cached=libCacheGet();
+    if(cached){ DB.xrayLib=cached; renderXrayLibCategories(); renderXrayLibGrid(); return; }
   }
   const loadingEl=document.getElementById('lib-loading');
   if(loadingEl) loadingEl.style.display='inline';
   try{
     const data=await gsGet({action:'xrayLibrary'});
     DB.xrayLib=Array.isArray(data)?data:[];
-    try{ sessionStorage.setItem(cacheKey, JSON.stringify(DB.xrayLib)); }catch(e){ /* payload too big for sessionStorage — fine, just re-fetches next time */ }
+    libCacheSet(DB.xrayLib);
   }catch(e){
     toast('Failed to load reference library: '+e.message,'err');
   }
@@ -1913,10 +2185,10 @@ async function forceRefreshLibrary(){
   if(!isAdmin){ toast('Admin only','err'); return; }
   showLoad('Force refreshing reference library from the Sheet...');
   try{
-    try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){}
+    libCacheClear();
     const data=await gsGet({action:'xrayLibrary', refresh:'true'});
     DB.xrayLib=Array.isArray(data)?data:[];
-    try{ sessionStorage.setItem('cv_xraylib_v1', JSON.stringify(DB.xrayLib)); }catch(e){}
+    libCacheSet(DB.xrayLib);
 
     let orphansRemoved=0, metadataSynced=0;
     try{
@@ -1956,11 +2228,9 @@ async function forceRefreshLibrary(){
           if(ok) metadataSynced++;
         }));
       }
-      if(orphansRemoved||metadataSynced) libLibraryEmbeddings=null; // force a fresh fetch next Compare run
     }catch(e){ console.warn('Embedding reconciliation skipped:',e.message); }
 
     renderXrayLibCategories(); renderXrayLibGrid();
-    if(document.getElementById('libcmp-index-status')) refreshLibIndexStatus();
     hideLoad();
     toast('Refreshed — '+DB.xrayLib.length+' item(s) direct from the Sheet'
       +(metadataSynced?', synced '+metadataSynced+' comparison-model categor'+(metadataSynced===1?'y':'ies'):'')
@@ -2084,11 +2354,11 @@ async function deleteLibItem(){
     hideLoad();
     if(res?.ok){
       DB.xrayLib=DB.xrayLib.filter(x=>x.awb!==it.awb);
-      try{ sessionStorage.removeItem('cv_xraylib_v1'); }catch(e){}
+      libCacheClear();
       // Also drop its embedding, if the Image Compare index has one —
       // an orphaned embedding would keep showing a deleted item as a
       // "closest match" forever otherwise.
-      try{ await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(it.awb)); libLibraryEmbeddings=null; }catch(e){}
+      try{ await sbDelete('library_embeddings','awb=eq.'+encodeURIComponent(it.awb)); }catch(e){}
       document.getElementById('modal-libview').style.display='none';
       renderXrayLibCategories(); renderXrayLibGrid();
       toast('Removed '+it.awb+' from the reference library'+(res.drive&&res.drive!=='trashed'?' — note: '+res.drive:''),'ok');
@@ -2099,274 +2369,6 @@ async function deleteLibItem(){
     hideLoad();
     toast('Delete failed: '+e.message,'err');
   }
-}
-
-// ══════════════════════════════════════════════════════════════
-//  IMAGE COMPARE — upload/paste up to 5 images, compare each against
-//  every embedding in library_embeddings, show a verdict + closest
-//  matches. Runs entirely client-side (CLIP model via Transformers.js,
-//  loaded lazily via dynamic import ONLY when this tab is opened — it
-//  never loads on login/Scan AWB/anywhere else, so it can't slow down
-//  or affect the actual scanning workflow in any way). The only
-//  server-side piece is getImagesAsB64 in Code.gs, which exists solely
-//  to sidestep a browser CORS restriction on reading Drive images —
-//  see the comment there for why.
-//
-//  IMPORTANT — read this before judging results:
-//  This is image-similarity search, not a certified fraud detector.
-//  The reference library only contains genuine/original images, so
-//  there's nothing to train a real/fake classifier on. "ORIGINAL"
-//  means "closely matches something already confirmed genuine";
-//  "NO CLOSE MATCH" means "nothing in the library looks like this" —
-//  which is a strong, honest signal, but always shown next to the
-//  actual closest matches so a human can see exactly why.
-// ══════════════════════════════════════════════════════════════
-let libCmpQueue = [];           // [{name, dataUrl}]
-let libCmpExtractor = null;     // {processor, model}, loaded once, cached for the tab's lifetime
-let libLibraryEmbeddings = null; // fetched once per session, cached in memory only (never sessionStorage — 1600+ vectors is too large for that quota)
-
-async function ensureLibCmpModel(){
-  if(libCmpExtractor) return libCmpExtractor;
-  const statusEl=document.getElementById('libcmp-model-status');
-  if(statusEl) statusEl.textContent='Loading comparison model (first time only, ~90MB, cached by the browser after)...';
-  const { AutoProcessor, CLIPVisionModelWithProjection, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-  env.allowLocalModels=false;
-  const processor=await AutoProcessor.from_pretrained('Xenova/clip-vit-base-patch32');
-  const model=await CLIPVisionModelWithProjection.from_pretrained('Xenova/clip-vit-base-patch32', {quantized:true});
-  libCmpExtractor={processor, model};
-  if(statusEl) statusEl.textContent='Model ready.';
-  return libCmpExtractor;
-}
-
-function l2normalize(vec){
-  let sum=0; for(let i=0;i<vec.length;i++) sum+=vec[i]*vec[i];
-  const norm=Math.sqrt(sum)||1;
-  return vec.map(v=>v/norm);
-}
-function cosineSim(a,b){
-  // Both vectors are L2-normalized at storage/compute time, so a plain
-  // dot product IS the cosine similarity — no extra division needed.
-  let dot=0; for(let i=0;i<a.length;i++) dot+=a[i]*(b[i]||0);
-  return dot;
-}
-
-async function computeImageEmbedding(dataUrl){
-  const { RawImage } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-  const { processor, model } = await ensureLibCmpModel();
-  const image = await RawImage.fromURL(dataUrl);
-  const inputs = await processor(image);
-  const { image_embeds } = await model(inputs);
-  return l2normalize(Array.from(image_embeds.data));
-}
-
-async function ensureLibraryEmbeddingsLoaded(){
-  if(libLibraryEmbeddings) return libLibraryEmbeddings;
-  const data=await sbGetAll('/rest/v1/library_embeddings?select=awb,product_name,category,image_url,embedding');
-  libLibraryEmbeddings=Array.isArray(data)?data:[];
-  return libLibraryEmbeddings;
-}
-
-// ── ADMIN: build/update the search index ──────────────────────
-async function buildLibraryIndex(){
-  if(!isAdmin){ toast('Admin only','err'); return; }
-  const btn=document.getElementById('libcmp-build-btn');
-  const statusEl=document.getElementById('libcmp-index-status');
-  const progEl=document.getElementById('libcmp-index-progress');
-  const progWrap=document.getElementById('libcmp-index-prog');
-  const progBar=document.getElementById('libcmp-index-prog-bar');
-  btn.disabled=true;
-  try{ await ensureLibCmpModel(); }
-  catch(e){ toast('Failed to load comparison model: '+e.message,'err'); btn.disabled=false; return; }
-
-  if(!DB.xrayLib.length) await loadXrayLibrary(false);
-
-  let existing=[];
-  try{ existing=await sbGetAll('/rest/v1/library_embeddings?select=awb'); }catch(e){}
-  const existingSet=new Set(existing.map(r=>r.awb));
-  const todo=DB.xrayLib.filter(it=>!existingSet.has(it.awb));
-
-  if(!todo.length){
-    statusEl.textContent='Index up to date — '+DB.xrayLib.length+' item(s) indexed.';
-    btn.disabled=false; return;
-  }
-
-  progWrap.style.display='block'; progEl.style.display='inline';
-  let done=0, failed=0;
-  const BATCH=6; // keeps each Apps Script response modest in size/time
-  for(let i=0;i<todo.length;i+=BATCH){
-    const batch=todo.slice(i,i+BATCH);
-    progEl.textContent=done+'/'+todo.length+' indexed'+(failed?(' · '+failed+' failed'):'');
-    try{
-      const res=await gsPost({action:'getImagesAsB64', refs:batch.map(it=>it.image_url)});
-      const imagesMap=res?.images||{};
-      for(const it of batch){
-        const dataUrl=imagesMap[it.image_url];
-        if(!dataUrl){ failed++; continue; }
-        try{
-          const embedding=await computeImageEmbedding(dataUrl);
-          await sbPost('library_embeddings', {
-            awb:it.awb, product_name:it.product_name, category:it.category,
-            image_url:it.image_url, embedding:embedding
-          });
-          done++;
-        }catch(embErr){ failed++; console.warn('embed failed for',it.awb,embErr.message); }
-        progBar.style.width=Math.round(((done+failed)/todo.length)*100)+'%';
-      }
-    }catch(batchErr){
-      failed+=batch.length;
-      console.warn('batch fetch failed:',batchErr.message);
-    }
-  }
-  progEl.textContent=done+' indexed, '+failed+' failed, out of '+todo.length+' new item(s).';
-  statusEl.textContent='Index build complete — '+(existingSet.size+done)+' of '+DB.xrayLib.length+' total item(s) indexed.';
-  libLibraryEmbeddings=null; // force a fresh fetch on the next Compare run
-  btn.disabled=false;
-}
-
-async function refreshLibIndexStatus(){
-  const statusEl=document.getElementById('libcmp-index-status');
-  if(!statusEl) return;
-  statusEl.textContent='Checking index status...';
-  try{
-    if(!DB.xrayLib.length) await loadXrayLibrary(false);
-    const existing=await sbGetAll('/rest/v1/library_embeddings?select=awb');
-    statusEl.textContent=existing.length+' of '+DB.xrayLib.length+' library item(s) indexed.';
-  }catch(e){
-    statusEl.textContent='Could not check index status: '+e.message;
-  }
-}
-
-function saveLibCmpThreshold(){
-  const v=document.getElementById('libcmp-threshold').value;
-  localStorage.setItem('cv_libcmp_threshold', v);
-  toast('Threshold set to '+v+'%','ok');
-}
-
-// ── Upload / paste queue (max 5) ───────────────────────────────
-function libCmpDrop(e){
-  e.preventDefault(); document.getElementById('libcmp-drop').classList.remove('drag');
-  const files=Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
-  addFilesToLibCmpQueue(files);
-}
-function libCmpUpload(input){
-  const files=Array.from(input.files).filter(f=>f.type.startsWith('image/'));
-  addFilesToLibCmpQueue(files);
-  input.value='';
-}
-async function addFilesToLibCmpQueue(files){
-  for(const f of files){
-    if(libCmpQueue.length>=5){ toast('Max 5 images at a time','err'); break; }
-    const dataUrl=await readFile(f); // reuses the existing helper — handles BMP conversion too
-    libCmpQueue.push({name:f.name, dataUrl});
-  }
-  renderLibCmpQueue();
-}
-async function libCmpUseLinks(){
-  const raw=document.getElementById('libcmp-links').value.trim();
-  if(!raw) return;
-  const links=raw.split('\n').map(s=>s.trim()).filter(Boolean).slice(0, Math.max(0,5-libCmpQueue.length));
-  if(!links.length){ toast('Queue is full (max 5)','err'); return; }
-  showLoad('Fetching linked image(s)...');
-  try{
-    const res=await gsPost({action:'getImagesAsB64', refs:links});
-    const imagesMap=res?.images||{};
-    for(const link of links){
-      const dataUrl=imagesMap[link];
-      if(dataUrl){ libCmpQueue.push({name:link.slice(0,40), dataUrl}); continue; }
-      // Not a Drive link (or no access) — try a direct client-side fetch,
-      // which works fine for any host that sends normal CORS headers.
-      try{
-        const r=await fetch(link);
-        const blob=await r.blob();
-        const dUrl=await new Promise((res2,rej2)=>{const fr=new FileReader();fr.onload=e=>res2(e.target.result);fr.onerror=rej2;fr.readAsDataURL(blob);});
-        libCmpQueue.push({name:link.slice(0,40), dataUrl:dUrl});
-      }catch(fetchErr){
-        toast('Could not load image from: '+link.slice(0,50),'err');
-      }
-    }
-  }catch(e){
-    toast('Failed to fetch link(s): '+e.message,'err');
-  }
-  hideLoad();
-  document.getElementById('libcmp-links').value='';
-  renderLibCmpQueue();
-}
-function renderLibCmpQueue(){
-  const wrap=document.getElementById('libcmp-queue');
-  if(!wrap) return;
-  wrap.innerHTML=libCmpQueue.map((q,i)=>
-    '<div class="libcmp-qitem"><img src="'+q.dataUrl+'"><button class="rm" onclick="removeLibCmpItem('+i+')">✕</button></div>'
-  ).join('');
-}
-function removeLibCmpItem(i){ libCmpQueue.splice(i,1); renderLibCmpQueue(); }
-function clearLibCmpQueue(){
-  libCmpQueue=[];
-  renderLibCmpQueue();
-  const r=document.getElementById('libcmp-results'); if(r) r.innerHTML='';
-}
-
-// ── Run the actual comparison ───────────────────────────────────
-async function runLibCompare(){
-  if(!libCmpQueue.length){ toast('Add at least one image first','err'); return; }
-  const btn=document.getElementById('libcmp-run-btn');
-  const statusEl=document.getElementById('libcmp-model-status');
-  btn.disabled=true; btn.textContent='COMPARING...';
-  try{
-    await ensureLibCmpModel();
-    statusEl.textContent='Loading reference library index...';
-    const lib=await ensureLibraryEmbeddingsLoaded();
-    if(!lib.length){
-      toast('Search index is empty — ask an admin to Build/Update Index first','err');
-      btn.disabled=false; btn.textContent='▶ COMPARE';
-      return;
-    }
-    const threshold=(parseFloat(localStorage.getItem('cv_libcmp_threshold'))||85)/100;
-    statusEl.textContent='Comparing '+libCmpQueue.length+' image(s) against '+lib.length+' library entries...';
-    const results=[];
-    for(const q of libCmpQueue){
-      const embedding=await computeImageEmbedding(q.dataUrl);
-      const scored=lib.map(item=>({item, score:cosineSim(embedding, item.embedding)}))
-                       .sort((a,b)=>b.score-a.score)
-                       .slice(0,5);
-      results.push({query:q, matches:scored, verdict:(scored[0] && scored[0].score>=threshold)?'ORIGINAL':'NOMATCH'});
-    }
-    renderLibCmpResults(results);
-    statusEl.textContent='Done.';
-  }catch(e){
-    toast('Compare failed: '+e.message,'err');
-    statusEl.textContent='Error: '+e.message;
-  }
-  btn.disabled=false; btn.textContent='▶ COMPARE';
-}
-
-function renderLibCmpResults(results){
-  const wrap=document.getElementById('libcmp-results');
-  if(!wrap) return;
-  wrap.innerHTML=results.map(r=>{
-    const pct=r.matches[0]?Math.round(r.matches[0].score*100):0;
-    const verdictHtml=r.verdict==='ORIGINAL'
-      ?'<span class="libcmp-verdict-ok">✅ ORIGINAL — MATCHES LIBRARY ('+pct+'%)</span>'
-      :'<span class="libcmp-verdict-warn">⚠️ NO CLOSE MATCH — REVIEW MANUALLY ('+pct+'% best)</span>';
-    return '<div class="libcmp-result-card">'
-      +'<div class="libcmp-result-head">'
-        +'<div class="libcmp-result-img"><img src="'+r.query.dataUrl+'"></div>'
-        +'<div><div style="font-size:12px;color:var(--text2);margin-bottom:6px;">'+r.query.name+'</div>'+verdictHtml+'</div>'
-      +'</div>'
-      +'<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-bottom:8px;">CLOSEST MATCHES</div>'
-      +'<div class="libcmp-match-row">'
-        +r.matches.map(m=>{
-          const thumb=libThumbUrl(m.item.image_url);
-          const pctColor=m.score>=0.85?'var(--success)':m.score>=0.7?'var(--warn)':'var(--danger)';
-          return '<div class="libcmp-match-card" onclick="window.open(\''+m.item.image_url+'\',\'_blank\')">'
-            +(thumb?'<img src="'+thumb+'">':'')
-            +'<div class="libcmp-match-body">'
-              +'<div class="libcmp-match-pct" style="color:'+pctColor+';">'+Math.round(m.score*100)+'%</div>'
-              +'<div class="libcmp-match-name">'+(m.item.product_name||m.item.awb)+'</div>'
-              +'<div style="font-size:9px;color:var(--text3);font-family:var(--mono);">'+m.item.awb+'</div>'
-            +'</div></div>';
-        }).join('')
-      +'</div></div>';
-  }).join('');
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2573,71 +2575,43 @@ async function submitScan(){
 }
 
 async function uploadImagesBackground(awb, recId, imgs){
-  // Upload silently — prevent logout until done
-  window._uploading = (window._uploading||0)+1;
-  const failedTypes=[];
+  // Inline captures from Scan AWB (Fake/Empty/Tampered/Volumetric). Runs
+  // silently in the background; the fast engine also blocks accidental
+  // tab-close while it works (window._uploading).
+  const types=['label','front','back','product'];
+  const items=[], slots=[];
+  imgs.forEach(function(d,i){
+    if(d){ items.push({key:types[i]+':'+recId,awb:awb,scanId:recId,type:types[i],forced:false,operatorEmail:CU?CU.email:'',dataUrl:d,synced:false}); slots.push(i); }
+  });
+  if(!items.length) return;
+  const failedTypes=[], urls=['','','',''];
   let anyStorageError=false;
   try{
-    const types=['label','front','back','product'];
-    const urls=['','','',''];
-    for(let i=0;i<4;i++){
-      if(!imgs[i]) continue;
-      const fn=todayStr().replace(/-/g,'')+'_'+awb+'_'+types[i]+'.jpg';
-      let res=null;
-
-      // Try up to 3 times with a short pause between attempts before giving up
-      for(let attempt=0;attempt<3;attempt++){
-        try{
-          const blob=await(await fetch(imgs[i])).blob();
-          const b64=await blobToB64(blob);
-          res=await gsPost({
-            action:'uploadImageDrive',
-            fileName:fn, base64:b64, mimeType:'image/jpeg',
-            location:myLoc(), awb, type:types[i], scanId:recId
-          });
-        }catch(err){ res=null; }
-        if(res?.ok && res?.url) break; // FIX: url alone isn't enough — Code.gs can now return url alongside an error if the DB write failed after a successful Drive upload
-        // FIX (2026-08-20): if this specific attempt failed with a Drive
-        // storage-quota error, retrying again in 2s is pointless — the
-        // quota doesn't free up on its own between attempts, so this
-        // stops burning retries/time on a failure mode that retrying
-        // cannot fix, and goes straight to the fallback below instead.
-        if(isDriveStorageError(res?.error)){ anyStorageError=true; break; }
-        if(attempt<2) await new Promise(r=>setTimeout(r,2000));
-      }
-
-      if(res?.ok && res?.url){
-        urls[i]=res.url;
-      }else{
-        // Every retry failed — don't lose the photo. Save it locally so
-        // there's always a physical copy, even if Drive is unreachable.
+    const results=await fastUploadBatch(items,{concurrency:4});
+    results.forEach(function(res,k){
+      const i=slots[k];
+      if(res&&res.ok&&res.url){ urls[i]=res.url; }
+      else{
         failedTypes.push(types[i]);
+        if(isDriveStorageError(res&&res.error)) anyStorageError=true;
+        // Never lose the photo: keep a local copy in Downloads.
         try{
           const a=document.createElement('a');
           a.href=imgs[i];
-          a.download=fn;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
+          a.download=todayStr().replace(/-/g,'')+'_'+awb+'_'+types[i]+'.jpg';
+          document.body.appendChild(a); a.click(); a.remove();
         }catch(dlErr){ console.warn('Local save fallback failed:',dlErr.message); }
       }
-    }
-    // Update record with whatever image URLs did succeed. Label/Front/
-    // Back/Product each stay in their own field — NONE of them fabricate
-    // xray_image_url locally anymore (that was the actual root cause of
-    // images mixing: whichever uploaded last silently became "the X-ray
-    // image"). xray_image_url is only ever set by a genuine type='xray'
-    // upload (folder-match or Force Image), which patches it server-side
-    // and gets picked up on next reload — this local mirror just leaves
-    // it alone. "Linked" now means the full Label+Front+Back trio is
-    // actually complete, not "something got uploaded."
+    });
+    // Label/Front/Back/Product each stay in their own field — none of them
+    // fabricate xray_image_url; "linked" is decided by computeImageLinked().
     const r=DB.records.find(x=>x.id===recId);
     if(r){
       r.label_image_url=urls[0]||r.label_image_url;
       r.front_image_url=urls[1]||r.front_image_url;
       r.back_image_url=urls[2]||r.back_image_url;
       r.product_image_url=urls[3]||r.product_image_url;
-      r.image_linked = computeImageLinked(r);
+      r.image_linked=computeImageLinked(r);
     }
     if(anyStorageError){
       toast('🗄️ '+awb+': Drive storage appears full — image(s) saved to your Downloads folder. Contact admin, don\'t keep retrying.','err');
@@ -2647,7 +2621,6 @@ async function uploadImagesBackground(awb, recId, imgs){
       toast('Images uploaded for '+awb,'ok');
     }
   }catch(e){ console.warn('Image upload error:',e.message); }
-  window._uploading = Math.max(0,(window._uploading||1)-1);
 }
 
 async function blobToB64(blob){
@@ -2832,6 +2805,7 @@ function renderShift(){
   document.getElementById('eos-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
   if(mt===2) renderT2();
   renderEosLinked();
+  updateFastBadge(); updateRetryBtn();
 }
 function renderT2(){
   // Same fix as the folder-matching pool — this shows what still needs
@@ -2902,30 +2876,20 @@ function forceReplaceImage(recId, awb){
     if(!file) return;
     showLoad('Uploading replacement image for '+awb+'...');
     try{
-      const rawDataUrl=await readFile(file);
-      // FIX (2026-08-20): compress before upload — same reasoning as
-      // loadImg() above, this is a manually-picked file, not a
-      // canvas-derived camera capture, so it can be arbitrarily large.
-      const dataUrl=await compressForUpload(rawDataUrl);
-      const blob=await(await fetch(dataUrl)).blob();
-      const b64=await blobToB64(blob);
-      const fn=todayStr().replace(/-/g,'')+'_'+awb+'_forced.jpg';
-      const res=await gsPost({
-        action:'uploadImageDrive',
-        fileName:fn, base64:b64, mimeType:'image/jpeg',
-        location:myLoc(), awb, type:'xray', scanId:recId,
-        forced:true, operatorEmail:CU.email
-      });
+      const rec0=DB.records.find(x=>x.id===recId);
+      const item={key:recId,awb:awb,scanId:recId,type:'xray',forced:true,operatorEmail:CU.email,file:file,synced:!!(rec0&&rec0.synced_to_sheet)};
+      const res=(await fastUploadBatch([item],{concurrency:1}))[0];
+      fastReconcileSheet([item],[res]);
       hideLoad();
-      if(res?.ok && res?.url){
+      if(res&&res.ok&&res.url){
         const r=DB.records.find(x=>x.id===recId);
         if(r){ r.xray_image_url=res.url; r.image_linked=true; r.manually_corrected=true; }
         renderShift(); updateStats();
         toast('Image replaced for '+awb+' — marked as manually corrected','ok');
       }else{
-        toast(isDriveStorageError(res?.error)
+        toast(isDriveStorageError(res&&res.error)
           ? '🗄️ Drive storage appears full — replacement not saved. Contact admin.'
-          : 'Replacement failed: '+(res?.error||'unknown error'),'err');
+          : 'Replacement failed: '+((res&&res.error)||'unknown error'),'err');
       }
     }catch(e){
       hideLoad();
@@ -3148,23 +3112,24 @@ async function saveEditRecord(){
     // only when explicitly asked (Force Image). "Linked" is recomputed
     // after each upload from actual completeness, not "something changed."
     // erPickedImages entries are already compressed (see erPickImage above).
+    const editItems=[], editSlots=[];
     for(const slot of ['label','front','back','product']){
       if(!erPickedImages[slot]) continue;
-      const blob=await(await fetch(erPickedImages[slot])).blob();
-      const b64=await blobToB64(blob);
-      const fn=todayStr().replace(/-/g,'')+'_'+r.awb+'_'+slot+'_edited.jpg';
-      const res=await gsPost({
-        action:'uploadImageDrive',
-        fileName:fn, base64:b64, mimeType:'image/jpeg',
-        location:myLoc(), awb:r.awb, type:slot, scanId:erRecId,
-        forced:true, operatorEmail:CU.email
+      editItems.push({key:slot,awb:r.awb,scanId:erRecId,type:slot,forced:true,operatorEmail:CU.email,dataUrl:erPickedImages[slot],synced:!!r.synced_to_sheet});
+      editSlots.push(slot);
+    }
+    if(editItems.length){
+      const editResults=await fastUploadBatch(editItems,{concurrency:4});
+      fastReconcileSheet(editItems,editResults);
+      editResults.forEach(function(res,k){
+        const slot=editSlots[k];
+        if(res&&res.ok&&res.url){
+          r[slot+'_image_url']=res.url;
+          r.image_linked=computeImageLinked(r);
+        }else{
+          uploadFailures.push({slot:slot,storage:isDriveStorageError(res&&res.error)});
+        }
       });
-      if(res?.ok && res?.url){
-        r[slot+'_image_url']=res.url;
-        r.image_linked = computeImageLinked(r);
-      }else{
-        uploadFailures.push({slot, storage:isDriveStorageError(res?.error)});
-      }
     }
 
     // 3. Log every changed field — under the ORIGINAL awb, since that's
@@ -3427,7 +3392,7 @@ async function processFd(files){
       // scans/day, a 14-day window can be several thousand rows — trimming
       // the payload down to just what's needed here cuts real transfer
       // time without changing which rows come back at all.
-      allInWindow=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&select=id,awb,scanned_at,xray_image_url&order=scanned_at.asc');
+      allInWindow=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&select=id,awb,scanned_at,xray_image_url,synced_to_sheet&order=scanned_at.asc');
       if(!Array.isArray(allInWindow)) allInWindow=[];
       break;
     }catch(e){
@@ -3898,145 +3863,114 @@ function closeFdPreview(){
 }
 
 
+let lastFailedItems=[];   // images that failed in the last folder upload — kept so "Retry" only redoes those
+
+function updateRetryBtn(){
+  const b=document.getElementById('fd-retry-btn');
+  if(!b) return;
+  const n=lastFailedItems.length;
+  b.style.display=n?'inline-flex':'none';
+  b.textContent='🔁 Retry '+n+' failed upload'+(n===1?'':'s');
+}
+
 async function applyFolder(){
   const matches=pendingFd.filter(m=>m.ok&&m.rec);
   if(!matches.length){toast('No matches','err');return;}
-  showLoad('Uploading 0/'+matches.length+'...');
-  const linked=[];
-  const failed=[];
-  const manualLog=[];
+  // m.file is always the ORIGINAL full-resolution File — it is re-read and
+  // resized fresh at upload time (m.thumb is a preview-only downscale).
+  const items=matches.map(m=>({
+    key:m.rec.id, awb:m.rec.awb, scanId:m.rec.id, type:'xray',
+    forced:!!m.manual, operatorEmail:CU.email,
+    file:m.file||null, dataUrl:m.file?null:m.thumb,
+    synced:!!m.rec.synced_to_sheet, meta:m
+  }));
+  await runFolderUpload(items);
+}
+
+async function retryFailedUploads(){
+  dismissNotif();
+  if(!lastFailedItems.length){ toast('Nothing to retry','info'); return; }
+  const items=lastFailedItems; lastFailedItems=[]; updateRetryBtn();
+  await runFolderUpload(items);
+}
+
+async function runFolderUpload(items){
+  const t0=Date.now();
+  showLoad('Uploading 0/'+items.length+'...');
+  const results=await fastUploadBatch(items,{onProgress:function(p){
+    const rate=p.done/Math.max(1,p.elapsedMs/1000);
+    const eta=p.done>3?fastFmtEta((p.total-p.done)/rate*1000):'…';
+    const el=document.getElementById('loadingMsg');
+    if(el) el.textContent='Uploading '+p.done+'/'+p.total+' · '+rate.toFixed(1)+' img/s · ~'+eta+' left'+(p.failed?(' · '+p.failed+' failed'):'');
+  }});
+  fastReconcileSheet(items,results);
+
+  const failed=[], failedItems=[], manualLog=[];
   let anyStorageError=false;
-  // FIX (2026-08-26): dropped from 5 to 3, with a pause added between
-  // batches below. Confirmed via console logs from a real run (322/342
-  // succeeded, 20 failed with "Failed to fetch" + sporadic 404s on
-  // script.googleusercontent.com — NOT a Drive storage error this time)
-  // that firing 5 concurrent uploads back-to-back with zero pause for a
-  // 300+ file batch can outrun Apps Script's ability to keep up under
-  // sustained concurrent load, occasionally dropping/misdirecting a
-  // request instead of returning a clean error. Lower concurrency plus
-  // real spacing between batches gives it room to keep up.
-  //
-  // FIX (2026-08-27): nudged back up to 4/250ms (from 3/400ms) after
-  // requests to speed things up. Modest, bounded step — not back to the
-  // 5/0ms that caused the original congestion. If "Failed to fetch" or
-  // 404-on-script.googleusercontent.com errors show up again in the
-  // console, that's the signal to drop this back down, not push it
-  // higher — the real fix for that ceiling is architectural (direct-to-
-  // Drive upload, bypassing Apps Script for the file bytes), not more
-  // concurrency squeezed out of the current setup.
-  const BATCH=4;
-  const BATCH_PAUSE_MS=250;
-
-  async function uploadOne(m){
-    // m.file is always present for folder-matched entries (m.thumb is a
-    // small preview-only downscale, never used for the actual upload) —
-    // this always re-reads the ORIGINAL full-resolution file fresh, right
-    // here, at the moment of upload, regardless of what got generated
-    // for the preview list earlier.
-    // FIX (2026-08-26): now uses compressFileForUpload() — a single
-    // binary decode→resize→re-encode straight to a Blob, instead of the
-    // previous 3-full-text-encoding chain (readFile→dataURL,
-    // compressForUpload→dataURL, fetch(dataURL)→Blob). Same visual
-    // output, dramatically less CPU/memory per file — this is the fix
-    // for the system-wide lag/stuck-progress-bar seen on a real run.
-    // See compressFileForUpload() above for the full reasoning.
-    let blob;
-    if(m.file){ blob=await compressFileForUpload(m.file); }
-    else { const dataUrl=await compressForUpload(m.thumb); blob=await(await fetch(dataUrl)).blob(); } // defensive fallback only — should never be reached
-    const b64=await blobToB64(blob);
-    const fn=todayStr().replace(/-/g,'')+'_'+m.rec.awb+'_xray'+(m.manual?'_MANUAL':'')+'.jpg';
-    return await gsPost({
-      action:'uploadImageDrive', fileName:fn, base64:b64, mimeType:'image/jpeg',
-      location:myLoc(), awb:m.rec.awb, scanId:m.rec.id,
-      forced:m.manual||false, operatorEmail:CU.email
-    });
-  }
-
-  for(let i=0;i<matches.length;i+=BATCH){
-    const batch=matches.slice(i,i+BATCH);
-    document.getElementById('loadingMsg').textContent='Uploading '+(Math.min(i+BATCH,matches.length))+'/'+matches.length+'...';
-    await Promise.all(batch.map(async m=>{
-      let res, errMsg='';
-      try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
-      // FIX (2026-08-20): a Drive storage-quota failure won't resolve
-      // itself on a second attempt a moment later — skip the automatic
-      // retry in that specific case so a full-storage location doesn't
-      // silently double its upload attempts (and its wait time) for no
-      // benefit. Every other failure reason still gets the one retry.
-      //
-      // FIX (2026-08-26): the retry used to fire immediately, right back
-      // into whatever congestion just caused the failure — no better
-      // than not retrying at all for a load-related error like "Failed
-      // to fetch". A short pause before the retry gives Apps Script a
-      // moment to catch up instead of restating the same collision.
-      if(!(res?.ok && res?.url) && !isDriveStorageError(res?.error)){
-        await new Promise(r=>setTimeout(r,800));
-        try{ res=await uploadOne(m); }catch(err){ errMsg=err.message; }
-      }
-      if(res?.ok && res?.url){
-        const r=DB.records.find(x=>x.id===m.rec.id);
-        if(r){
-          r.xray_image_url=res.url;r.image_linked=true;linked.push(r);
-          if(m.manual){ r.manually_corrected=true; manualLog.push({awb:r.awb, field:'image_match',oldValue:'unmatched ('+m.name+')',newValue:'manually assigned by operator'}); }
+  items.forEach(function(it,i){
+    const r=results[i], m=it.meta;
+    if(r&&r.ok){
+      const rec=DB.records.find(x=>x.id===it.scanId);
+      if(rec){
+        rec.xray_image_url=r.url; rec.image_linked=true;
+        if(m&&m.manual){
+          rec.manually_corrected=true;
+          manualLog.push({awb:rec.awb,field:'image_match',oldValue:'unmatched ('+m.name+')',newValue:'manually assigned by operator'});
         }
-      }else{
-        const reason = errMsg || (res && res.error) || 'no url returned';
-        const stepInfo = (res && res.step) ? (' [failed at: '+res.step+']') : '';
-        if(isDriveStorageError(reason)) anyStorageError=true;
-        console.warn('Upload failed for AWB', m.rec.awb, ':', reason+stepInfo);
-        failed.push({awb:m.rec.awb, reason: reason+stepInfo});
       }
-    }));
-    // FIX (2026-08-26): a short pause between batches (not just within a
-    // single item's retry) — spaces out sustained concurrent load across
-    // the whole 300+ file run, not just around one failure, which is what
-    // actually reduces how often Apps Script gets outrun in the first
-    // place rather than just recovering better after the fact.
-    if(i+BATCH<matches.length) await new Promise(r=>setTimeout(r,BATCH_PAUSE_MS));
-  }
+    }else{
+      const reason=(r&&r.error)||'no url returned';
+      if(isDriveStorageError(reason)) anyStorageError=true;
+      console.warn('Upload failed for AWB',it.awb,':',reason);
+      failed.push({awb:it.awb,reason:reason});
+      failedItems.push(it);
+    }
+  });
+  lastFailedItems=failedItems;
 
-  // Log manual assignments to CorrectionLog — visible to admin as flagged
-  // mismatches that were manually resolved rather than auto-matched.
-  // One call per AWB so each row carries its own correct AWB, not a
-  // shared placeholder covering the whole batch.
-  for(const entry of manualLog){
-    try{
-      await gsPost({ action:'logCorrection', location:myLoc(), operator:CU.email, awb:entry.awb, changes:[{field:entry.field,oldValue:entry.oldValue,newValue:entry.newValue}] });
-    }catch(e){ console.warn('manual-assign log failed (non-fatal):', e.message); }
+  // Audit log for manual assignments — one at a time in the background, so
+  // it never blocks the screen and never hammers Apps Script.
+  if(manualLog.length){
+    (async function(){
+      for(const e of manualLog){
+        try{ await gsPost({action:'logCorrection',location:myLoc(),operator:CU.email,awb:e.awb,changes:[{field:e.field,oldValue:e.oldValue,newValue:e.newValue}]}); }
+        catch(err){ console.warn('manual-assign log failed (non-fatal):',err.message); }
+      }
+    })();
   }
 
   hideLoad();
   document.getElementById('fd-result').style.display='none';
-  renderShift(); updateStats(); updateBanner();
+  renderShift(); updateStats(); updateBanner(); updateRetryBtn();
+  if(failed.length) console.table(failed);   // AWB + exact reason, for admin/dev troubleshooting (F12)
 
-  // FIX (2026-08-26): dropped the separate red top-right toast for
-  // upload failures — it duplicated the same count already shown in the
-  // green post-upload summary box below (Continue Scanning/End Shift),
-  // which operators found confusing/redundant. console.table(failed)
-  // stays, since that's still the actual diagnostic trail (AWB + exact
-  // failure reason) for admin/dev troubleshooting via F12 — just no
-  // longer surfaced as a second on-screen notification for the operator.
-  if(failed.length) console.table(failed);
+  const okCount=results.filter(r=>r&&r.ok).length;
+  const total=myToday().length;
+  const pending=myToday().filter(r=>!computeImageLinked(r)).length;
+  const took=fastFmtEta(Date.now()-t0);
+  const msg=okCount+' image'+(okCount===1?'':'s')+' uploaded in '+took+(failed.length?', '+failed.length+' failed':'!')+' '+(pending>0?pending+' records still unlinked.':'All images linked.');
 
-  // Show post-upload options: Continue Scanning or End Shift
-  const total = myToday().length;
-  const pending = myToday().filter(r=>!computeImageLinked(r)).length;
-  const msg = linked.length+' images uploaded'+(failed.length?', '+failed.length+' failed':'!')+' '+(pending>0?pending+' records still unlinked.':'All images linked.');
-
-  // Create inline notification with options
-  const notif = document.createElement('div');
-  notif.id = 'post-upload-notif';
-  notif.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--success);border-radius:6px;padding:16px 20px;z-index:4000;display:flex;flex-direction:column;gap:10px;min-width:320px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);';
-  notif.innerHTML =
-    '<div style="font-family:var(--mono);font-size:12px;color:var(--success);">&#x2705; '+msg+'</div>'
+  dismissNotif();
+  const notif=document.createElement('div');
+  notif.id='post-upload-notif';
+  notif.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid '+(failed.length?'var(--warn)':'var(--success)')+';border-radius:6px;padding:16px 20px;z-index:4000;display:flex;flex-direction:column;gap:10px;min-width:320px;max-width:90vw;box-shadow:0 4px 24px rgba(0,0,0,.5);';
+  notif.innerHTML=
+    '<div style="font-family:var(--mono);font-size:12px;color:'+(failed.length?'var(--warn)':'var(--success)')+';">'+(failed.length?'&#x26A0;&#xFE0F; ':'&#x2705; ')+msg+'</div>'
+    +(anyStorageError?'<div style="font-size:11px;color:var(--warn);font-family:var(--mono);">&#x1F5C4;&#xFE0F; Drive storage appears full — contact admin instead of retrying.</div>':'')
     +'<div style="font-size:11px;color:var(--text3);font-family:var(--mono);">'+total+' scans today</div>'
-    +'<div style="display:flex;gap:8px;margin-top:4px;">'
+    +'<div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">'
+    +(failed.length&&!anyStorageError?'<button class="btn btn-warn" style="flex:1;" onclick="retryFailedUploads()">&#x1F501; RETRY '+failed.length+' FAILED</button>':'')
     +'<button class="btn btn-t1" style="flex:1;" onclick="continueScanning()">&#x1F4E1; CONTINUE SCANNING</button>'
     +'<button class="btn btn-ok" style="flex:1;" onclick="endShift()">&#x2705; END SHIFT</button>'
     +'</div>';
   document.body.appendChild(notif);
-  // Auto-dismiss after 30 seconds
-  setTimeout(()=>{ const el=document.getElementById('post-upload-notif'); if(el) el.remove(); }, 30000);
+  setTimeout(function(){ const el=document.getElementById('post-upload-notif'); if(el) el.remove(); }, failed.length?300000:30000);
+
+  // Shortly afterwards, reload from the database so the on-screen counts are
+  // the real ones (not just what this browser remembers).
+  setTimeout(async function(){
+    try{ await loadRecords(); renderShift(); updateStats(); updateBanner(); }catch(e){ /* next auto-refresh will catch up */ }
+  },1500);
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4219,62 +4153,12 @@ async function refreshDashboard(){
   const date=document.getElementById('dash-date')?.value||todayStr();
   const lbl=document.getElementById('dash-loading');
   if(lbl) lbl.style.display='inline';
-  // Today: merge Supabase (live) + GSheet (synced). Past: GSheet only
-  if(date===todayStr()){
-    const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00%2B05:30&order=scanned_at.desc');
-    const sbRecs=Array.isArray(sbData)?sbData:[];
-    let gsRecs=[];
-    try{
-      const gsData=await gsGet({action:'records',date});
-      gsRecs=Array.isArray(gsData)?gsData.map(function(r){
-        return {
-          id:r.id||'',awb:r.awb||r.AWB||'',
-          scanned_at:r.scanned_at||r.Date||'',
-          location_code:r.location_code||r.Location||'',
-          operator_email:r.operator_email||r.Operator||'',
-          result:r.result||r['X-Ray Result']||'',
-          tamper_status:r.tamper_status||r['Tamper Status']||'',
-          shoe_box:r.shoe_box||r.Shoe||'N/A',
-          remarks:r.remarks||r.Remarks||'',
-          xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
-          product_name:r.product_name||r['Product Name']||'',
-          product_category:r.product_category||r.Category||'',
-          image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
-          synced_to_sheet:true
-        };
-      }):[];
-    }catch(e){ console.warn('GSheet skipped:',e.message); }
-    const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
-    const merged=[...sbRecs];
-    gsRecs.forEach(function(gr){
-      if(gr.id&&sbIds.has(gr.id)) return;
-      const exists=merged.find(function(r){
-        return r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at);
-      });
-      if(!exists) merged.push(gr);
-    });
-    DB.records=scopeRecs(merged.sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);}));
-  } else {
-    // Past date — load from GSheet only, normalize fields
-    const data=await gsGet({action:'records',date});
-    DB.records=scopeRecs(Array.isArray(data)?data.map(function(r){
-      return {
-        id:r.id||'',
-        awb:r.awb||r.AWB||'',
-        scanned_at:r.scanned_at||r.Date||'',
-        location_code:r.location_code||r.Location||'',
-        operator_email:r.operator_email||r.Operator||'',
-        result:r.result||r['X-Ray Result']||'',
-        tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
-        shoe_box:r.shoe_box||r.Shoe||'N/A',
-        remarks:r.remarks||r.Remarks||'',
-        xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
-        product_name:r.product_name||r['Product Name']||'',
-        product_category:r.product_category||r.Category||'',
-        image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
-        synced_to_sheet:true
-      };
-    }):[]);
+  try{
+    DB.records=scopeRecs(await fetchDayRecords(date,false));
+  }catch(e){
+    console.warn('refreshDashboard failed — keeping the previous numbers:',e.message);
+    if(lbl) lbl.style.display='none';
+    return;
   }
   if(lbl) lbl.style.display='none';
   const cnt=document.getElementById('dash-count');
@@ -4525,45 +4409,16 @@ async function renderAllRec(){
   const res=document.getElementById('arec-res')?.value||'';
   const date=document.getElementById('arec-date')?.value||todayStr();
 
-  // Always fetch fresh from both Supabase + GSheet for selected date
-  const sbData=await sbGetAll('/rest/v1/scans?scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.desc');
-  const sbRecs=Array.isArray(sbData)?sbData:[];
-  let gsRecs=[];
-  try{
-    const gsData=await gsGet({action:'records',date:date});
-    gsRecs=Array.isArray(gsData)?gsData.map(function(r){
-      return {
-        id:r.id||'',awb:r.awb||r.AWB||'',
-        scanned_at:r.scanned_at||r.Date||'',
-        location_code:r.location_code||r.Location||'',
-        operator_email:r.operator_email||r.Operator||'',
-        result:r.result||r['X-Ray Result']||'',
-        tamper_status:r.tamper_status||r['Tamper Status']||'NON-TAMPERED',
-        shoe_box:r.shoe_box||r.Shoe||'N/A',
-        remarks:r.remarks||r.Remarks||'',
-        xray_image_url:r.xray_image_url||r['X-Ray Image']||'',
-        product_name:r.product_name||r['Product Name']||'',
-        product_category:r.product_category||r.Category||'',
-        image_linked:!!(r.xray_image_url||r['X-Ray Image']||''),
-        synced_to_sheet:true
-      };
-    }):[];
-  }catch(e){ console.warn('GSheet skipped in renderAllRec:',e.message); }
-  const sbIds=new Set(sbRecs.map(function(r){return r.id;}));
-  const allRecs=[...sbRecs];
-  gsRecs.forEach(function(gr){
-    if(gr.id&&sbIds.has(gr.id)) return;
-    const dup=allRecs.find(function(r){
-      return r.awb===gr.awb&&toISTDateStr(r.scanned_at)===toISTDateStr(gr.scanned_at);
-    });
-    if(!dup) allRecs.push(gr);
-  });
-
+  // v3: Supabase first; the Sheet is only consulted for older days Supabase no longer holds
+  let allRecs;
+  try{ allRecs=await fetchDayRecords(date,true); }
+  catch(e){ toast('Failed to load '+date+': '+e.message,'err'); return; }
   let recs=scopeRecs(allRecs).sort(function(a,b){return new Date(b.scanned_at)-new Date(a.scanned_at);});
   if(s)    recs=recs.filter(r=>(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
   if(loc)  recs=recs.filter(r=>r.location_code===loc);
   if(res)  recs=recs.filter(r=>r.result===res);
   if(date) recs=recs.filter(r=>toISTDateStr(r.scanned_at)===date);
+  allRecView=recs;
   const cnt=document.getElementById('arec-count');
   if(cnt) cnt.innerHTML='<span class="pill pill-t1">'+recs.length+' records</span>';
   document.getElementById('arec-body').innerHTML=recs.length===0
@@ -4599,15 +4454,7 @@ async function exportCSV(mode){
   if(mode==='op'){ showLoad('Refreshing...'); await loadRecords(); hideLoad(); }
   let recs;
   if(mode==='adm'){
-    const loc=document.getElementById('arec-loc')?.value||'';
-    const res=document.getElementById('arec-res')?.value||'';
-    const date=document.getElementById('arec-date')?.value||'';
-    const s=(document.getElementById('arec-search')?.value||'').toLowerCase();
-    recs=DB.records
-      .filter(r=>!loc||r.location_code===loc)
-      .filter(r=>!res||r.result===res)
-      .filter(r=>!date||toISTDateStr(r.scanned_at)===date)
-      .filter(r=>!s||(r.awb||'').toLowerCase().includes(s)||(r.product_name||'').toLowerCase().includes(s));
+    recs=allRecView.slice();   // exactly what All Records is showing (same date + filters)
   } else { recs=myToday(); }
   // Export in chronological (scan) order — 1,2,3 — not the newest-first
   // order used for on-screen tables, so it lines up with AWB sequence
@@ -4626,7 +4473,7 @@ async function exportCSV(mode){
 //  KEEP ALIVE (prevent Apps Script timeout on idle)
 // ══════════════════════════════════════════════════════════════
 setInterval(async function(){
-  if(CU) await gsGet({action:'ping'}).catch(()=>{});
+  if(CU && !document.hidden) await gsGet({action:'ping'}).catch(()=>{});
 }, 4*60*1000);
 
 // ══════════════════════════════════════════════════════════════
@@ -4933,7 +4780,7 @@ function showImgInModal(url, label) {
 // (only types that actually exist), defaulting to X-Ray if present, else
 // whichever comes first. Each tab is unmistakably labeled.
 function viewImages(recId) {
-  const r = recPool().find(x=>x.id===recId) || DB.records.find(x=>x.id===recId);
+  const r = recPool().find(x=>x.id===recId) || allRecView.find(x=>x.id===recId) || DB.records.find(x=>x.id===recId);
   if (!r) { toast('Record not found','err'); return; }
   const types = [
     { key:'xray_image_url',    label:'X-RAY',   cls:'pill-ok'   },

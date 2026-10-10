@@ -375,7 +375,6 @@ let queue = [];
 let extractor = null;
 let dinoExtractor = null;
 let dinoLoadFailed = false;
-let cvReady = null;
 let libraryEmbeddings = null;
 let currentIdx = null;
 let identifyImage = null;
@@ -472,24 +471,56 @@ async function ensureDinoModel(){
   }
 }
 
-function ensureOpenCV(){
-  if(cvReady) return cvReady;
-  cvReady = new Promise((resolve, reject)=>{
-    if(window.cv && window.cv.Mat){ resolve(window.cv); return; }
-    const script = document.createElement('script');
-    script.src = 'https://docs.opencv.org/4.9.0/opencv.js';
-    script.onload = ()=>{
-      const check = ()=>{
-        if(window.cv && window.cv.Mat) resolve(window.cv);
-        else if(window.cv) window.cv['onRuntimeInitialized'] = ()=>resolve(window.cv);
-        else setTimeout(check, 50);
-      };
-      check();
-    };
-    script.onerror = ()=>reject(new Error('Failed to load OpenCV.js'));
-    document.head.appendChild(script);
-  });
-  return cvReady;
+// REMOVED (2026-10-10): this used to load OpenCV.js from
+// docs.opencv.org for rotation alignment before SSIM. That's an
+// ~8MB WASM blob from a non-standard third-party CDN, loaded with NO
+// TIMEOUT on the <script> tag — on a restricted corporate network
+// (blocked domain, slow/failed TLS, proxy silently dropping it) the
+// onload/onerror handlers simply never fire, so ensureOpenCV()'s
+// promise never resolves or rejects. Every caller was awaiting that
+// promise, so the whole compare just hangs forever on "Aligning top N
+// candidate(s)..." with no error — exactly the "loading for a while
+// then the screen goes black" symptom reported twice now. Alignment
+// is done below with plain <canvas> rotate/flip instead — see
+// rotateCanvas/bestAlignedSSIM. Nothing to download, nothing to
+// block, nothing that can hang.
+function rotateCanvas(canvas, angleDeg, flip){
+  const size = canvas.width||128;
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,size,size);
+  ctx.save();
+  ctx.translate(size/2, size/2);
+  if(flip) ctx.scale(-1,1);
+  if(angleDeg) ctx.rotate(angleDeg*Math.PI/180);
+  ctx.drawImage(canvas, -size/2, -size/2, size, size);
+  ctx.restore();
+  return c;
+}
+// Tries the query image at each of 8 orientations (0/90/180/270,
+// each normal and mirrored) against the reference and keeps whichever
+// SSIM is highest — same intent as the old moment-based angle
+// estimate, but it directly optimizes the metric that's actually
+// used, and it's 8 small (128x128) synchronous canvas ops instead of
+// a WASM library load. Cheap enough to run unthrottled.
+function bestAlignedSSIM(queryCanvas, refCanvas){
+  const size = 128;
+  const base = document.createElement('canvas');
+  base.width = size; base.height = size;
+  base.getContext('2d').drawImage(queryCanvas, 0, 0, size, size);
+  const refSized = document.createElement('canvas');
+  refSized.width = size; refSized.height = size;
+  refSized.getContext('2d').drawImage(refCanvas, 0, 0, size, size);
+  let best = 0;
+  for(const angle of [0,90,180,270]){
+    for(const flip of [false,true]){
+      const candidate = rotateCanvas(base, angle, flip);
+      const score = computeSSIM(candidate, refSized);
+      if(score>best) best = score;
+    }
+  }
+  return best;
 }
 
 function autoCropToContent(img, marginPct){
@@ -752,46 +783,6 @@ function computeSSIM(canvasA, canvasB){
     }
   }
   return count>0 ? Math.max(0,Math.min(1,total/count)) : 0;
-}
-
-async function alignForSsim(queryCanvas, refCanvas){
-  try{
-    const cv = await ensureOpenCV();
-    const angleOf = (canvas)=>{
-      const size=128;
-      const c=document.createElement('canvas'); c.width=size; c.height=size;
-      c.getContext('2d').drawImage(canvas,0,0,size,size);
-      const src = cv.imread(c);
-      const gray = new cv.Mat();
-      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-      const thresh = new cv.Mat();
-      cv.threshold(gray, thresh, 0, 255, cv.THRESH_BINARY+cv.THRESH_OTSU);
-      const moments = cv.moments(thresh, true);
-      src.delete(); gray.delete(); thresh.delete();
-      if(Math.abs(moments.mu20-moments.mu02)<1e-6 && Math.abs(moments.mu11)<1e-6) return 0;
-      return 0.5*Math.atan2(2*moments.mu11, moments.mu20-moments.mu02) * (180/Math.PI);
-    };
-    const qAngle = angleOf(queryCanvas);
-    const rAngle = angleOf(refCanvas);
-    let delta = qAngle - rAngle;
-    if(delta>90) delta-=180; if(delta<-90) delta+=180;
-
-    const size=128;
-    const c=document.createElement('canvas'); c.width=size; c.height=size;
-    c.getContext('2d').drawImage(queryCanvas,0,0,size,size);
-    const src = cv.imread(c);
-    const dst = new cv.Mat();
-    const center = new cv.Point(size/2, size/2);
-    const M = cv.getRotationMatrix2D(center, delta, 1);
-    cv.warpAffine(src, dst, M, new cv.Size(size,size), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar(255,255,255,255));
-    const outCanvas=document.createElement('canvas'); outCanvas.width=size; outCanvas.height=size;
-    cv.imshow(outCanvas, dst);
-    src.delete(); dst.delete(); M.delete();
-    return outCanvas;
-  }catch(e){
-    console.warn('Alignment failed, using unaligned image for SSIM:', e.message);
-    return queryCanvas;
-  }
 }
 
 async function loadCategories(){
@@ -1294,17 +1285,16 @@ async function compareOneImage(q, lib, threshold, topK, statusEl){
     try{
       let refImg = await loadImageFromDataUrl(await resolveRefDataUrl(cand.item.image_url));
       const refCanvas = toCanvas(autoCropToContent(refImg));
-      const aligned = await alignForSsim(sig.croppedCanvas, refCanvas);
-      cand.scores.ssim = computeSSIM(aligned, refCanvas);
+      cand.scores.ssim = bestAlignedSSIM(sig.croppedCanvas, refCanvas);
     }catch(e){
       console.warn('SSIM failed for', cand.item.awb, '— continuing without it:', e.message);
     }
     // FIX (2026-09-20): same macrotask-yield principle as buildIndex —
-    // alignForSsim's OpenCV.js Mat operations are also synchronous CPU
-    // work per candidate. topK defaults to 8 so this loop is short in
-    // normal use, but Benchmark Mode calls this once per CSV row, and a
-    // large benchmark set could otherwise reintroduce the same kind of
-    // unbroken run this fix addresses in buildIndex.
+    // bestAlignedSSIM is 8 small synchronous canvas ops per candidate.
+    // topK defaults to 8 so this loop is short in normal use, but
+    // Benchmark Mode calls this once per CSV row, and a large benchmark
+    // set could otherwise reintroduce the same kind of unbroken run
+    // this fix addresses in buildIndex.
     await new Promise(r=>setTimeout(r,0));
   }
 

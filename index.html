@@ -258,7 +258,6 @@ video{width:100%;height:100%;object-fit:cover;}
     <div class="topbar">
       <div class="tb-title" id="tb-title">SCAN AWB</div>
       <div class="tb-right">
-        <span id="scan-limit-warn" style="display:none;background:rgba(255,187,0,.15);color:var(--warn);border:1px solid rgba(255,187,0,.4);border-radius:3px;font-size:10px;font-family:var(--mono);padding:3px 8px;cursor:pointer;" onclick="show('v-shift')"></span>
         <span id="tb-machine"></span>
         <span id="tb-loc" class="pill pill-dim">–</span>
         <span id="tb-date" class="pill pill-dim">–</span>
@@ -858,7 +857,6 @@ video{width:100%;height:100%;object-fit:cover;}
 const GS_URL  = 'https://script.google.com/macros/s/AKfycbx1lB1n1X72KW6xG9dI1glI5J7O38dK27-dytbAsU56wgLvKxJKskkxNiKNeaeLo7sM/exec';
 const SB_URL  = 'https://ckmfixhyuklzqkggzudb.supabase.co';
 const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNrbWZpeGh5dWtsenFrZ2d6dWRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI2MzIyOTgsImV4cCI6MjA5ODIwODI5OH0.EDp2Tljimy-MWLY12bvzH18XXPihpK-wIBAUzw4sfEA';
-const SCAN_LIMIT = 2000; // warn operator at this count
 
 // ══════════════════════════════════════════════════════════════
 //  STATE
@@ -2501,25 +2499,6 @@ async function submitScan(){
   const _maxSeq=_todayRecs.reduce((m,r)=>Math.max(m,r.seq_num||0),0);
   const seq=myMT()===2?_maxSeq+1:null;
 
-  // ── 2000 SCAN LIMIT WARNING — per OPERATOR, not per location ──
-  // FIX (2026-07-27): this used to count every scan at the LOCATION
-  // today, regardless of who scanned it — so if one operator's shift
-  // alone reached 2000, EVERY other operator at that location was
-  // blocked from scanning at all for the rest of the day, even someone
-  // who hadn't personally scanned a single AWB yet (a real reported
-  // bug — "another operator unable to do so" after a colleague's shift
-  // hit the limit). This is meant to be a workload ceiling for an
-  // individual operator's own shift, not a shared location-wide
-  // budget, so it now counts only THIS operator's own scans today.
-  const todayCount=myToday().filter(r=>r.operator_email===CU.email).length;
-  if(todayCount>=SCAN_LIMIT){
-    toast('⚠️ 2000 scan limit reached — please go to END OF SHIFT to upload images and sync','warn');
-    return;
-  }
-  if(todayCount===SCAN_LIMIT-1){
-    toast('⚠️ This is scan #2000 — after saving, proceed to END OF SHIFT','warn');
-  }
-
   // ── FAST SAVE: write directly to Supabase ────────────────
   const btn=document.getElementById('save-btn');
   btn.disabled=true; btn.textContent='SAVING...';
@@ -2663,20 +2642,6 @@ function updateStats(){
   document.getElementById('ss-failed').textContent =r.filter(x=>x.result==='FAKE'||x.result==='EMPTY').length;
   document.getElementById('ss-pending').textContent=r.filter(x=>!computeImageLinked(x)).length;
   document.getElementById('ss-linked').textContent =r.filter(x=>computeImageLinked(x)).length;
-  // Scan limit warning badge — same operator-scoped count as the
-  // actual gate in submitScan(), so the banner never says "2000/2000,
-  // proceed to EOS" for an operator who personally isn't blocked at
-  // all (that mismatch was exactly the confusing state a second
-  // operator would see after a colleague's shift alone hit 2000).
-  const ownCount=r.filter(x=>x.operator_email===CU.email).length;
-  if(ownCount>=SCAN_LIMIT*0.9){
-    const pct=Math.round((ownCount/SCAN_LIMIT)*100);
-    const el=document.getElementById('scan-limit-warn');
-    if(el){ el.style.display='flex'; el.textContent='⚠️ '+ownCount+'/'+SCAN_LIMIT+' scans — proceed to EOS'; }
-  } else {
-    const el=document.getElementById('scan-limit-warn');
-    if(el) el.style.display='none';
-  }
   renderRecentScans();
 }
 

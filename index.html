@@ -2389,7 +2389,7 @@ function onAwbChange(){
   // ── AUTO-SAVE ──────────────────────────────────────────────
   // A barcode scanner fills this field almost instantly and then stops
   // (unlike manual typing). So: any time the field changes, restart a
-  // 2-second countdown; if nothing changes it again before that runs
+  // 1-second countdown; if nothing changes it again before that runs
   // out, submit automatically — no click needed for the common case.
   // submitScan() already validates (e.g. images required for Fake/
   // Empty), so an incomplete auto-save just shows the normal error
@@ -2399,7 +2399,7 @@ function onAwbChange(){
   // sufficient length — meaning a barcode scanner picking up the wrong
   // sticker (an invoice barcode, a courier routing barcode, garbled
   // multi-line label text) would auto-save that garbage as a real scan
-  // record within 2 seconds, before anyone could notice and stop it.
+  // record within 1 second, before anyone could notice and stop it.
   // Now it checks the format FIRST — if it doesn't look like a real
   // AWB, the countdown never starts at all, and a clear warning shows
   // immediately instead of silently ticking down toward a bad save.
@@ -2415,7 +2415,7 @@ function onAwbChange(){
       return;
     }
     badge.style.color=''; badge.style.borderColor=''; badge.style.background='';
-    let secondsLeft=2;
+    let secondsLeft=1;
     badge.style.display='inline';
     badge.textContent='⏱ Auto-save in '+secondsLeft+'s';
     awbAutoSaveInterval=setInterval(()=>{
@@ -2426,7 +2426,7 @@ function onAwbChange(){
       clearAwbAutoSave();
       const stillSameAwb=document.getElementById('awb-inp').value.trim().toUpperCase()===awb;
       if(stillSameAwb && awb) submitScan();
-    },2000);
+    },1000);
   }
 }
 function clearAwbAutoSave(){

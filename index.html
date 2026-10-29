@@ -301,7 +301,7 @@ video{width:100%;height:100%;object-fit:cover;}
                 </div>
               </div>
               <div class="fg"><label class="lbl">Remarks</label><textarea id="remarks" placeholder="Optional notes..."></textarea></div>
-              <div id="cam-notice" style="display:none;background:rgba(255,51,85,.07);border:1px solid rgba(255,51,85,.25);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:10px;color:var(--danger);letter-spacing:1px;margin-bottom:10px;">IMAGES REQUIRED — CAPTURE LABEL · FRONT · BACK</div>
+              <div id="cam-notice" style="display:none;background:rgba(255,51,85,.07);border:1px solid rgba(255,51,85,.25);border-radius:var(--r);padding:8px 12px;font-family:var(--mono);font-size:10px;color:var(--danger);letter-spacing:1px;margin-bottom:10px;">IMAGES OPTIONAL — LABEL · FRONT · BACK</div>
               <button class="btn btn-ok btn-block" id="save-btn" onclick="submitScan()">SAVE RECORD</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:6px;width:100%;" onclick="clearScan()">CLEAR</button>
             </div>
@@ -2448,14 +2448,10 @@ function updateCameraReq(){
   // Tampered inspection — they don't apply here, so this is exempt from
   // that requirement entirely, replaced by a required Product photo
   // instead (see productApplicable/needProduct below).
-  const need=(result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED') && !isVol;
-  document.getElementById('cam-notice').style.display=(need||isVol)?'block':'none';
-  document.getElementById('cam-notice').textContent=isVol
-    ?'PRODUCT IMAGE REQUIRED — X-RAY MACHINE CANNOT SCAN THIS SHIPMENT'
-    :'IMAGES REQUIRED — CAPTURE LABEL · FRONT · BACK';
-  document.getElementById('cam-badge').innerHTML=need
-    ?'<span class="pill pill-err">IMAGES REQUIRED</span>'
-    :(isVol?'<span class="pill pill-t1">PRODUCT IMAGE REQUIRED</span>':'');
+  // CHANGED (2026-10-29): photos are optional everywhere now — no
+  // "required" notice or badge is shown for any result.
+  document.getElementById('cam-notice').style.display='none';
+  document.getElementById('cam-badge').innerHTML='';
   // Product photo applies to Fake/Empty (evidence of the opened
   // shipment) AND Volumetric (the substitute for a genuine X-ray image,
   // since one can never exist for this AWB) — hidden otherwise.
@@ -2463,8 +2459,8 @@ function updateCameraReq(){
   document.getElementById('th3-wrap').style.display=productApplicable?'block':'none';
   document.getElementById('product-hint').style.display=productApplicable?'block':'none';
   document.getElementById('product-hint').textContent=isVol
-    ?'PRODUCT = required photo of this shipment — substitutes for the X-ray image, which can never exist for a Volumetric AWB'
-    :'PRODUCT = optional photo of the opened shipment/item — only relevant for Fake/Empty, not required to save';
+    ?'PRODUCT = optional photo of this shipment (no X-ray image can exist for a Volumetric AWB)'
+    :'PRODUCT = optional photo of the opened shipment/item — not required to save';
   document.getElementById('product-filepicker').style.display=productApplicable?'flex':'none';
   if(!productApplicable && captured[3]){
     captured[3]=null;
@@ -2484,14 +2480,10 @@ async function submitScan(){
   }
   if(!result){ toast('Select X-Ray result','err'); return; }
   const isVol=result==='VOLUMETRIC';
-  const needImg=(result==='FAKE'||result==='EMPTY'||tamper==='TAMPERED') && !isVol;
-  const requiredCaptured=captured.slice(0,3).filter(Boolean).length; // label/front/back only — product is optional
-  if(needImg&&requiredCaptured<3){
-    toast('Capture all 3 images ('+requiredCaptured+'/3)','err'); return;
-  }
-  if(isVol&&!captured[3]){
-    toast('Capture a product photo — required for Volumetric (no X-ray image will ever exist for this AWB)','err'); return;
-  }
+  // CHANGED (2026-10-29): Label / Front / Back / Product photos are now
+  // OPTIONAL at every location (high capture load — locations provide
+  // them through a separate form instead). Nothing blocks the save; any
+  // photos that ARE captured are still uploaded as before.
   const remarks=document.getElementById('remarks').value.trim();
   const product=DB.awbMaster[awb]||null;
   // seq_num: find highest existing seq and add 1 (handles reloads correctly)
@@ -3019,21 +3011,7 @@ async function saveEditRecord(){
   // Volumetric is exempt from Label/Front/Back — it's the same waiver as
   // Scan AWB, replaced by a required Product photo instead.
   const needsImages = (newResult==='FAKE'||newResult==='EMPTY'||newTamper==='TAMPERED') && !isVolEdit;
-  if(needsImages){
-    const willHave = {
-      label: erPickedImages.label || r.label_image_url,
-      front: erPickedImages.front || r.front_image_url,
-      back:  erPickedImages.back  || r.back_image_url
-    };
-    if(!willHave.label||!willHave.front||!willHave.back){
-      toast('This result requires all 3 images (label, front, back) — add whichever are missing','err');
-      return;
-    }
-  }
-  if(isVolEdit && !(erPickedImages.product || r.product_image_url)){
-    toast('Volumetric requires a product photo — add one before saving','err');
-    return;
-  }
+  // CHANGED (2026-10-29): image requirements removed — all photos optional.
 
   const changes=[];
   if(newAwb && newAwb!==originalAwb) changes.push({field:'awb',oldValue:originalAwb,newValue:newAwb});

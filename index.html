@@ -194,6 +194,15 @@ video{width:100%;height:100%;object-fit:cover;}
       <div id="login-loc-list"></div>
 
     </div>
+    <div id="login-machine-wrap" style="display:none;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <button class="btn btn-ghost btn-xs" onclick="backToLoginForm()">← Back</button>
+        <span id="login-machine-welcome" style="font-family:var(--mono);font-size:11px;color:var(--text2);"></span>
+      </div>
+      <label class="lbl" style="display:block;margin-bottom:8px;">WHICH X-RAY MACHINE ARE YOU SCANNING ON?</label>
+      <div class="loc-pill-opt" onclick="pickMachine(1)" style="font-size:16px;padding:16px;"><span style="font-family:var(--mono);font-weight:700;color:var(--t1);width:70px;">M1</span><span style="flex:1;">Machine 1</span></div>
+      <div class="loc-pill-opt" onclick="pickMachine(2)" style="font-size:16px;padding:16px;"><span style="font-family:var(--mono);font-weight:700;color:var(--t2);width:70px;">M2</span><span style="flex:1;">Machine 2</span></div>
+    </div>
   </div>
 </div>
 
@@ -1049,6 +1058,23 @@ async function hashPw(s){
 }
 function myLoc(){ return CU?.location_code||''; }
 function myMT(){  return CU?.machine_type||1; }
+
+// ── TWO-MACHINE LOCATIONS (added 2026-11-04) ─────────────────────
+// Tauru has two physical X-ray machines run by the same operators. At
+// these locations the operator picks Machine 1 or Machine 2 on EVERY
+// login; the choice is saved as scans.machine_no and everything the
+// operator sees (today's scans, stats, serial numbers, folder image
+// matching, My Records) follows that one machine. Scans saved before this
+// change have no machine_no and count as Machine 1 (the original machine).
+// Add a code here (or name it "...Tauru...") to enable it elsewhere.
+const MACHINE_CHOICE_LOCS=['TAU','TAURU'];
+function needsMachineChoice(code){
+  if(MACHINE_CHOICE_LOCS.indexOf(String(code||'').toUpperCase())!==-1) return true;
+  const loc=(DB&&DB.locations||[]).find(l=>l.code===code);
+  return !!(loc && /tauru|taru/i.test(String(loc.name||'')+' '+String(loc.full_name||'')));
+}
+function myMachineNo(){ return (CU&&CU.machine_no)?Number(CU.machine_no):null; }
+function machineMatches(r){ const m=myMachineNo(); return !m || (Number(r.machine_no)||1)===m; }
 // POC = location-scoped read-only admin. myPocLocs() returns null for
 // everyone else (admin/supervisor/operator), so scopeRecs()/scopeLocs()
 // are harmless no-ops for them and only actually filter for a POC.
@@ -1057,7 +1083,7 @@ function scopeRecs(recs){ var pl=myPocLocs(); return pl ? recs.filter(function(r
 function scopeLocs(locs){ var pl=myPocLocs(); return pl ? locs.filter(function(l){return pl.indexOf(l.code)!==-1;}) : locs; }
 function myToday(){
   const t=todayStr();
-  return DB.records.filter(r=>r.location_code===myLoc()&&toISTDateStr(r.scanned_at)===t);
+  return DB.records.filter(r=>r.location_code===myLoc()&&toISTDateStr(r.scanned_at)===t&&machineMatches(r));
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1917,13 +1943,36 @@ async function doLogin(){
 function backToLoginForm(){
   document.getElementById('login-main').style.display='block';
   document.getElementById('login-loc-wrap').style.display='none';
+  document.getElementById('login-machine-wrap').style.display='none';
+  pendingUser=null; pendingMachineCU=null;
+}
+
+let pendingMachineCU=null;
+function pickMachine(n){
+  if(!pendingMachineCU) return;
+  CU={...pendingMachineCU,machine_no:n};
+  pendingMachineCU=null;
+  document.getElementById('login-machine-wrap').style.display='none';
+  document.getElementById('login-main').style.display='block';
+  document.getElementById('l-email').value='';
+  document.getElementById('l-pass').value='';
   pendingUser=null;
+  enterApp();
 }
 
 function doLoginWithLoc(user,code){
   const loc=DB.locations.find(l=>l.code===code);
   CU={...user,location_code:code,machine_type:loc?.machine_type||1,location_full:loc?.full_name||code};
   isAdmin=false; isSupervisor=false;
+  if(needsMachineChoice(code)){
+    // Two-machine location: ask every login which machine this is.
+    pendingMachineCU=CU; CU=null;
+    document.getElementById('login-main').style.display='none';
+    document.getElementById('login-loc-wrap').style.display='none';
+    document.getElementById('login-machine-wrap').style.display='block';
+    document.getElementById('login-machine-welcome').textContent='Welcome, '+(user.name||user.email)+' · '+code;
+    return;
+  }
   document.getElementById('login-main').style.display='block';
   document.getElementById('login-loc-wrap').style.display='none';
   document.getElementById('l-email').value='';
@@ -1965,6 +2014,7 @@ async function enterApp(){
     const mt=myMT();
     document.getElementById('sb-machine').innerHTML=mt===1?'<span class="pill pill-t1">TYPE 1 EXCEL</span>':'<span class="pill pill-t2">TYPE 2 FOLDER</span>';
     document.getElementById('tb-machine').innerHTML=mt===1?'<span class="pill pill-t1">T1</span>':'<span class="pill pill-t2">T2</span>';
+    renderMachinePill();
     ensureShift(); // records shift start = login time; safe no-op if one's already open today
   }
   saveSession();
@@ -1994,6 +2044,37 @@ async function enterApp(){
   }
 }
 
+// Shows "MACHINE 1/2" next to the type pill for two-machine locations.
+// Clicking it switches machine (same operator, same shift) — everything
+// on screen then follows the newly selected machine.
+function renderMachinePill(){
+  const n=myMachineNo();
+  const tb=document.getElementById('tb-machine'), sb=document.getElementById('sb-machine');
+  [tb,sb].forEach(function(el){
+    if(!el) return;
+    el.querySelectorAll('.mach-pill').forEach(x=>x.remove());
+    if(!n) return;
+    const s=document.createElement('span');
+    s.className='pill mach-pill '+(n===1?'pill-t1':'pill-t2');
+    s.style.cssText='cursor:pointer;margin-left:6px;';
+    s.title='Click to switch machine';
+    s.textContent='MACHINE '+n;
+    s.onclick=switchMachine;
+    el.appendChild(s);
+  });
+}
+function switchMachine(){
+  const n=myMachineNo(); if(!n) return;
+  const other=n===1?2:1;
+  if(!confirm('Switch to Machine '+other+'?\n\nFrom now on scans are saved for Machine '+other+', and you will only see Machine '+other+' records.')) return;
+  CU.machine_no=other;
+  saveSession();
+  renderMachinePill();
+  show('v-scan');
+  updateStats(); updateBanner();
+  toast('Now scanning on Machine '+other,'ok');
+}
+
 function doLogout(){
   if(camStream)stopCam();
   if(dashAutoRefreshTimer){ clearInterval(dashAutoRefreshTimer); dashAutoRefreshTimer=null; }
@@ -2008,6 +2089,8 @@ function doLogout(){
   document.getElementById('login-err').style.display='none';
   document.getElementById('login-main').style.display='block';
   document.getElementById('login-loc-wrap').style.display='none';
+  document.getElementById('login-machine-wrap').style.display='none';
+  pendingMachineCU=null;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -2506,13 +2589,29 @@ async function submitScan(){
     product_name:product?.productName||'', product_category:product?.category||'',
     synced_to_sheet:false
   };
+  // Two-machine locations only (Tauru) — every other location's payload is
+  // untouched, so nothing changes for them even before the column exists.
+  if(myMachineNo()) scanPayload.machine_no=myMachineNo();
 
   let saved;
   try{
     saved=await sbPost('scans', scanPayload);
   }catch(e){
-    btn.disabled=false; btn.textContent='SAVE RECORD';
-    toast('Save failed: '+e.message,'err'); return;
+    if(scanPayload.machine_no && /machine_no/i.test(String(e.message))){
+      // The scans.machine_no column hasn't been added in Supabase yet —
+      // don't block the operator; save without it and flag it loudly.
+      delete scanPayload.machine_no;
+      try{
+        saved=await sbPost('scans', scanPayload);
+        toast('⚠️ Saved, but machine number NOT recorded — ask admin to add the machine_no column in Supabase','warn');
+      }catch(e2){
+        btn.disabled=false; btn.textContent='SAVE RECORD';
+        toast('Save failed: '+e2.message,'err'); return;
+      }
+    } else {
+      btn.disabled=false; btn.textContent='SAVE RECORD';
+      toast('Save failed: '+e.message,'err'); return;
+    }
   }
   btn.disabled=false; btn.textContent='SAVE RECORD';
   if(!saved||!saved.id){ toast('Save failed — no response from Supabase','err'); return; }
@@ -2521,7 +2620,7 @@ async function submitScan(){
   const localRec={
     id:saved.id,
     awb, scanned_at:saved.scanned_at||new Date().toISOString(),
-    location_code:myLoc(), machine_type:myMT(),
+    location_code:myLoc(), machine_type:myMT(), machine_no:myMachineNo(),
     operator_email:CU.email, result, tamper_status:tamper,
     shoe_box:scanPayload.shoe_box, remarks, seq_num:seq,
     product_name:product?.productName||'', product_category:product?.category||'',
@@ -3335,8 +3434,12 @@ async function processFd(files){
       // scans/day, a 14-day window can be several thousand rows — trimming
       // the payload down to just what's needed here cuts real transfer
       // time without changing which rows come back at all.
-      allInWindow=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&select=id,awb,scanned_at,xray_image_url,synced_to_sheet&order=scanned_at.asc');
+      allInWindow=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+windowStartStr+'T00:00:00%2B05:30&select=id,awb,scanned_at,xray_image_url,synced_to_sheet'+(myMachineNo()?',machine_no':'')+'&order=scanned_at.asc');
       if(!Array.isArray(allInWindow)) allInWindow=[];
+      // Two-machine location: only match this machine's folder images
+      // against this machine's own scans (the other machine has its own
+      // folder and its own sequence).
+      allInWindow=allInWindow.filter(machineMatches);
       break;
     }catch(e){
       console.warn('Unlinked-pool fetch attempt '+(attempt+1)+' failed:',e.message);
@@ -3929,7 +4032,7 @@ async function onRecDateChange(){
       myRecordsViewData=null;
     }else{
       const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&operator_email=eq.'+encodeURIComponent(CU.email)+'&scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.asc');
-      myRecordsViewData=Array.isArray(data)?data:[];
+      myRecordsViewData=Array.isArray(data)?data.filter(machineMatches):[];
     }
     // Fetch this operator's shifts for the selected date, so records can
     // be grouped by which shift they belong to instead of one flat list.
@@ -4443,6 +4546,11 @@ window.addEventListener('beforeunload',function(e){
       isAdmin=adm==='true';
       isSupervisor=sup==='true';
       isPoc=poc==='true';
+      // A Tauru operator whose session predates the machine picker has no
+      // machine chosen — send them back to log in and pick one.
+      if(!isAdmin&&!isSupervisor&&!isPoc&&needsMachineChoice(CU.location_code)&&!CU.machine_no){
+        CU=null; clearSession(); return;
+      }
       await enterApp();
     }catch(e){ clearSession(); }
   }

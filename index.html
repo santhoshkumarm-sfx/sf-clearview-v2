@@ -903,7 +903,7 @@ const SB_HDRS = {
 // appends a one-time cache-busting query param, so there is no layer
 // — browser cache or otherwise — left that could serve a stale
 // response instead of actually hitting Supabase/Apps Script fresh.
-async function sbGet(path){
+async function sbGet(path, opts){
   // FIX (urgent, 2026-07-23): the cache-busting query param added
   // moments ago (_cb=timestamp) broke EVERY Supabase call, including
   // login. Supabase's API treats query parameters as either a
@@ -915,9 +915,28 @@ async function sbGet(path){
   // browser-only instruction, it's never part of the actual request
   // sent to the server) — it's specifically the extra query parameter
   // that needed to go, not the caching fix itself.
-  const resp = await fetch(SB_URL + path, { headers: SB_HDRS, cache: 'no-store' });
-  if(!resp.ok) throw new Error('Supabase GET failed: ' + resp.status);
-  return resp.json();
+  // FIX (2026-11-05): this had NO timeout — on a slow/stalled connection the
+  // request just hung (operators saw "SAVING..." / a zero scan count for
+  // minutes). Now every read has a timeout and retries transient failures
+  // (timeouts, network errors, 5xx/408/429). A 4xx is never retried.
+  opts = opts || {};
+  const tries = opts.tries || 3, to = opts.timeoutMs || 30000;
+  let lastErr = null;
+  for(let a=0; a<tries; a++){
+    const ctrl = new AbortController();
+    const timer = setTimeout(function(){ ctrl.abort(); }, to);
+    try{
+      const resp = await fetch(SB_URL + path, { headers: SB_HDRS, cache: 'no-store', signal: ctrl.signal });
+      if(resp.ok) return await resp.json();
+      lastErr = new Error('Supabase GET failed: ' + resp.status);
+      if(resp.status < 500 && resp.status !== 408 && resp.status !== 429){ lastErr.fatal = true; throw lastErr; }
+    }catch(e){
+      if(e && e.fatal) throw e;
+      lastErr = (e && e.name === 'AbortError') ? new Error('Supabase GET timed out after ' + Math.round(to/1000) + 's') : e;
+    }finally{ clearTimeout(timer); }
+    if(a < tries - 1) await new Promise(function(r){ setTimeout(r, 700 * (a + 1)); });
+  }
+  throw lastErr || new Error('Supabase GET failed');
 }
 
 // Supabase/PostgREST caps every response at a max row count configured on
@@ -927,13 +946,13 @@ async function sbGet(path){
 // helper pages through with limit+offset until a page comes back with
 // fewer rows than requested, so it always gets everything regardless of
 // how many rows actually exist.
-async function sbGetAll(path, pageSize){
+async function sbGetAll(path, pageSize, opts){
   pageSize = pageSize || 1000;
   const sep = path.includes('?') ? '&' : '?';
   let all = [];
   let offset = 0;
   while(true){
-    const page = await sbGet(path + sep + 'limit=' + pageSize + '&offset=' + offset);
+    const page = await sbGet(path + sep + 'limit=' + pageSize + '&offset=' + offset, opts);
     if(!Array.isArray(page) || page.length === 0) break;
     all = all.concat(page);
     if(page.length < pageSize) break; // last page
@@ -942,27 +961,148 @@ async function sbGetAll(path, pageSize){
   return all;
 }
 
-async function sbPost(table, payload){
-  const resp = await fetch(SB_URL + '/rest/v1/' + table, {
-    method:'POST',
-    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=representation'}),
-    cache: 'no-store',
-    body: JSON.stringify(payload)
-  });
-  if(!resp.ok){ const t=await resp.text(); throw new Error(t); }
-  const data = await resp.json();
-  return Array.isArray(data) ? data[0] : data;
+// FIX (2026-11-05): added a timeout. A stalled request used to leave the
+// Save button on "SAVING..." indefinitely. Errors carry `.transient=true`
+// when a retry/queue makes sense (timeout, network down, 5xx/408/429).
+async function sbPost(table, payload, timeoutMs){
+  const ctrl = new AbortController();
+  const timer = setTimeout(function(){ ctrl.abort(); }, timeoutMs || 15000);
+  try{
+    const resp = await fetch(SB_URL + '/rest/v1/' + table, {
+      method:'POST',
+      headers: Object.assign({}, SB_HDRS, {'Prefer':'return=representation'}),
+      cache: 'no-store',
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
+    });
+    if(!resp.ok){
+      const t = await resp.text();
+      const e = new Error(t); e.status = resp.status;
+      e.transient = (resp.status >= 500 || resp.status === 408 || resp.status === 429);
+      throw e;
+    }
+    const data = await resp.json();
+    return Array.isArray(data) ? data[0] : data;
+  }catch(e){
+    if(e && e.name === 'AbortError'){ const te = new Error('Server did not respond in time'); te.transient = true; throw te; }
+    if(e instanceof TypeError){ e.transient = true; }   // fetch() network failure
+    throw e;
+  }finally{ clearTimeout(timer); }
 }
 
 async function sbPatch(table, filter, payload){
-  const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
-    method:'PATCH',
-    headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'}),
-    cache: 'no-store',
-    body: JSON.stringify(payload)
-  });
-  return resp.ok;
+  const ctrl = new AbortController();
+  const timer = setTimeout(function(){ ctrl.abort(); }, 20000);
+  try{
+    const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
+      method:'PATCH',
+      headers: Object.assign({}, SB_HDRS, {'Prefer':'return=minimal'}),
+      cache: 'no-store',
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
+    });
+    return resp.ok;
+  }catch(e){
+    if(e && e.name === 'AbortError') return false;
+    throw e;
+  }finally{ clearTimeout(timer); }
 }
+
+// ══════════════════════════════════════════════════════════════
+//  RELIABLE SAVE + OFFLINE QUEUE (2026-11-05)
+//  One scan = one attempt (8s). If the server doesn't answer, we check
+//  whether the scan actually landed (so it's never duplicated), and if not
+//  it goes into a queue kept in this browser. The operator keeps scanning;
+//  the queue uploads itself every 10s / when the network returns, and
+//  survives page reloads. Nothing is ever silently lost.
+// ══════════════════════════════════════════════════════════════
+const PENDING_KEY='cv_pending_scans', FAILED_KEY='cv_failed_scans';
+function readPending(){ try{ return JSON.parse(localStorage.getItem(PENDING_KEY)||'[]'); }catch(e){ return []; } }
+function writePending(a){ try{ localStorage.setItem(PENDING_KEY,JSON.stringify(a)); }catch(e){} updatePendingBadge(); }
+function pendingKey(it){ return it.createdAt+'|'+it.payload.awb; }
+function updatePendingBadge(){
+  if(!document.body) return;
+  let b=document.getElementById('pending-badge'); const n=readPending().length;
+  if(!n){ if(b) b.remove(); return; }
+  if(!b){
+    b=document.createElement('div'); b.id='pending-badge';
+    b.style.cssText='position:fixed;left:12px;bottom:12px;z-index:9999;background:#b45309;color:#fff;padding:8px 12px;border-radius:8px;font:600 12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;';
+    b.title='Click to retry now';
+    b.onclick=function(){ flushPendingScans(); };
+    document.body.appendChild(b);
+  }
+  b.textContent='⏳ '+n+' scan'+(n>1?'s':'')+' waiting to upload — retrying automatically';
+}
+// Did this scan already reach the database? (e.g. the reply was lost)
+// Returns the row, null (not there) or undefined (couldn't tell).
+async function scanExists(p, sinceIso){
+  try{
+    const rows=await sbGet('/rest/v1/scans?select=id,scanned_at&awb=eq.'+encodeURIComponent(p.awb)
+      +'&operator_email=eq.'+encodeURIComponent(p.operator_email)
+      +'&scanned_at=gte.'+encodeURIComponent(sinceIso)+'&order=scanned_at.desc&limit=1',{tries:1,timeoutMs:5000});
+    return (Array.isArray(rows)&&rows[0])?rows[0]:null;
+  }catch(e){ return undefined; }
+}
+async function saveScanResilient(payload){
+  const startedAt=new Date();
+  const since=new Date(startedAt.getTime()-120000).toISOString();
+  try{
+    return await sbPost('scans',payload,8000);
+  }catch(e){
+    if(!e.transient) throw e;                       // real error (bad column etc.) — caller handles
+    const hit=await scanExists(payload,since);
+    if(hit) return hit;                             // it did land
+  }
+  const item={payload:Object.assign({},payload),createdAt:startedAt.toISOString()};
+  const q=readPending(); q.push(item); writePending(q);
+  setTimeout(flushPendingScans,3000);
+  return {id:'pending_'+startedAt.getTime()+'_'+Math.random().toString(36).slice(2,6),
+          scanned_at:item.createdAt,_pending:true,_pk:pendingKey(item)};
+}
+let _flushing=false;
+async function flushPendingScans(){
+  if(_flushing) return;
+  if(!readPending().length){ updatePendingBadge(); return; }
+  _flushing=true; let done=0;
+  try{
+    for(const item of readPending()){
+      const since=new Date(new Date(item.createdAt).getTime()-120000).toISOString();
+      let saved=await scanExists(item.payload,since);
+      if(!saved){
+        const p=Object.assign({},item.payload,{scanned_at:item.createdAt});
+        try{ saved=await sbPost('scans',p,15000); }
+        catch(e){
+          if(e.transient) break;                    // still offline — keep order, try later
+          if(p.machine_no && /machine_no/i.test(String(e.message))){
+            delete p.machine_no;
+            try{ saved=await sbPost('scans',p,15000); }catch(e2){ if(e2.transient) break; }
+          }
+          if(!saved){                               // permanent rejection — park it, don't block the rest
+            try{ const f=JSON.parse(localStorage.getItem(FAILED_KEY)||'[]'); f.push({item:item,error:String(e.message).slice(0,300)}); localStorage.setItem(FAILED_KEY,JSON.stringify(f)); }catch(x){}
+            writePending(readPending().filter(x=>pendingKey(x)!==pendingKey(item)));
+            toast('Scan '+item.payload.awb+' was rejected by the server and could not be saved','err');
+            continue;
+          }
+        }
+      }
+      const pk=pendingKey(item);
+      writePending(readPending().filter(x=>pendingKey(x)!==pk));
+      done++;
+      const idx=DB.records.findIndex(r=>r._pk===pk);
+      if(idx>=0){
+        if(DB.records.some(r=>r.id===saved.id)) DB.records.splice(idx,1);
+        else{ DB.records[idx].id=saved.id; DB.records[idx].scanned_at=saved.scanned_at||DB.records[idx].scanned_at; delete DB.records[idx]._pending; delete DB.records[idx]._pk; }
+      }
+    }
+  }finally{ _flushing=false; updatePendingBadge(); }
+  if(done){
+    toast(done+' waiting scan'+(done>1?'s':'')+' uploaded','ok');
+    try{ if(document.getElementById('v-scan')&&document.getElementById('v-scan').classList.contains('on')) updateStats(); }catch(e){}
+  }
+}
+setInterval(flushPendingScans,10000);
+window.addEventListener('online',function(){ flushPendingScans(); });
+document.addEventListener('DOMContentLoaded',function(){ updatePendingBadge(); setTimeout(flushPendingScans,2000); });
 
 async function sbDelete(table, filter){
   const resp = await fetch(SB_URL + '/rest/v1/' + table + '?' + filter, {
@@ -2173,6 +2313,19 @@ async function fetchDayRecords(date, full){
   return merged.sort((a,b)=>new Date(b.scanned_at)-new Date(a.scanned_at));
 }
 
+let _recRetry=0;
+function scheduleRecordsRetry(){
+  if(_recRetry>=12) return;
+  const delay=Math.min(60000,8000*(++_recRetry));
+  setTimeout(async function(){
+    if(!CU) return;
+    try{ await loadRecords(); }catch(e){ return; }
+    try{
+      const on=function(id){ const el=document.getElementById(id); return el&&el.classList.contains('on'); };
+      if(on('v-scan')){ updateStats(); updateBanner(); } else if(on('v-shift')) renderShift();
+    }catch(e){}
+  },delay);
+}
 async function loadRecords(){
   const today=todayStr();
   if(isAdmin||isSupervisor||isPoc){
@@ -2184,8 +2337,30 @@ async function loadRecords(){
     let syncedRecs=[];
     if(cached){ try{ syncedRecs=JSON.parse(cached); }catch(e){} }
     // Then get live unsynced from Supabase
-    const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00%2B05:30&order=scanned_at.desc');
+    // FIX (2026-11-05): when this read was slow/failed the scan count showed
+    // 0 until the next auto-refresh 2-3 minutes later. Now: bounded wait,
+    // fall back to the last good copy kept on this PC, and keep retrying
+    // in the background until it succeeds.
+    const recCacheKey='cv_today_cache_'+today+'_'+myLoc();
+    let data=null;
+    try{
+      data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+today+'T00:00:00%2B05:30&order=scanned_at.desc',1000,{tries:2,timeoutMs:15000});
+      _recRetry=0;
+      try{ if(Array.isArray(data)&&data.length<=4000) localStorage.setItem(recCacheKey,JSON.stringify(data)); }catch(e){}
+    }catch(e){
+      console.warn('loadRecords failed, using last known copy:',e.message);
+      try{ data=JSON.parse(localStorage.getItem(recCacheKey)||'null'); }catch(x){ data=null; }
+      if(!Array.isArray(data)) data=[];
+      scheduleRecordsRetry();
+    }
     const liveRecs=Array.isArray(data)?data.map(function(r){return Object.assign({},r,{image_linked:r.image_linked||false});}):[];
+    // Scans still waiting in the upload queue count too.
+    readPending().forEach(function(it){
+      const pk=pendingKey(it);
+      if(it.payload.location_code!==myLoc()||liveRecs.some(r=>r._pk===pk)) return;
+      liveRecs.unshift(Object.assign({},it.payload,{id:'pending_'+new Date(it.createdAt).getTime(),scanned_at:it.createdAt,
+        image_linked:false,xray_image_url:'',label_image_url:'',front_image_url:'',back_image_url:'',_pending:true,_pk:pk}));
+    });
     // Merge live + cached synced (live takes priority, no duplicates)
     const merged=[...liveRecs];
     syncedRecs.forEach(function(sr){
@@ -2574,11 +2749,21 @@ async function submitScan(){
   const _maxSeq=_todayRecs.reduce((m,r)=>Math.max(m,r.seq_num||0),0);
   const seq=myMT()===2?_maxSeq+1:null;
 
-  // ── FAST SAVE: write directly to Supabase ────────────────
-  const btn=document.getElementById('save-btn');
-  btn.disabled=true; btn.textContent='SAVING...';
+  // ── INSTANT SAVE (2026-11-05) ────────────────────────────
+  // The screen used to stay locked on "SAVING..." — with the OLD barcode
+  // still in the field — until the server answered. On a slow connection
+  // that meant minutes, and the next scan typed into the same field.
+  // Now the record is shown and the form is cleared immediately (ready for
+  // the next barcode in ~1s); the database write finishes in the background
+  // with a timeout, a duplicate check and an on-PC retry queue.
+  const _now=Date.now();
+  window._recentSubmits=window._recentSubmits||{};
+  if(window._recentSubmits[awb] && _now-window._recentSubmits[awb]<2500){ clearScan(); return; } // double-fire of the same barcode
+  window._recentSubmits[awb]=_now;
 
-  const shiftId=await ensureShift(); // safety net — normally already set from login
+  // Normally already set from login; only wait (max 1.5s) if it isn't.
+  let shiftId=currentShiftId||null;
+  if(!shiftId){ shiftId=await Promise.race([ensureShift(), new Promise(function(r){ setTimeout(function(){ r(currentShiftId||null); },1500); })]); }
 
   const scanPayload={
     awb,
@@ -2593,33 +2778,10 @@ async function submitScan(){
   // untouched, so nothing changes for them even before the column exists.
   if(myMachineNo()) scanPayload.machine_no=myMachineNo();
 
-  let saved;
-  try{
-    saved=await sbPost('scans', scanPayload);
-  }catch(e){
-    if(scanPayload.machine_no && /machine_no/i.test(String(e.message))){
-      // The scans.machine_no column hasn't been added in Supabase yet —
-      // don't block the operator; save without it and flag it loudly.
-      delete scanPayload.machine_no;
-      try{
-        saved=await sbPost('scans', scanPayload);
-        toast('⚠️ Saved, but machine number NOT recorded — ask admin to add the machine_no column in Supabase','warn');
-      }catch(e2){
-        btn.disabled=false; btn.textContent='SAVE RECORD';
-        toast('Save failed: '+e2.message,'err'); return;
-      }
-    } else {
-      btn.disabled=false; btn.textContent='SAVE RECORD';
-      toast('Save failed: '+e.message,'err'); return;
-    }
-  }
-  btn.disabled=false; btn.textContent='SAVE RECORD';
-  if(!saved||!saved.id){ toast('Save failed — no response from Supabase','err'); return; }
-
-  // Add to local DB immediately for instant UI update
+  const tmpId='tmp_'+_now+'_'+Math.random().toString(36).slice(2,6);
   const localRec={
-    id:saved.id,
-    awb, scanned_at:saved.scanned_at||new Date().toISOString(),
+    id:tmpId, _pending:true, _pk:'opt|'+tmpId,
+    awb, scanned_at:new Date(_now).toISOString(),
     location_code:myLoc(), machine_type:myMT(), machine_no:myMachineNo(),
     operator_email:CU.email, result, tamper_status:tamper,
     shoe_box:scanPayload.shoe_box, remarks, seq_num:seq,
@@ -2630,18 +2792,51 @@ async function submitScan(){
   toast('AWB '+awb+' saved'+(product?' · '+product.productName:''),'ok');
 
   // FIX: this used to check `captured` AFTER clearScan() already reset it
-  // to all-null on the same line below — meaning this condition was ALWAYS
-  // false and inline-captured images (for Fake/Empty/Tampered, captured
-  // directly on this page rather than via the Type-2 folder flow) were
-  // never actually uploaded. Snapshotting BEFORE clearScan() runs fixes it.
+  // to all-null — so inline-captured images were never uploaded.
+  // Snapshotting BEFORE clearScan() runs fixes it.
   const capturedSnapshot=captured.slice();
   updateStats(); updateBanner(); clearScan();
 
-  // ── BACKGROUND IMAGE UPLOAD (non-blocking) ───────────────
-  if(capturedSnapshot.filter(Boolean).length>0){
-    const recId=saved.id||localRec.id;
-    uploadImagesBackground(awb, recId, capturedSnapshot);
-  }
+  // ── Background: write to the database, then upload any photos ──
+  window._uploading=(window._uploading||0)+1;   // also blocks accidental tab-close while writing
+  (async function(){
+    let saved=null;
+    try{
+      try{ saved=await saveScanResilient(scanPayload); }
+      catch(e){
+        if(scanPayload.machine_no && /machine_no/i.test(String(e.message))){
+          // The scans.machine_no column hasn't been added in Supabase yet —
+          // save without it and flag it loudly.
+          delete scanPayload.machine_no;
+          saved=await saveScanResilient(scanPayload);
+          toast('⚠️ Saved, but machine number NOT recorded — ask admin to add the machine_no column in Supabase','warn');
+        } else throw e;
+      }
+      if(!saved||!saved.id) throw new Error('no response from Supabase');
+    }catch(e){
+      // Permanently rejected (not just slow) — take it off the count and say so.
+      DB.records=DB.records.filter(function(r){ return r.id!==tmpId; });
+      try{ updateStats(); updateBanner(); }catch(x){}
+      try{ const f=JSON.parse(localStorage.getItem(FAILED_KEY)||'[]'); f.push({payload:scanPayload,error:String(e.message).slice(0,300)}); localStorage.setItem(FAILED_KEY,JSON.stringify(f)); }catch(x){}
+      toast('❌ AWB '+awb+' was NOT saved ('+String(e.message).slice(0,120)+') — please scan it again','err');
+      return;
+    }finally{ window._uploading=Math.max(0,(window._uploading||1)-1); }
+
+    const mine=DB.records.find(function(r){ return r.id===tmpId; });
+    if(saved._pending){
+      // Server slow/unreachable — the scan is safe in the on-PC queue and will upload by itself.
+      if(mine) mine._pk=saved._pk;
+      toast('⏳ AWB '+awb+' is waiting to upload — server is slow; it is kept on this PC and will go up automatically','warn');
+      return;
+    }
+    if(mine){
+      mine.id=saved.id; mine.scanned_at=saved.scanned_at||mine.scanned_at;
+      delete mine._pending; delete mine._pk;
+    }
+    // ── BACKGROUND IMAGE UPLOAD (non-blocking) ───────────────
+    if(capturedSnapshot.filter(Boolean).length>0) uploadImagesBackground(awb, saved.id, capturedSnapshot);
+    try{ updateStats(); }catch(x){}
+  })();
 }
 
 async function uploadImagesBackground(awb, recId, imgs){

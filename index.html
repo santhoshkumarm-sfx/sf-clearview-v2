@@ -199,9 +199,9 @@ video{width:100%;height:100%;object-fit:cover;}
         <button class="btn btn-ghost btn-xs" onclick="backToLoginForm()">← Back</button>
         <span id="login-machine-welcome" style="font-family:var(--mono);font-size:11px;color:var(--text2);"></span>
       </div>
-      <label class="lbl" style="display:block;margin-bottom:8px;">WHICH X-RAY MACHINE ARE YOU SCANNING ON?</label>
-      <div class="loc-pill-opt" onclick="pickMachine(1)" style="font-size:16px;padding:16px;"><span style="font-family:var(--mono);font-weight:700;color:var(--t1);width:70px;">M1</span><span style="flex:1;">Machine 1</span></div>
-      <div class="loc-pill-opt" onclick="pickMachine(2)" style="font-size:16px;padding:16px;"><span style="font-family:var(--mono);font-weight:700;color:var(--t2);width:70px;">M2</span><span style="flex:1;">Machine 2</span></div>
+      <label class="lbl" id="lm-q" style="display:block;margin-bottom:8px;">WHICH X-RAY MACHINE ARE YOU SCANNING ON?</label>
+      <div class="loc-pill-opt" onclick="pickMachine(1)" style="font-size:16px;padding:16px;"><span id="lm-s1" style="font-family:var(--mono);font-weight:700;color:var(--t1);width:70px;">M1</span><span id="lm-f1" style="flex:1;">Machine 1</span></div>
+      <div class="loc-pill-opt" onclick="pickMachine(2)" style="font-size:16px;padding:16px;"><span id="lm-s2" style="font-family:var(--mono);font-weight:700;color:var(--t2);width:70px;">M2</span><span id="lm-f2" style="flex:1;">Machine 2</span></div>
     </div>
   </div>
 </div>
@@ -458,6 +458,8 @@ video{width:100%;height:100%;object-fit:cover;}
           <input type="date" id="rec-date" onchange="onRecDateChange()">
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('rec-date').value=todayStr();onRecDateChange();">📅 Today</button>
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('op')">CSV</button>
+          <button class="btn btn-ghost btn-sm flow-csv-op" style="display:none;" onclick="exportFlowCSV('op',1)">⬇ Port Blair CSV</button>
+          <button class="btn btn-ghost btn-sm flow-csv-op" style="display:none;" onclick="exportFlowCSV('op',2)">⬇ RVP CSV</button>
           <span id="rec-loading" style="font-family:var(--mono);font-size:10px;color:var(--text3);display:none;">⏳ Loading...</span>
         </div>
         <div id="rec-container"></div>
@@ -589,6 +591,8 @@ video{width:100%;height:100%;object-fit:cover;}
           <select id="arec-res" onchange="renderAllRec()"><option value="">All Results</option><option>ORIGINAL</option><option>FAKE</option><option>EMPTY</option><option>VOLUMETRIC</option></select>
           <input type="date" id="arec-date" onchange="renderAllRec()">
           <button class="btn btn-ghost btn-sm" onclick="exportCSV('adm')">CSV</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportFlowCSV('adm',1)" title="Chennai records scanned as Port Blair FWD (for the date and filters shown)">⬇ Port Blair CSV</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportFlowCSV('adm',2)" title="Chennai records scanned as RVP (for the date and filters shown)">⬇ RVP CSV</button>
         </div>
         <div class="card">
           <div class="card-head"><span class="card-head-icon">📋</span><span class="card-head-title">ALL RECORDS</span><span id="arec-count" class="card-head-right"></span></div>
@@ -1207,12 +1211,27 @@ function myMT(){  return CU?.machine_type||1; }
 // matching, My Records) follows that one machine. Scans saved before this
 // change have no machine_no and count as Machine 1 (the original machine).
 // Add a code here (or name it "...Tauru...") to enable it elsewhere.
+//
+// CHENNAI (added 2026-11-06) uses the SAME mechanism, but the two choices are
+// two workflows, not two machines: 1 = Port Blair FWD (forward), 2 = RVP
+// (reverse). Same scans.machine_no column; labels and CSV file names differ.
 const MACHINE_CHOICE_LOCS=['TAU','TAURU'];
-function needsMachineChoice(code){
-  if(MACHINE_CHOICE_LOCS.indexOf(String(code||'').toUpperCase())!==-1) return true;
+const FLOW_LOCS=['CHN'];   // Chennai — Port Blair FWD / RVP
+function machineKind(code){
+  const c=String(code||'').toUpperCase();
   const loc=(DB&&DB.locations||[]).find(l=>l.code===code);
-  return !!(loc && /tauru|taru/i.test(String(loc.name||'')+' '+String(loc.full_name||'')));
+  const nm=loc?(String(loc.name||'')+' '+String(loc.full_name||'')):'';
+  if(FLOW_LOCS.indexOf(c)!==-1 || /chennai/i.test(nm)) return 'chennai';
+  if(MACHINE_CHOICE_LOCS.indexOf(c)!==-1 || /tauru|taru/i.test(nm)) return 'tauru';
+  return null;
 }
+function needsMachineChoice(code){ return !!machineKind(code); }
+const MACHINE_LABELS={
+  tauru:  {q:'WHICH X-RAY MACHINE ARE YOU SCANNING ON?', 1:{full:'Machine 1',short:'M1',file:'machine1'}, 2:{full:'Machine 2',short:'M2',file:'machine2'}},
+  chennai:{q:'WHAT ARE YOU SCANNING NOW?',               1:{full:'Port Blair FWD',short:'PB',file:'portblair'}, 2:{full:'RVP',short:'RVP',file:'rvp'}}
+};
+function machineLabelSet(code){ return MACHINE_LABELS[machineKind(code||myLoc())||'tauru']; }
+function machineLabel(n,code){ const l=machineLabelSet(code)[n]; return l?l.full:('Machine '+n); }
 function myMachineNo(){ return (CU&&CU.machine_no)?Number(CU.machine_no):null; }
 function machineMatches(r){ const m=myMachineNo(); return !m || (Number(r.machine_no)||1)===m; }
 // POC = location-scoped read-only admin. myPocLocs() returns null for
@@ -1968,6 +1987,7 @@ function show(id){
     renderShiftLog();
   }
   if(id==='v-rec'){
+    document.querySelectorAll('.flow-csv-op').forEach(function(b){ b.style.display=(CU&&machineKind(myLoc())==='chennai')?'inline-flex':'none'; });
     var rd=document.getElementById('rec-date');
     if(rd&&!rd.value){ rd.value=todayStr(); onRecDateChange(); }
     else renderRec();
@@ -2109,6 +2129,10 @@ function doLoginWithLoc(user,code){
     pendingMachineCU=CU; CU=null;
     document.getElementById('login-main').style.display='none';
     document.getElementById('login-loc-wrap').style.display='none';
+    const L=machineLabelSet(code);
+    document.getElementById('lm-q').textContent=L.q;
+    document.getElementById('lm-s1').textContent=L[1].short; document.getElementById('lm-f1').textContent=L[1].full;
+    document.getElementById('lm-s2').textContent=L[2].short; document.getElementById('lm-f2').textContent=L[2].full;
     document.getElementById('login-machine-wrap').style.display='block';
     document.getElementById('login-machine-welcome').textContent='Welcome, '+(user.name||user.email)+' · '+code;
     return;
@@ -2197,8 +2221,8 @@ function renderMachinePill(){
     const s=document.createElement('span');
     s.className='pill mach-pill '+(n===1?'pill-t1':'pill-t2');
     s.style.cssText='cursor:pointer;margin-left:6px;';
-    s.title='Click to switch machine';
-    s.textContent='MACHINE '+n;
+    s.title='Click to switch';
+    s.textContent=machineKind(myLoc())==='chennai'?machineLabel(n).toUpperCase():('MACHINE '+n);
     s.onclick=switchMachine;
     el.appendChild(s);
   });
@@ -2206,13 +2230,14 @@ function renderMachinePill(){
 function switchMachine(){
   const n=myMachineNo(); if(!n) return;
   const other=n===1?2:1;
-  if(!confirm('Switch to Machine '+other+'?\n\nFrom now on scans are saved for Machine '+other+', and you will only see Machine '+other+' records.')) return;
+  const isFlow=machineKind(myLoc())==='chennai';
+  if(!isFlow && !confirm('Switch to '+machineLabel(other)+'?\n\nFrom now on scans are saved for '+machineLabel(other)+', and you will only see '+machineLabel(other)+' records.')) return;
   CU.machine_no=other;
   saveSession();
   renderMachinePill();
   show('v-scan');
   updateStats(); updateBanner();
-  toast('Now scanning on Machine '+other,'ok');
+  toast('Now scanning: '+machineLabel(other),'ok');
 }
 
 function doLogout(){
@@ -4691,23 +4716,56 @@ function populateLocFilter(){
 // ══════════════════════════════════════════════════════════════
 //  CSV EXPORT
 // ══════════════════════════════════════════════════════════════
+function csvDownload(recs, filename){
+  // Chronological (scan) order — 1,2,3 — so it lines up with the AWB
+  // sequence and the machine's own timestamps.
+  recs=[...recs].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
+  const h=['AWB','Date','Location','Machine / Flow','Product','Category','Result','Tamper','Shoebox','Remarks','Operator','X-Ray Image','Label Image','Front Image','Back Image'];
+  const rows=recs.map(r=>[r.awb,new Date(r.scanned_at).toLocaleString('en-IN'),r.location_code,
+    machineKind(r.location_code)?machineLabel(Number(r.machine_no)||1,r.location_code):'',
+    r.product_name||'',r.product_category||'',r.result,r.tamper_status||'',r.shoe_box||'',(r.remarks||'').replace(/,/g,' '),r.operator_email||'',r.xray_image_url||'',r.label_image_url||'',r.front_image_url||'',r.back_image_url||'']);
+  const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const csv='\ufeff'+[h,...rows].map(r=>r.map(q).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download=filename;
+  a.click();
+}
 async function exportCSV(mode){
   if(mode==='op'){ showLoad('Refreshing...'); await loadRecords(); hideLoad(); }
   let recs;
   if(mode==='adm'){
     recs=allRecView.slice();   // exactly what All Records is showing (same date + filters)
   } else { recs=myToday(); }
-  // Export in chronological (scan) order — 1,2,3 — not the newest-first
-  // order used for on-screen tables, so it lines up with AWB sequence
-  // and is easy to cross-check against the machine's own timestamps.
-  recs=[...recs].sort((a,b)=>new Date(a.scanned_at)-new Date(b.scanned_at));
-  const h=['AWB','Date','Location','Product','Category','Result','Tamper','Shoebox','Remarks','Operator','X-Ray Image','Label Image','Front Image','Back Image'];
-  const rows=recs.map(r=>[r.awb,new Date(r.scanned_at).toLocaleString('en-IN'),r.location_code,r.product_name||'',r.product_category||'',r.result,r.tamper_status||'',r.shoe_box||'',(r.remarks||'').replace(/,/g,' '),r.operator_email||'',r.xray_image_url||'',r.label_image_url||'',r.front_image_url||'',r.back_image_url||'']);
-  const csv=[h,...rows].map(r=>r.map(v=>'"'+v+'"').join(',')).join('\n');
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download='sfclearview_'+new Date().toISOString().split('T')[0]+'.csv';
-  a.click(); toast('CSV exported','ok');
+  csvDownload(recs,'sfclearview_'+new Date().toISOString().split('T')[0]+'.csv');
+  toast('CSV exported','ok');
+}
+
+// Chennai: one CSV per workflow — Port Blair FWD (1) or RVP (2).
+async function exportFlowCSV(mode, n){
+  const flowOf=r=>(Number(r.machine_no)||1)===n;
+  const tag=MACHINE_LABELS.chennai[n].file;
+  let recs, date;
+  try{
+    if(mode==='adm'){
+      date=document.getElementById('arec-date')?.value||todayStr();
+      recs=allRecView.filter(r=>machineKind(r.location_code)==='chennai'&&flowOf(r));
+    } else {
+      date=document.getElementById('rec-date')?.value||todayStr();
+      showLoad('Preparing '+machineLabel(n,myLoc())+' CSV...');
+      if(date===todayStr()){
+        await loadRecords();
+        recs=DB.records.filter(r=>r.location_code===myLoc()&&toISTDateStr(r.scanned_at)===date&&flowOf(r));
+      } else {
+        const data=await sbGetAll('/rest/v1/scans?location_code=eq.'+encodeURIComponent(myLoc())+'&scanned_at=gte.'+date+'T00:00:00%2B05:30&scanned_at=lte.'+date+'T23:59:59%2B05:30&order=scanned_at.asc');
+        recs=(Array.isArray(data)?data:[]).filter(flowOf);
+      }
+      hideLoad();
+    }
+  }catch(e){ hideLoad(); toast('CSV failed: '+e.message,'err'); return; }
+  if(!recs.length){ toast('No '+MACHINE_LABELS.chennai[n].full+' records for '+date,'warn'); return; }
+  csvDownload(recs,'chennai_'+tag+'_'+date+'.csv');
+  toast(MACHINE_LABELS.chennai[n].full+' CSV: '+recs.length+' records','ok');
 }
 
 // ══════════════════════════════════════════════════════════════

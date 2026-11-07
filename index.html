@@ -1032,10 +1032,16 @@ function updatePendingBadge(){
     b=document.createElement('div'); b.id='pending-badge';
     b.style.cssText='position:fixed;left:12px;bottom:12px;z-index:9999;background:#b45309;color:#fff;padding:8px 12px;border-radius:8px;font:600 12px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.4);cursor:pointer;';
     b.title='Click to retry now';
-    b.onclick=function(){ flushPendingScans(); };
+    b.onclick=function(){
+      const q=readPending(); const e=q.length&&q[0].lastError;
+      if(e) toast('Last server error: '+e,'warn');
+      _nextFlushAt=0; _flushFails=0; flushPendingScans();
+    };
     document.body.appendChild(b);
   }
   b.textContent='⏳ '+n+' scan'+(n>1?'s':'')+' waiting to upload — retrying automatically';
+  const le=readPending().map(x=>x.lastError).filter(Boolean)[0];
+  b.title=(le?('Last server error: '+le+'\n'):'')+'Click to retry now';
 }
 // Did this scan already reach the database? (e.g. the reply was lost)
 // Returns the row, null (not there) or undefined (couldn't tell).
@@ -1050,36 +1056,50 @@ async function scanExists(p, sinceIso){
 async function saveScanResilient(payload){
   const startedAt=new Date();
   const since=new Date(startedAt.getTime()-120000).toISOString();
+  let firstErr='';
   try{
-    return await sbPost('scans',payload,8000);
+    // Runs in the background (the operator is already scanning the next
+    // parcel), so it can afford a patient first attempt.
+    return await sbPost('scans',payload,20000);
   }catch(e){
     if(!e.transient) throw e;                       // real error (bad column etc.) — caller handles
+    firstErr=(e.status?('HTTP '+e.status+' '):'')+String(e.message||'').slice(0,200);
     const hit=await scanExists(payload,since);
     if(hit) return hit;                             // it did land
   }
-  const item={payload:Object.assign({},payload),createdAt:startedAt.toISOString()};
+  const item={payload:Object.assign({},payload),createdAt:startedAt.toISOString(),tries:1,lastError:firstErr,lastTry:Date.now()};
   const q=readPending(); q.push(item); writePending(q);
   setTimeout(flushPendingScans,3000);
   return {id:'pending_'+startedAt.getTime()+'_'+Math.random().toString(36).slice(2,6),
           scanned_at:item.createdAt,_pending:true,_pk:pendingKey(item)};
 }
-let _flushing=false;
+let _flushing=false, _nextFlushAt=0, _flushFails=0;
 async function flushPendingScans(){
   if(_flushing) return;
   if(!readPending().length){ updatePendingBadge(); return; }
-  _flushing=true; let done=0;
+  // Back off while the server is struggling (10s, 20s, 40s … max ~2 min,
+  // with jitter) so 40 PCs never hammer a slow database in lock-step.
+  if(Date.now()<_nextFlushAt) return;
+  _flushing=true; let done=0, transientFails=0;
   try{
     for(const item of readPending()){
       const since=new Date(new Date(item.createdAt).getTime()-120000).toISOString();
       let saved=await scanExists(item.payload,since);
       if(!saved){
         const p=Object.assign({},item.payload,{scanned_at:item.createdAt});
-        try{ saved=await sbPost('scans',p,15000); }
+        try{ saved=await sbPost('scans',p,25000); }
         catch(e){
-          if(e.transient) break;                    // still offline — keep order, try later
+          if(e.transient){
+            // remember WHY, so the problem can be diagnosed instead of guessed
+            const all=readPending(), me=all.find(x=>pendingKey(x)===pendingKey(item));
+            if(me){ me.tries=(me.tries||1)+1; me.lastTry=Date.now(); me.lastError=(e.status?('HTTP '+e.status+' '):'')+String(e.message||'').slice(0,200); writePending(all); }
+            console.warn('[SF] queued scan retry failed:',item.payload.awb,e.status||'',e.message);
+            if(++transientFails>=2) break;           // server clearly down — stop this pass
+            continue;                               // otherwise don't let one stuck scan block the rest
+          }
           if(p.machine_no && /machine_no/i.test(String(e.message))){
             delete p.machine_no;
-            try{ saved=await sbPost('scans',p,15000); }catch(e2){ if(e2.transient) break; }
+            try{ saved=await sbPost('scans',p,25000); }catch(e2){ if(e2.transient){ transientFails++; continue; } }
           }
           if(!saved){                               // permanent rejection — park it, don't block the rest
             try{ const f=JSON.parse(localStorage.getItem(FAILED_KEY)||'[]'); f.push({item:item,error:String(e.message).slice(0,300)}); localStorage.setItem(FAILED_KEY,JSON.stringify(f)); }catch(x){}
@@ -1098,7 +1118,11 @@ async function flushPendingScans(){
         else{ DB.records[idx].id=saved.id; DB.records[idx].scanned_at=saved.scanned_at||DB.records[idx].scanned_at; delete DB.records[idx]._pending; delete DB.records[idx]._pk; }
       }
     }
-  }finally{ _flushing=false; updatePendingBadge(); }
+  }finally{
+    _flushing=false; updatePendingBadge();
+    if(transientFails>0 && !done){ _flushFails=Math.min(_flushFails+1,4); _nextFlushAt=Date.now()+Math.round(10000*Math.pow(2,_flushFails-1)*(0.8+Math.random()*0.4)); }
+    else{ _flushFails=0; _nextFlushAt=0; }
+  }
   if(done){
     toast(done+' waiting scan'+(done>1?'s':'')+' uploaded','ok');
     try{ if(document.getElementById('v-scan')&&document.getElementById('v-scan').classList.contains('on')) updateStats(); }catch(e){}
